@@ -1,0 +1,7 @@
+{
+  "name": "KeralAI Receptionist",
+  "description": "An intelligent AI receptionist for Kerala businesses with Malayalam voice support, knowledge base integration, and appointment booking capabilities using Gemini Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

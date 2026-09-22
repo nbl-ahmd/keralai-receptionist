@@ -1,180 +1,144 @@
 /**
- * server.mjs
+ * bridge/server.mjs
  *
- * Next.js custom server that also hosts the Exotel ↔ Gemini Live WebSocket
- * bridge at  ws://host/ws/exotel
+ * Standalone Exotel ↔ Gemini Live WebSocket bridge.
  *
- * Run:
- *   npm run dev:bridge      # development (Next.js hot-reload + bridge)
- *   npm run start:bridge    # production
+ * This is a plain Node.js HTTP + WebSocket server with ZERO Next.js dependency.
+ * It is deployed to Render as its own web service, independent of the Next.js
+ * dashboard (which deploys to Vercel).
+ *
+ * Endpoints:
+ *   GET  /health          — Render health check, returns 200 {"ok":true}
+ *   GET  /ping            — Lightweight keep-alive endpoint (no DB, HEAD/GET supported)
+ *   WS   /ws/exotel       — Exotel phone bridge (PCM audio ↔ Gemini Live)
+ *   WS   /ws/browser      — Browser voice relay (audio ↔ Gemini Live)
  *
  * Required env vars:
- *   GEMINI_API_KEY          — server-side Gemini key (NOT NEXT_PUBLIC_)
+ *   DATABASE_URL          — Neon POOLED (PgBouncer) connection string
+ *   GEMINI_API_KEY        — Server-side Gemini key (NOT NEXT_PUBLIC_)
  *
  * Optional env vars:
- *   PORT                    — HTTP port (default 3000)
- *   EXOTEL_SAMPLE_RATE      — 8000 or 16000 (default 8000)
- *   MAYA_VOICE              — Gemini voice name (default Kore)
- *   MAYA_PITCH              — Low | Normal | High (default Normal)
- *   MAYA_SPEED              — Slow | Normal | Fast (default Normal)
- *   PUBLIC_APP_ORIGIN       — exact browser origin allowed to use /ws/browser
- *   MAYA_COMPANY_JSON       — absolute path to a JSON file containing
- *                             CompanyProfile for phone calls (optional)
+ *   PORT                  — HTTP port (Render injects this automatically)
+ *   EXOTEL_SAMPLE_RATE    — 8000 or 16000 (default 8000)
+ *   MAYA_VOICE            — Gemini voice name (default Aoede)
+ *   MAYA_PITCH            — Low | Normal | High (default Normal)
+ *   MAYA_SPEED            — Slow | Normal | Fast (default Normal)
+ *   PUBLIC_APP_ORIGIN     — Exact browser origin allowed for /ws/browser
+ *   BROWSER_MAX_SESSIONS_PER_IP — Per-IP limit for /ws/browser (default 3)
+ *   BROWSER_SESSION_TTL_MS      — Max browser session duration in ms (default 900000)
+ *   PG_POOL_MAX           — Postgres pool size (default 10)
+ *   DEBUG_TIMING          — Set to "1" to log latency for key operations
  */
 
+import 'dotenv/config';
 import http from 'node:http';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 
 import { WebSocketServer } from 'ws';
-import next from 'next';
 import { GoogleGenAI, Modality } from '@google/genai';
 
 import {
   closePool,
+  getProfileVersion,
   loadCompanyProfile,
   logCrmSyncEvent,
   persistAppointment,
   searchKnowledgeEmbeddings,
   upsertCallRecord,
-} from './server/db.mjs';
-import { getCrmProvider, syncToCrm } from './server/crm.mjs';
-import { BrowserSession } from './server/browser-session.mjs';
-
-// ─── Load .env.local (Next.js does this automatically; plain `node` does not) ─
-// Supports: KEY=value, KEY="value", KEY='value', and # comments. Skips blanks.
-// Does NOT override variables already set in the environment.
-{
-  const envFiles = ['.env.local', '.env'];
-  const dir = path.dirname(fileURLToPath(import.meta.url));
-  for (const file of envFiles) {
-    const envPath = path.join(dir, file);
-    if (!fs.existsSync(envPath)) continue;
-    const lines = fs.readFileSync(envPath, 'utf8').split('\n');
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (!line || line.startsWith('#')) continue;
-      const eqIdx = line.indexOf('=');
-      if (eqIdx === -1) continue;
-      const key = line.slice(0, eqIdx).trim();
-      let val = line.slice(eqIdx + 1).trim();
-      // Strip optional surrounding quotes
-      if ((val.startsWith('"') && val.endsWith('"')) ||
-          (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      // Don't override values already set by the shell
-      if (!(key in process.env)) {
-        process.env[key] = val;
-      }
-    }
-    console.log(`[bridge] Loaded env from ${file}`);
-    break; // Stop after the first file found (.env.local takes priority)
-  }
-}
-
-// ─── Shared prompt/tool logic ────────────────────────────────────────────────
-// server.mjs is ESM; the TypeScript source is compiled by Next.js for the
-// browser. For the server we import the compiled JS from .next/server, but
-// that only works after a build.  Instead we duplicate the tiny logic here
-// using a require() shim so we don't need a build step to run the bridge.
-//
-// The actual canonical source is lib/maya-config.ts — do NOT edit the logic
-// below; edit maya-config.ts and keep them in sync.
-// The bridge is intentionally kept self-contained so `npm run dev:bridge`
-// works without a prior `npm run build`.
-// ─────────────────────────────────────────────────────────────────────────────
+} from './db.mjs';
+import { getCrmProvider, syncToCrm } from './crm.mjs';
+import { BrowserSession } from './browser-session.mjs';
+import {
+  buildGreeting,
+  buildSystemInstruction,
+  buildTools,
+} from './shared/maya-config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** @param {import('./types.ts').CompanyProfile} companyProfile
- *  @param {{ pitch?: string, speed?: string }} voiceSettings
- *  @returns {string}
- */
-function buildSystemInstruction(companyProfile, voiceSettings = {}) {
-  const pitch = voiceSettings.pitch ?? 'Normal';
-  const speed = voiceSettings.speed ?? 'Normal';
-
-  const profileInstruction = `
-COMPANY DETAILS:
-- Name: ${companyProfile.name || 'The Company'}
-- Industry: ${companyProfile.industry || 'General'}
-- Description: ${companyProfile.description || 'A business in Kerala'}
-- Address: ${companyProfile.address || 'Kerala'}
-- Contact: ${companyProfile.contactPhone || 'Not provided'} / ${companyProfile.contactEmail || 'Not provided'}`.trim();
-
-  return `
-You are Maya, a highly professional, welcoming, and intelligent AI receptionist for ${companyProfile.name || 'our company'}.
-Your primary language is Malayalam, but you are equally fluent in English. You should seamlessly switch between the two based on the caller's language or preference.
-Your tone should be warm, polite, and extremely helpful. Speak at a natural, unhurried pace, like a helpful human receptionist.
-
-VOICE SETTINGS:
-- Pitch: ${pitch}
-- Speed: ${speed}
-
-${profileInstruction}
-
-CORE RESPONSIBILITIES:
-1. Greet callers warmly.
-2. Answer questions accurately. Use the searchKnowledgeBase tool to find relevant information about services, pricing, or the company whenever the user asks a question. DO NOT guess answers.
-3. Assist with booking appointments. When a caller wants to book, politely ask for their Name, preferred Date, and preferred Time. Once you have all three, use the bookAppointment tool to confirm the booking.
-4. Keep your responses concise and conversational. Do not output long lists or markdown formatting, as you are speaking over the phone.
-`.trim();
-}
-
-/** @returns {import('@google/genai').Tool[]} */
-function buildTools() {
-  return [
-    {
-      functionDeclarations: [
-        {
-          name: 'bookAppointment',
-          parameters: {
-            type: 'OBJECT',
-            description: 'Book an appointment for a customer.',
-            properties: {
-              customerName: { type: 'STRING', description: 'Name of the customer' },
-              date: { type: 'STRING', description: 'Date of appointment (YYYY-MM-DD)' },
-              time: { type: 'STRING', description: 'Time of appointment (HH:MM)' },
-              reason: { type: 'STRING', description: 'Reason for appointment (optional)' },
-            },
-            required: ['customerName', 'date', 'time'],
-          },
-        },
-        {
-          name: 'searchKnowledgeBase',
-          parameters: {
-            type: 'OBJECT',
-            description: 'Search the company knowledge base for answers to user questions.',
-            properties: {
-              query: { type: 'STRING', description: 'The search query to find relevant knowledge' },
-            },
-            required: ['query'],
-          },
-        }
-      ],
-    },
-  ];
-}
-
-// ─── Audio resampling (pure JS, no native addons) ────────────────────────────
+// ─── DEBUG_TIMING helper ──────────────────────────────────────────────────────
+const debugTiming = process.env.DEBUG_TIMING === '1';
 
 /**
- * Linear interpolation resampler.
- * Works on raw PCM16 little-endian buffers (Node Buffer).
- *
- * @param {Buffer} input      Raw PCM16 LE mono samples
- * @param {number} inRate     Input sample rate
- * @param {number} outRate    Output sample rate
- * @returns {Buffer}          Resampled PCM16 LE mono samples
+ * Returns a stop-timer function that logs elapsed ms when DEBUG_TIMING=1.
+ * @param {string} label
+ * @returns {() => void}
  */
-function resamplePcm16(input, inRate, outRate) {
-  if (inRate === outRate) return input;
+function timer(label) {
+  if (!debugTiming) return () => {};
+  const start = Date.now();
+  return () => console.log(`[timing] ${label}: ${Date.now() - start}ms`);
+}
 
-  const inSamples = input.length / 2; // 2 bytes per int16 sample
-  const ratio = inRate / outRate;
+// ─── Company profile cache (process-level, TTL + version-check) ───────────────
+let _cachedProfile = null;
+let _profileUpdatedAt = null;
+let _lastProfileCheck = 0;
+const PROFILE_TTL_MS = Number(process.env.PROFILE_CACHE_TTL_MS ?? 5 * 60 * 1000); // 5 min default
+
+/**
+ * Returns the company profile from in-memory cache, refreshing only when:
+ *   1. The TTL has elapsed since the last version check, AND
+ *   2. The DB's updated_at has changed.
+ * This means a single cheap query every TTL interval — not every call.
+ */
+async function getCompanyProfile() {
+  const now = Date.now();
+  if (_cachedProfile && (now - _lastProfileCheck) < PROFILE_TTL_MS) {
+    return _cachedProfile;
+  }
+
+  const doneVersion = timer('profile-version-check');
+  const version = await getProfileVersion();
+  doneVersion();
+
+  _lastProfileCheck = now;
+  const versionStr = version ? new Date(version).toISOString() : null;
+
+  if (_cachedProfile && versionStr === _profileUpdatedAt) {
+    return _cachedProfile; // unchanged — skip the full load
+  }
+
+  const doneLoad = timer('profile-full-load');
+  _cachedProfile = await loadCompanyProfile();
+  doneLoad();
+  _profileUpdatedAt = versionStr;
+
+  console.log(`[bridge] Company profile loaded/refreshed: "${_cachedProfile.name || '(unnamed)'}"`);
+  return _cachedProfile;
+}
+
+// ─── Audio constants ──────────────────────────────────────────────────────────
+
+const GEMINI_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+const GEMINI_INPUT_SAMPLE_RATE = 16000;  // Gemini Live expects 16 kHz input
+const GEMINI_OUTPUT_SAMPLE_RATE = 24000; // Gemini Live outputs 24 kHz
+
+const EXOTEL_SAMPLE_RATE = parseInt(process.env.EXOTEL_SAMPLE_RATE ?? '8000', 10);
+
+// Exotel chunk size: multiples of 320 bytes, target ~100ms
+// 8 kHz 16-bit: 100ms = 8000 * 0.1 * 2 = 1600 bytes = 5 × 320
+// 16 kHz 16-bit: 100ms = 16000 * 0.1 * 2 = 3200 bytes = 10 × 320
+const EXOTEL_CHUNK_BYTES = EXOTEL_SAMPLE_RATE === 16000 ? 3200 : 1600;
+
+// Session-level constants — precomputed so resamplePcm16 never divides per chunk
+const EXOTEL_TO_GEMINI_RATIO = EXOTEL_SAMPLE_RATE / GEMINI_INPUT_SAMPLE_RATE;
+const GEMINI_TO_EXOTEL_RATIO = GEMINI_OUTPUT_SAMPLE_RATE / EXOTEL_SAMPLE_RATE;
+
+// ─── Audio resampling ─────────────────────────────────────────────────────────
+
+/**
+ * Linear-interpolation resampler for raw PCM16 LE mono buffers.
+ *
+ * @param {Buffer} input     Raw PCM16 LE mono samples
+ * @param {number} ratio     inRate / outRate (precomputed per session)
+ * @returns {Buffer}         Resampled PCM16 LE mono samples
+ */
+function resamplePcm16(input, ratio) {
+  if (ratio === 1) return input;
+
+  const inSamples = input.length / 2; // 2 bytes per int16
   const outSamples = Math.round(inSamples / ratio);
   const out = Buffer.allocUnsafe(outSamples * 2);
 
@@ -187,42 +151,21 @@ function resamplePcm16(input, inRate, outRate) {
     const s1 = input.readInt16LE(Math.min(srcIdx + 1, inSamples - 1) * 2);
     const interpolated = Math.round(s0 + frac * (s1 - s0));
 
-    // Clamp to int16 range
     out.writeInt16LE(Math.max(-32768, Math.min(32767, interpolated)), i * 2);
   }
 
   return out;
 }
 
-// ─── Appointment + call persistence ─────────────────────────────────────────
-// All persistence lives in server/db.mjs (Neon Postgres). The bridge imports
-// persistAppointment and upsertCallRecord from there so phone calls and the
-// dashboard share one source of truth.
+// ─── CallSession ──────────────────────────────────────────────────────────────
 
-// ─── Call session ─────────────────────────────────────────────────────────────
-
-const GEMINI_MODEL = 'gemini-3.8-live';
-const GEMINI_INPUT_SAMPLE_RATE = 16000;  // Gemini Live expects 16 kHz input
-const GEMINI_OUTPUT_SAMPLE_RATE = 24000; // Gemini Live outputs 24 kHz
-
-// Exotel-side sample rate (configurable, default 8000)
-const EXOTEL_SAMPLE_RATE = parseInt(process.env.EXOTEL_SAMPLE_RATE ?? '8000', 10);
-
-// Exotel chunk size constraint: multiples of 320 bytes, target ~100ms
-// At 8kHz 16-bit: 100ms = 8000*0.1*2 = 1600 bytes = 5 * 320
-// At 16kHz 16-bit: 100ms = 16000*0.1*2 = 3200 bytes = 10 * 320
-const EXOTEL_CHUNK_BYTES = EXOTEL_SAMPLE_RATE === 16000 ? 3200 : 1600;
-
-/**
- * Manages the state of a single inbound Exotel phone call.
- */
 class CallSession {
   /**
    * @param {string} callSid
    * @param {string} streamSid
-   * @param {WebSocket} exotelWs      — the Exotel WebSocket connection
+   * @param {WebSocket} exotelWs
    * @param {import('@google/genai').GoogleGenAI} ai
-   * @param {import('./types.ts').CompanyProfile} companyProfile
+   * @param {object} companyProfile
    */
   constructor(callSid, streamSid, exotelWs, ai, companyProfile) {
     this.callSid = callSid;
@@ -236,33 +179,27 @@ class CallSession {
 
     /** Accumulator for Gemini output audio before chunking to Exotel */
     this.outputBuffer = Buffer.alloc(0);
+    
+    /** Accumulator for Exotel input audio before chunking to Gemini */
+    this.inputBuffer = Buffer.alloc(0);
 
-    // ── Call reporting state ────────────────────────────────────────────────
+    // Call reporting state
     this.startedAt = new Date().toISOString();
-    /** @type {{ role: 'caller'|'maya', text: string, at: string }[]} */
     this.transcript = [];
-    /** @type {string[]} */
     this.bookingIds = [];
-    /** @type {string[]} */
     this.knowledgeQueries = [];
     this.outcome = 'answered';
     this.intent = null;
     this.caller = 'Unknown caller';
     this.phone = null;
     this.callRecordId = `call-${callSid}`;
-
     this.closed = false;
   }
 
-  log(...args) {
-    console.log(`[bridge][${this.callSid}]`, ...args);
-  }
+  log(...args) { console.log(`[bridge][${this.callSid}]`, ...args); }
+  err(...args) { console.error(`[bridge][${this.callSid}]`, ...args); }
 
-  err(...args) {
-    console.error(`[bridge][${this.callSid}]`, ...args);
-  }
-
-  /** Append a transcript turn, merging consecutive turns from the same speaker. */
+  /** Append a transcript turn, merging consecutive same-speaker turns. */
   addTranscript(role, text) {
     if (!text || !text.trim()) return;
     const clean = text.trim();
@@ -274,7 +211,6 @@ class CallSession {
     this.transcript.push({ role, text: clean, at: new Date().toISOString() });
   }
 
-  /** Build the persisted call record from current session state. */
   buildCallRecord() {
     const endedAt = new Date().toISOString();
     const durationSec = Math.max(
@@ -293,7 +229,7 @@ class CallSession {
       outcome: this.outcome,
       intent: this.intent,
       summary: this.transcript.length
-        ? this.transcript.slice(0, 4).map((turn) => `${turn.role === 'caller' ? 'Caller' : 'Maya'}: ${turn.text}`).join(' ')
+        ? this.transcript.slice(0, 4).map((t) => `${t.role === 'caller' ? 'Caller' : 'Maya'}: ${t.text}`).join(' ')
         : null,
       sentiment: 'neutral',
       transcript: this.transcript,
@@ -302,28 +238,22 @@ class CallSession {
     };
   }
 
-  /** Open a fresh Gemini Live session for this call. */
+  /** Open a Gemini Live session for this phone call. */
   async openGeminiSession() {
     const voiceName = process.env.MAYA_VOICE ?? 'Aoede';
     const pitch = process.env.MAYA_PITCH ?? 'Normal';
     const speed = process.env.MAYA_SPEED ?? 'Normal';
 
-    const systemInstruction = buildSystemInstruction(
-      this.companyProfile,
-      { pitch, speed },
-    );
+    const systemInstruction = buildSystemInstruction(this.companyProfile, { pitch, speed });
 
     this.log(`Connecting to Gemini Live (model: ${GEMINI_MODEL}, voice: ${voiceName})`);
 
-    // ai.live.connect() is identical in Node and browser (same SDK entry point).
-    // Keep the promise so onopen cannot race assignment of this.geminiSession.
+    const doneConnect = timer('gemini-live-connect');
     const sessionPromise = this.ai.live.connect({
       model: GEMINI_MODEL,
       config: {
         responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName } },
-        },
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
         systemInstruction,
         tools: buildTools(),
         inputAudioTranscription: {},
@@ -331,28 +261,22 @@ class CallSession {
       },
       callbacks: {
         onopen: () => {
+          doneConnect();
           this.log('Gemini Live session opened');
           sessionPromise.then((session) => session.sendClientContent({
             turns: [{ role: 'user', parts: [{ text: `System command: Greet the caller with: "${buildGreeting(this.companyProfile)}"` }] }],
             turnComplete: true,
           }));
         },
-
         onmessage: (message) => {
           if (this.closed) return;
-          try {
-            this._handleGeminiMessage(message).catch(e => this.err("Error in _handleGeminiMessage:", e));
-          } catch (e) {
-            this.err('Error handling Gemini message:', e);
-          }
+          this._handleGeminiMessage(message).catch((e) =>
+            this.err('Error in _handleGeminiMessage:', e),
+          );
         },
-
         onerror: (err) => {
           this.err('Gemini Live error:', err);
-          // Don't close the Exotel socket — let the call continue silently
-          // and log the error. Maya will just stop responding until Gemini recovers.
         },
-
         onclose: (evt) => {
           this.log('Gemini Live session closed', evt?.code, evt?.reason);
         },
@@ -360,146 +284,64 @@ class CallSession {
     });
 
     this.geminiSession = await sessionPromise;
-
     this.log('Gemini Live session ready');
   }
 
   /**
-   * Handle an audio media chunk from Exotel.
+   * Handle an Exotel audio media chunk — hot path, no awaits allowed.
+   * Ratio and chunk math are precomputed at module level.
    * @param {string} base64Payload  Base64-encoded PCM16 @ EXOTEL_SAMPLE_RATE
    */
   handleExotelMedia(base64Payload) {
     if (this.closed || !this.geminiSession) return;
-
     try {
-      // 1. Decode base64 → raw PCM16 buffer
-      const rawExotel = Buffer.from(base64Payload, 'base64');
+      this.inputBuffer = Buffer.concat([this.inputBuffer, rawExotel]);
 
-      // 2. Upsample to Gemini's expected input rate (if needed)
-      const rawGemini =
-        EXOTEL_SAMPLE_RATE === GEMINI_INPUT_SAMPLE_RATE
-          ? rawExotel
-          : resamplePcm16(rawExotel, EXOTEL_SAMPLE_RATE, GEMINI_INPUT_SAMPLE_RATE);
+      
+      // Buffer input to exactly 100ms chunks to avoid spamming the Gemini API 
+      // with tiny 20ms frames, which causes network queuing and huge VAD latency.
+      while (this.inputBuffer.length >= EXOTEL_CHUNK_BYTES) {
+        const chunk = this.inputBuffer.subarray(0, EXOTEL_CHUNK_BYTES);
+        this.inputBuffer = this.inputBuffer.subarray(EXOTEL_CHUNK_BYTES);
 
-      // 3. Forward to Gemini Live as PCM16 blob
-      this.geminiSession.sendRealtimeInput({
-        media: {
-          data: rawGemini.toString('base64'),
-          mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}`,
-        },
-      });
+        const rawGemini = EXOTEL_SAMPLE_RATE === GEMINI_INPUT_SAMPLE_RATE
+          ? chunk
+          : resamplePcm16(chunk, EXOTEL_TO_GEMINI_RATIO);
+
+        this.geminiSession.sendRealtimeInput({
+          media: { data: rawGemini.toString('base64'), mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}` },
+        });
+      }
     } catch (e) {
       this.err('Error processing Exotel media chunk:', e);
     }
   }
 
-  /**
-   * Handle a message from Gemini Live.
-   * @param {import('@google/genai').LiveServerMessage} message
-   */
+  /** @param {import('@google/genai').LiveServerMessage} message */
   async _handleGeminiMessage(message) {
-    // ── Transcripts ──────────────────────────────────────────────────────────
+    // Transcripts
     const inputTranscript = message.serverContent?.inputTranscription?.text;
     if (inputTranscript) this.addTranscript('caller', inputTranscript);
     const outputTranscript = message.serverContent?.outputTranscription?.text;
     if (outputTranscript) this.addTranscript('maya', outputTranscript);
 
-    // ── Tool calls ───────────────────────────────────────────────────────────
+    // Tool calls
     if (message.toolCall) {
       this.log('Tool call received:', JSON.stringify(message.toolCall));
       for (const fc of message.toolCall.functionCalls) {
-        if (fc.name === 'bookAppointment') {
-          const args = fc.args;
-          let result;
-          try {
-            const entry = await persistAppointment(this.callSid, args);
-            this.bookingIds.push(entry.id);
-            this.outcome = 'booked';
-            this.intent = args.reason || 'Appointment booking';
-            this.caller = args.customerName || this.caller;
-            result = { result: `Appointment booked successfully. ID: ${entry.id}` };
-
-            // Mirror the booking into the CRM (best-effort, non-blocking failures).
-            if (getCrmProvider() !== 'none') {
-              const sync = await syncToCrm({
-                contact: { name: args.customerName, phone: this.phone, source: 'phone' },
-                call: { callSid: this.callSid, intent: this.intent, outcome: 'booked' },
-                appointment: { date: entry.date, time: entry.time, reason: entry.reason, status: entry.status },
-                company: this.companyProfile,
-              });
-              await logCrmSyncEvent({
-                callSid: this.callSid,
-                provider: sync.provider,
-                status: sync.ok ? 'success' : 'failed',
-                error: sync.error,
-              });
-            }
-          } catch (e) {
-            this.err('Error persisting appointment:', e);
-            result = { result: 'Appointment booking recorded (storage error, please confirm manually).' };
-          }
-
-          this.geminiSession.sendToolResponse({
-            functionResponses: {
-              id: fc.id,
-              name: fc.name,
-              response: result,
-            },
-          });
-        } else if (fc.name === 'searchKnowledgeBase') {
-          const args = fc.args;
-          let result = [];
-          try {
-            this.knowledgeQueries.push(args.query);
-            if (!this.intent) this.intent = args.query;
-
-            // Embed the query, then run a pgvector similarity search.
-            const response = await this.ai.models.embedContent({
-              model: 'gemini-embedding-2',
-              contents: args.query,
-            });
-            const queryVector = response.embeddings?.[0]?.values;
-            if (queryVector) {
-              result = await searchKnowledgeEmbeddings(`[${queryVector.join(',')}]`, 3);
-            }
-          } catch (e) {
-            this.err('Error searching knowledge base:', e);
-          }
-          this.geminiSession.sendToolResponse({
-            functionResponses: {
-              id: fc.id,
-              name: fc.name,
-              response: { result },
-            },
-          });
-        } else {
-          this.log(`Unknown tool call: ${fc.name}`);
-          // Send a generic OK so Gemini doesn't stall
-          this.geminiSession.sendToolResponse({
-            functionResponses: {
-              id: fc.id,
-              name: fc.name,
-              response: { result: 'OK' },
-            },
-          });
-        }
+        await this._handleToolCall(fc);
       }
     }
 
-    // ── Audio output ─────────────────────────────────────────────────────────
+    // Audio output
     const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
     if (base64Audio) {
       try {
-        // 1. Decode base64 → raw PCM16 @ 24 kHz
         const rawGemini = Buffer.from(base64Audio, 'base64');
+        const rawExotel = EXOTEL_SAMPLE_RATE === GEMINI_OUTPUT_SAMPLE_RATE
+          ? rawGemini
+          : resamplePcm16(rawGemini, GEMINI_TO_EXOTEL_RATIO);
 
-        // 2. Downsample to Exotel's sample rate
-        const rawExotel =
-          EXOTEL_SAMPLE_RATE === GEMINI_OUTPUT_SAMPLE_RATE
-            ? rawGemini
-            : resamplePcm16(rawGemini, GEMINI_OUTPUT_SAMPLE_RATE, EXOTEL_SAMPLE_RATE);
-
-        // 3. Accumulate and flush in correctly-sized chunks
         this.outputBuffer = Buffer.concat([this.outputBuffer, rawExotel]);
         this._flushOutputBuffer();
       } catch (e) {
@@ -507,18 +349,90 @@ class CallSession {
       }
     }
 
-    // ── Barge-in (interruption) ───────────────────────────────────────────────
+    // Barge-in
     if (message.serverContent?.interrupted) {
       this.log('Barge-in detected — sending clear to Exotel');
-      this.outputBuffer = Buffer.alloc(0); // discard buffered output
+      this.outputBuffer = Buffer.alloc(0);
       this._sendExotelFrame({ event: 'clear', streamSid: this.streamSid });
     }
   }
 
-  /**
-   * Send buffered audio to Exotel in valid chunk sizes.
-   * Exotel requires multiples of 320 bytes.
-   */
+  /** @param {{ id: string, name: string, args: object }} fc */
+  async _handleToolCall(fc) {
+    if (fc.name === 'bookAppointment') {
+      const args = fc.args;
+      let result;
+      try {
+        const doneDb = timer('db-persist-appointment');
+        const entry = await persistAppointment(this.callSid, args);
+        doneDb();
+        this.bookingIds.push(entry.id);
+        this.outcome = 'booked';
+        this.intent = args.reason || 'Appointment booking';
+        this.caller = args.customerName || this.caller;
+        result = { result: `Appointment booked successfully. ID: ${entry.id}` };
+      } catch (e) {
+        this.err('Error persisting appointment:', e);
+        result = { result: 'Appointment booking recorded (storage error, please confirm manually).' };
+      }
+
+      // ✅ PERFORMANCE: Send tool response FIRST — Maya can continue speaking immediately.
+      this.geminiSession.sendToolResponse({
+        functionResponses: { id: fc.id, name: fc.name, response: result },
+      });
+
+      // Fire-and-forget CRM sync — must not block the call path.
+      if (getCrmProvider() !== 'none') {
+        syncToCrm({
+          contact: { name: args.customerName, phone: this.phone, source: 'phone' },
+          call: { callSid: this.callSid, intent: this.intent, outcome: 'booked' },
+          appointment: { date: args.date, time: args.time, reason: args.reason, status: 'confirmed' },
+          company: this.companyProfile,
+        })
+          .then((sync) => logCrmSyncEvent({
+            callSid: this.callSid,
+            provider: sync.provider,
+            status: sync.ok ? 'success' : 'failed',
+            error: sync.error,
+          }))
+          .catch((e) => this.err('CRM sync error:', e));
+      }
+    } else if (fc.name === 'searchKnowledgeBase') {
+      const args = fc.args;
+      let result = [];
+      try {
+        this.knowledgeQueries.push(args.query);
+        if (!this.intent) this.intent = args.query;
+
+        const doneEmbed = timer('gemini-embed-query');
+        const response = await this.ai.models.embedContent({
+          model: 'gemini-embedding-2',
+          contents: args.query,
+        });
+        doneEmbed();
+
+        const queryVector = response.embeddings?.[0]?.values;
+        if (queryVector) {
+          const doneSearch = timer('pgvector-search');
+          result = await searchKnowledgeEmbeddings(`[${queryVector.join(',')}]`, 3);
+          doneSearch();
+        }
+      } catch (e) {
+        this.err('Error searching knowledge base:', e);
+      }
+
+      this.geminiSession.sendToolResponse({
+        functionResponses: { id: fc.id, name: fc.name, response: { result } },
+      });
+    } else {
+      this.log(`Unknown tool call: ${fc.name}`);
+      this.geminiSession.sendToolResponse({
+        functionResponses: { id: fc.id, name: fc.name, response: { result: 'OK' } },
+      });
+    }
+  }
+
+  /** Flush accumulated Gemini output in valid Exotel chunk sizes (multiples of 320 bytes). */
   _flushOutputBuffer(force = false) {
     while (this.outputBuffer.length >= EXOTEL_CHUNK_BYTES) {
       const chunk = this.outputBuffer.subarray(0, EXOTEL_CHUNK_BYTES);
@@ -526,34 +440,26 @@ class CallSession {
       this._sendMediaToExotel(chunk);
     }
 
-    // On force-flush (end of turn) send whatever remains, zero-padded to
-    // the nearest multiple of 320 bytes so Exotel doesn't reject it.
     if (force && this.outputBuffer.length > 0) {
       const remainder = this.outputBuffer.length % 320;
-      const padded =
-        remainder === 0
-          ? this.outputBuffer
-          : Buffer.concat([this.outputBuffer, Buffer.alloc(320 - remainder)]);
+      const padded = remainder === 0
+        ? this.outputBuffer
+        : Buffer.concat([this.outputBuffer, Buffer.alloc(320 - remainder)]);
       this._sendMediaToExotel(padded);
       this.outputBuffer = Buffer.alloc(0);
     }
   }
 
-  /**
-   * @param {Buffer} pcm16Buf  Raw PCM16 buffer to send to Exotel
-   */
+  /** @param {Buffer} pcm16Buf */
   _sendMediaToExotel(pcm16Buf) {
-    const payload = pcm16Buf.toString('base64');
     this._sendExotelFrame({
       event: 'media',
       streamSid: this.streamSid,
-      media: { payload },
+      media: { payload: pcm16Buf.toString('base64') },
     });
   }
 
-  /**
-   * @param {object} frame  JSON-serialisable Exotel frame
-   */
+  /** @param {object} frame */
   _sendExotelFrame(frame) {
     if (this.exotelWs.readyState !== 1 /* OPEN */) return;
     try {
@@ -563,36 +469,30 @@ class CallSession {
     }
   }
 
-  /** Tear down this call session cleanly. */
   async close() {
     if (this.closed) return;
     this.closed = true;
     this.log('Closing call session');
 
-    // Flush any remaining buffered audio
     this._flushOutputBuffer(true);
 
     if (this.geminiSession) {
-      try {
-        this.geminiSession.close();
-      } catch (e) {
-        this.err('Error closing Gemini session:', e);
-      }
+      try { this.geminiSession.close(); } catch (e) { this.err('Error closing Gemini session:', e); }
       this.geminiSession = null;
     }
 
-    // Persist the call record for the dashboard (call → action → report flow)
     try {
       if (this.outcome === 'answered' && this.transcript.length === 0) {
         this.outcome = 'missed';
       }
       const record = this.buildCallRecord();
+      const doneDb = timer('db-upsert-call-record');
       await upsertCallRecord(record);
+      doneDb();
       this.log(`📞 Call record saved (${record.outcome}, ${record.transcript.length} turns)`);
 
-      // Mirror the completed call into the CRM.
       if (getCrmProvider() !== 'none') {
-        const sync = await syncToCrm({
+        syncToCrm({
           contact: { name: this.caller, phone: this.phone, source: 'phone' },
           call: {
             callSid: this.callSid,
@@ -603,13 +503,14 @@ class CallSession {
             startedAt: record.startedAt,
           },
           company: this.companyProfile,
-        });
-        await logCrmSyncEvent({
-          callSid: this.callSid,
-          provider: sync.provider,
-          status: sync.ok ? 'success' : 'failed',
-          error: sync.error,
-        });
+        })
+          .then((sync) => logCrmSyncEvent({
+            callSid: this.callSid,
+            provider: sync.provider,
+            status: sync.ok ? 'success' : 'failed',
+            error: sync.error,
+          }))
+          .catch((e) => this.err('CRM close sync error:', e));
       }
     } catch (e) {
       this.err('Error persisting call record:', e);
@@ -617,81 +518,81 @@ class CallSession {
   }
 }
 
-function buildGreeting(companyProfile) {
-  const companyName = companyProfile.name || 'our company';
-  return `Thank you for calling ${companyName}. This is Maya, how can I help you today?`;
-}
-
-// ─── Main ────────────────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   // Validate required env vars
-  const geminiApiKey = process.env.GEMINI_API_KEY;
-  if (!geminiApiKey) {
+  if (!process.env.GEMINI_API_KEY) {
     console.error(
       '[bridge] FATAL: GEMINI_API_KEY environment variable is not set.\n' +
-        '  Set it in .env.local (for dev) or your deployment environment.\n' +
+        '  Set it in .env (for dev) or your Render environment variables.\n' +
         '  Do NOT use NEXT_PUBLIC_GOOGLE_API_KEY — that key is exposed client-side.',
     );
     process.exit(1);
   }
 
-  const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-
-  // Config now lives in Neon Postgres.
   if (!process.env.DATABASE_URL) {
     console.error(
       '[bridge] FATAL: DATABASE_URL is not set.\n' +
-        '  The phone bridge reads the company profile, knowledge base, and CRM\n' +
-        '  settings from Neon Postgres. Add DATABASE_URL to .env.local.',
+        '  Use the Neon POOLED (PgBouncer) connection string, not the direct endpoint.',
     );
     process.exit(1);
   }
 
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+  // Warm the profile cache at startup so the first call doesn't pay the load cost.
   let companyProfile;
   try {
-    companyProfile = await loadCompanyProfile();
+    companyProfile = await getCompanyProfile();
   } catch (error) {
     console.error('[bridge] FATAL: Could not load company profile from Postgres:', error.message);
     process.exit(1);
   }
 
-  console.log(
-    `[bridge] Config loaded — company: ${companyProfile.name || '(unnamed)'}, CRM: ${getCrmProvider()}`,
-  );
-
-  const dev = process.env.NODE_ENV !== 'production';
   const port = parseInt(process.env.PORT ?? '3000', 10);
 
-  // Boot Next.js
-  const app = next({ dev, dir: __dirname });
-  const handle = app.getRequestHandler();
-
-  console.log('[bridge] Preparing Next.js…');
-  await app.prepare();
-
-  // Create HTTP server
+  // ── HTTP server ────────────────────────────────────────────────────────────
   const server = http.createServer((req, res) => {
-    handle(req, res);
+    const url = req.url?.split('?')[0];
+
+    // Lightweight keep-alive probe (no DB query, fast plain-text response)
+    if ((req.method === 'GET' || req.method === 'HEAD') && url === '/ping') {
+      res.writeHead(200, {
+        'Content-Type': 'text/plain',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      });
+      res.end('pong');
+      return;
+    }
+
+    if (req.method === 'GET' && url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, service: 'keralai-bridge' }));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
   });
 
-  // Attach WebSocket servers for Exotel and the browser relay.
+  // ── WebSocket servers ──────────────────────────────────────────────────────
   const wss = new WebSocketServer({ noServer: true });
   const browserWss = new WebSocketServer({ noServer: true });
   const browserSessionsByIp = new Map();
   const maxBrowserSessionsPerIp = Number(process.env.BROWSER_MAX_SESSIONS_PER_IP ?? 3);
 
   server.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, `http://localhost`);
+    const url = new URL(req.url, 'http://localhost');
+
     if (url.pathname === '/ws/exotel') {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit('connection', ws, req);
-      });
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
     } else if (url.pathname === '/ws/browser') {
       const configuredOrigin = process.env.PUBLIC_APP_ORIGIN;
       const origin = req.headers.origin;
       const ip = req.socket.remoteAddress ?? 'unknown';
       const activeSessions = browserSessionsByIp.get(ip) ?? 0;
+
       if (configuredOrigin && origin && origin !== configuredOrigin) {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();
@@ -702,69 +603,67 @@ async function main() {
         socket.destroy();
         return;
       }
+
       browserSessionsByIp.set(ip, activeSessions + 1);
       browserWss.handleUpgrade(req, socket, head, (ws) => {
         ws._keralaiIp = ip;
         browserWss.emit('connection', ws, req);
       });
     } else {
-      // Not our path — destroy so Next.js doesn't get confused
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
     }
   });
 
+  // ── Browser relay handler ──────────────────────────────────────────────────
   browserWss.on('connection', (ws, req) => {
     console.log('[bridge] New browser voice session from', req.socket.remoteAddress);
-    const session = new BrowserSession(
-      ws,
-      ai,
-      companyProfile,
-      buildSystemInstruction,
-      buildTools,
-      buildGreeting,
-    );
-    const sessionTtl = setTimeout(() => {
-      session.send({ type: 'error', message: 'This demo session has reached its time limit.' });
-      session.close().finally(() => ws.close(1000, 'Session TTL reached'));
-    }, Number(process.env.BROWSER_SESSION_TTL_MS ?? 15 * 60 * 1000));
 
-    ws.on('message', async (raw) => {
-      let frame;
-      try {
-        frame = JSON.parse(raw.toString());
-      } catch {
-        ws.close(1003, 'JSON frames required');
-        return;
-      }
+    // Each call refreshes the cached profile (cheap TTL check)
+    getCompanyProfile().then((profile) => {
+      const session = new BrowserSession(
+        ws, ai, profile,
+        buildSystemInstruction, buildTools, buildGreeting,
+      );
 
-      try {
-        if (frame.type === 'start') {
-          await session.open(frame);
-        } else if (frame.type === 'audio') {
-          session.sendAudio(frame.data, frame.mimeType);
-        } else if (frame.type === 'stop') {
-          await session.close();
-          ws.close(1000, 'Session complete');
+      const sessionTtl = setTimeout(() => {
+        session.send({ type: 'error', message: 'This demo session has reached its time limit.' });
+        session.close().finally(() => ws.close(1000, 'Session TTL reached'));
+      }, Number(process.env.BROWSER_SESSION_TTL_MS ?? 15 * 60 * 1000));
+
+      ws.on('message', async (raw) => {
+        let frame;
+        try { frame = JSON.parse(raw.toString()); } catch {
+          ws.close(1003, 'JSON frames required'); return;
         }
-      } catch (error) {
-        console.error('[bridge][browser] frame failed:', error);
-        session.send({ type: 'error', message: 'Unable to start the voice session.' });
-        await session.close();
-      }
-    });
+        try {
+          if (frame.type === 'start') await session.open(frame);
+          else if (frame.type === 'audio') session.sendAudio(frame.data, frame.mimeType);
+          else if (frame.type === 'stop') { await session.close(); ws.close(1000, 'Session complete'); }
+        } catch (error) {
+          console.error('[bridge][browser] frame failed:', error);
+          session.send({ type: 'error', message: 'Unable to start the voice session.' });
+          await session.close();
+        }
+      });
 
-    ws.on('close', () => {
-      clearTimeout(sessionTtl);
-      const ip = ws._keralaiIp;
-      const count = browserSessionsByIp.get(ip) ?? 1;
-      if (count <= 1) browserSessionsByIp.delete(ip);
-      else browserSessionsByIp.set(ip, count - 1);
-      session.close().catch((error) => console.error('[bridge][browser] close failed:', error));
+      ws.on('close', () => {
+        clearTimeout(sessionTtl);
+        const ip = ws._keralaiIp;
+        const count = browserSessionsByIp.get(ip) ?? 1;
+        if (count <= 1) browserSessionsByIp.delete(ip);
+        else browserSessionsByIp.set(ip, count - 1);
+        session.close().catch((e) => console.error('[bridge][browser] close failed:', e));
+      });
+
+      ws.on('error', (e) => console.error('[bridge][browser] WebSocket error:', e));
+    }).catch((e) => {
+      console.error('[bridge][browser] Failed to load profile:', e);
+      ws.close(1011, 'Profile load failed');
     });
-    ws.on('error', (error) => console.error('[bridge][browser] WebSocket error:', error));
   });
 
-  // ── Per-connection handler ─────────────────────────────────────────────────
+  // ── Exotel handler ─────────────────────────────────────────────────────────
   wss.on('connection', (ws, req) => {
     console.log('[bridge] New Exotel WebSocket connection from', req.socket.remoteAddress);
 
@@ -773,11 +672,8 @@ async function main() {
 
     ws.on('message', async (raw) => {
       let frame;
-      try {
-        frame = JSON.parse(raw.toString());
-      } catch {
-        console.warn('[bridge] Received non-JSON WebSocket frame — ignoring');
-        return;
+      try { frame = JSON.parse(raw.toString()); } catch {
+        console.warn('[bridge] Received non-JSON WebSocket frame — ignoring'); return;
       }
 
       switch (frame.event) {
@@ -788,62 +684,51 @@ async function main() {
         case 'start': {
           const startMeta = frame.start ?? frame;
           const callSid =
-            frame.call_sid ??
-            frame.callSid ??
-            startMeta.call_sid ??
-            startMeta.callSid ??
-            startMeta.call?.sid ??
-            'unknown';
+            frame.call_sid ?? frame.callSid ??
+            startMeta.call_sid ?? startMeta.callSid ??
+            startMeta.call?.sid ?? 'unknown';
           const streamSid =
-            frame.stream_sid ??
-            frame.streamSid ??
-            startMeta.stream_sid ??
-            startMeta.streamSid ??
-            startMeta.stream?.sid ??
-            'unknown';
+            frame.stream_sid ?? frame.streamSid ??
+            startMeta.stream_sid ?? startMeta.streamSid ??
+            startMeta.stream?.sid ?? 'unknown';
+
           console.log(`[bridge] Call started — callSid=${callSid}, streamSid=${streamSid}`);
 
-          // Guard against duplicate 'start' events
-          if (session) {
-            console.warn('[bridge] Received duplicate start event — ignoring');
-            break;
-          }
+          if (session) { console.warn('[bridge] Duplicate start event — ignoring'); break; }
 
-          session = new CallSession(callSid, streamSid, ws, ai, companyProfile);
-          // Capture caller identity when Exotel provides it
+          // Refresh company profile from cache (cheap)
+          let profile;
+          try { profile = await getCompanyProfile(); }
+          catch (e) { profile = companyProfile; } // fallback to startup value
+
+          session = new CallSession(callSid, streamSid, ws, ai, profile);
           session.caller = startMeta.from ?? startMeta.caller ?? startMeta.custom_parameters?.caller ?? 'Unknown caller';
           session.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
+
           try {
             await session.openGeminiSession();
           } catch (e) {
             console.error(`[bridge][${callSid}] Failed to open Gemini session:`, e);
             session = null;
-            // Close the Exotel socket so the call fails fast rather than hanging
             ws.close(1011, 'Gemini session failed to open');
           }
           break;
         }
 
         case 'media': {
-          if (!session) {
-            console.warn('[bridge] Received media before start event — ignoring');
-            break;
-          }
+          if (!session) { console.warn('[bridge] Media before start — ignoring'); break; }
           const payload = frame.media?.payload;
           if (payload) session.handleExotelMedia(payload);
           break;
         }
 
         case 'dtmf':
-          if (session) session.log('DTMF event received (ignored):', frame);
+          if (session) session.log('DTMF event (ignored):', frame);
           break;
 
         case 'stop':
           console.log('[bridge] Exotel stop event — closing session');
-          if (session) {
-            await session.close();
-            session = null;
-          }
+          if (session) { await session.close(); session = null; }
           break;
 
         default:
@@ -853,38 +738,33 @@ async function main() {
 
     ws.on('close', async (code, reason) => {
       console.log(`[bridge] Exotel WebSocket closed (code=${code}, reason=${reason})`);
-      if (session) {
-        await session.close();
-        session = null;
-      }
+      if (session) { await session.close(); session = null; }
     });
 
-    ws.on('error', (err) => {
-      console.error('[bridge] Exotel WebSocket error:', err);
-    });
+    ws.on('error', (err) => console.error('[bridge] Exotel WebSocket error:', err));
   });
 
   // ── Start listening ────────────────────────────────────────────────────────
   server.listen(port, () => {
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║  KeralaI Receptionist — Next.js + Exotel Bridge              ║
+║  KeralaI Bridge — Standalone Exotel ↔ Gemini Live           ║
 ╠══════════════════════════════════════════════════════════════╣
-║  Next.js app :  http://localhost:${port}                        ║
-║  Exotel WS   :  ws://localhost:${port}/ws/exotel               ║
+║  Health check :  http://localhost:${port}/health              ║
+║  Exotel WS   :  ws://localhost:${port}/ws/exotel              ║
+║  Browser WS  :  ws://localhost:${port}/ws/browser             ║
 ║                                                              ║
-║  Exotel sample rate : ${EXOTEL_SAMPLE_RATE} Hz                          ║
-║  Gemini input rate  : ${GEMINI_INPUT_SAMPLE_RATE} Hz                         ║
-║  Gemini output rate : ${GEMINI_OUTPUT_SAMPLE_RATE} Hz                         ║
-║  Database           : Neon Postgres                          ║
-║  CRM provider       : ${getCrmProvider()}                            ║
+║  Exotel rate : ${EXOTEL_SAMPLE_RATE} Hz                                ║
+║  Gemini in   : ${GEMINI_INPUT_SAMPLE_RATE} Hz                              ║
+║  Gemini out  : ${GEMINI_OUTPUT_SAMPLE_RATE} Hz                              ║
+║  Profile TTL : ${PROFILE_TTL_MS / 1000}s                              ║
+║  CRM         : ${getCrmProvider()}                                  ║
+║  DEBUG_TIMING: ${debugTiming ? 'ON' : 'off'}                                ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
-  // Kubernetes/Docker send SIGTERM before SIGKILL. Stop accepting connections,
-  // let in-flight calls finish, then release the Postgres pool.
   let shuttingDown = false;
   const shutdown = async (signal) => {
     if (shuttingDown) return;
@@ -897,11 +777,7 @@ async function main() {
     }, 10_000);
 
     server.close(async () => {
-      try {
-        await closePool();
-      } catch (error) {
-        console.error('[bridge] Error closing Postgres pool:', error.message);
-      }
+      try { await closePool(); } catch (e) { console.error('[bridge] Error closing pool:', e.message); }
       clearTimeout(forceExit);
       console.log('[bridge] Shutdown complete.');
       process.exit(0);

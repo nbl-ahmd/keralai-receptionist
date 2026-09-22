@@ -12,6 +12,14 @@ dist
 dist-ssr
 *.local
 
+# Next.js build output
+.next/
+out/
+
+# Environment files (contain secrets)
+.env.local
+.env.*.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

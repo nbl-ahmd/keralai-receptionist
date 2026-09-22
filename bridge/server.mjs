@@ -9,6 +9,7 @@
  *
  * Endpoints:
  *   GET  /health          — Render health check, returns 200 {"ok":true}
+ *   GET  /ping            — Lightweight keep-alive endpoint (no DB, HEAD/GET supported)
  *   WS   /ws/exotel       — Exotel phone bridge (PCM audio ↔ Gemini Live)
  *   WS   /ws/browser      — Browser voice relay (audio ↔ Gemini Live)
  *
@@ -178,6 +179,9 @@ class CallSession {
 
     /** Accumulator for Gemini output audio before chunking to Exotel */
     this.outputBuffer = Buffer.alloc(0);
+    
+    /** Accumulator for Exotel input audio before chunking to Gemini */
+    this.inputBuffer = Buffer.alloc(0);
 
     // Call reporting state
     this.startedAt = new Date().toISOString();
@@ -292,13 +296,22 @@ class CallSession {
     if (this.closed || !this.geminiSession) return;
     try {
       const rawExotel = Buffer.from(base64Payload, 'base64');
-      const rawGemini = EXOTEL_SAMPLE_RATE === GEMINI_INPUT_SAMPLE_RATE
-        ? rawExotel
-        : resamplePcm16(rawExotel, EXOTEL_TO_GEMINI_RATIO);
+      this.inputBuffer = Buffer.concat([this.inputBuffer, rawExotel]);
 
-      this.geminiSession.sendRealtimeInput({
-        media: { data: rawGemini.toString('base64'), mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}` },
-      });
+      // Buffer input to exactly 100ms chunks to avoid spamming the Gemini API 
+      // with tiny 20ms frames, which causes network queuing and huge VAD latency.
+      while (this.inputBuffer.length >= EXOTEL_CHUNK_BYTES) {
+        const chunk = this.inputBuffer.subarray(0, EXOTEL_CHUNK_BYTES);
+        this.inputBuffer = this.inputBuffer.subarray(EXOTEL_CHUNK_BYTES);
+
+        const rawGemini = EXOTEL_SAMPLE_RATE === GEMINI_INPUT_SAMPLE_RATE
+          ? chunk
+          : resamplePcm16(chunk, EXOTEL_TO_GEMINI_RATIO);
+
+        this.geminiSession.sendRealtimeInput({
+          media: { data: rawGemini.toString('base64'), mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}` },
+        });
+      }
     } catch (e) {
       this.err('Error processing Exotel media chunk:', e);
     }
@@ -541,11 +554,24 @@ async function main() {
 
   // ── HTTP server ────────────────────────────────────────────────────────────
   const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/health') {
+    const url = req.url?.split('?')[0];
+
+    // Lightweight keep-alive probe (no DB query, fast plain-text response)
+    if ((req.method === 'GET' || req.method === 'HEAD') && url === '/ping') {
+      res.writeHead(200, {
+        'Content-Type': 'text/plain',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      });
+      res.end('pong');
+      return;
+    }
+
+    if (req.method === 'GET' && url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, service: 'keralai-bridge' }));
       return;
     }
+
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not Found');
   });

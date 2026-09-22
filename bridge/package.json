@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Standalone Exotel ↔ Gemini Live WebSocket bridge for KeralaI Receptionist",
   "scripts": {
+    "build": "next build",
     "start": "node server.mjs",
     "start:bridge": "node server.mjs",
     "dev": "node --watch server.mjs"

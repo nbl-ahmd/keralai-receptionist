@@ -9,7 +9,7 @@
  * sendToolResponse() so Maya is never blocked waiting for an external webhook.
  */
 
-const TIMEOUT_MS = 8000;
+const TIMEOUT_MS = Number(process.env.CRM_TIMEOUT_MS ?? 8000);
 
 export function getCrmProvider() {
   const raw = (process.env.CRM_PROVIDER ?? 'none').toLowerCase();
@@ -34,7 +34,7 @@ export async function syncToCrm(payload) {
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
     if (process.env.CRM_WEBHOOK_SECRET) {
       headers['X-KeralAI-Signature'] = process.env.CRM_WEBHOOK_SECRET;
     }
@@ -65,7 +65,10 @@ export async function syncToCrm(payload) {
 
     return { ok: true, provider, externalId };
   } catch (error) {
-    return { ok: false, provider, error: error.message };
+    const message = error?.name === 'AbortError'
+      ? `request timed out after ${TIMEOUT_MS}ms`
+      : (error?.message ?? String(error));
+    return { ok: false, provider, error: message };
   } finally {
     clearTimeout(timeout);
   }

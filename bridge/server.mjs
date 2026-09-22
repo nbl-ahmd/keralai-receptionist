@@ -20,6 +20,8 @@
  * Optional env vars:
  *   PORT                  — HTTP port (Render injects this automatically)
  *   EXOTEL_SAMPLE_RATE    — 8000 or 16000 (default 8000)
+ *   GEMINI_MODEL          — Gemini Live model (default gemini-3.8-live)
+ *   GEMINI_EMBEDDING_MODEL — Embedding model (default gemini-embedding-2)
  *   MAYA_VOICE            — Gemini voice name (default Aoede)
  *   MAYA_PITCH            — Low | Normal | High (default Normal)
  *   MAYA_SPEED            — Slow | Normal | Fast (default Normal)
@@ -27,13 +29,14 @@
  *   BROWSER_MAX_SESSIONS_PER_IP — Per-IP limit for /ws/browser (default 3)
  *   BROWSER_SESSION_TTL_MS      — Max browser session duration in ms (default 900000)
  *   PG_POOL_MAX           — Postgres pool size (default 10)
+ *   PG_QUERY_TIMEOUT_MS   — Per-query timeout in ms (default 15000)
+ *   CRM_TIMEOUT_MS        — CRM webhook timeout in ms (default 8000)
+ *   EMBED_TIMEOUT_MS      — Embedding request timeout in ms (default 8000)
  *   DEBUG_TIMING          — Set to "1" to log latency for key operations
  */
 
 import 'dotenv/config';
 import http from 'node:http';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI, Modality } from '@google/genai';
@@ -53,9 +56,8 @@ import {
   buildGreeting,
   buildSystemInstruction,
   buildTools,
+  resolveVoiceSettings,
 } from './shared/maya-config.mjs';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── DEBUG_TIMING helper ──────────────────────────────────────────────────────
 const debugTiming = process.env.DEBUG_TIMING === '1';
@@ -69,6 +71,51 @@ function timer(label) {
   if (!debugTiming) return () => {};
   const start = Date.now();
   return () => console.log(`[timing] ${label}: ${Date.now() - start}ms`);
+}
+
+// ─── Safe background work ─────────────────────────────────────────────────────
+/**
+ * Runs non-critical work (CRM sync, audit writes, call-row creation) off the
+ * real-time audio path. Never throws into the caller and never produces an
+ * unhandled rejection. Tracked so graceful shutdown can drain briefly.
+ *
+ * @param {string} label
+ * @param {() => Promise<unknown>} fn
+ * @returns {Promise<void>}
+ */
+const _backgroundTasks = new Set();
+function runBackground(label, fn) {
+  const task = (async () => {
+    try {
+      await fn();
+    } catch (error) {
+      console.error(`[bridge][bg:${label}] failed:`, error?.message ?? error);
+    }
+  })();
+  _backgroundTasks.add(task);
+  task.finally(() => _backgroundTasks.delete(task));
+  return task;
+}
+
+/** Wait (briefly) for in-flight background tasks during shutdown. */
+async function drainBackground(timeoutMs = 3000) {
+  if (_backgroundTasks.size === 0) return;
+  await Promise.race([
+    Promise.allSettled([..._backgroundTasks]),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+/**
+ * Rejects if `promise` does not settle within `ms`. Keeps a hung external call
+ * (e.g. an embedding request) from stalling a tool response forever.
+ */
+function withTimeout(promise, ms, label) {
+  let handle;
+  const timeout = new Promise((_, reject) => {
+    handle = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
 }
 
 // ─── Company profile cache (process-level, TTL + version-check) ───────────────
@@ -111,7 +158,9 @@ async function getCompanyProfile() {
 
 // ─── Audio constants ──────────────────────────────────────────────────────────
 
-const GEMINI_MODEL = 'gemini-3.8-live';
+const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.8-live';
+const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL ?? 'gemini-embedding-2';
+const EMBED_TIMEOUT_MS = Number(process.env.EMBED_TIMEOUT_MS ?? 8000);
 const GEMINI_INPUT_SAMPLE_RATE = 16000;  // Gemini Live expects 16 kHz input
 const GEMINI_OUTPUT_SAMPLE_RATE = 24000; // Gemini Live outputs 24 kHz
 
@@ -126,6 +175,11 @@ const EXOTEL_CHUNK_BYTES = EXOTEL_SAMPLE_RATE === 16000 ? 3200 : 1600;
 const EXOTEL_TO_GEMINI_RATIO = EXOTEL_SAMPLE_RATE / GEMINI_INPUT_SAMPLE_RATE;
 const GEMINI_TO_EXOTEL_RATIO = GEMINI_OUTPUT_SAMPLE_RATE / EXOTEL_SAMPLE_RATE;
 
+// Bounded buffer for caller audio that arrives while Gemini is still connecting.
+// ~2 seconds of 16-bit PCM — enough to cover connect latency without growing
+// without limit if Gemini never comes up.
+const MAX_PENDING_INPUT_BYTES = EXOTEL_SAMPLE_RATE * 2 * 2;
+
 // ─── Audio resampling ─────────────────────────────────────────────────────────
 
 /**
@@ -136,7 +190,7 @@ const GEMINI_TO_EXOTEL_RATIO = GEMINI_OUTPUT_SAMPLE_RATE / EXOTEL_SAMPLE_RATE;
  * @returns {Buffer}         Resampled PCM16 LE mono samples
  */
 function resamplePcm16(input, ratio) {
-  if (ratio === 1) return input;
+  if (ratio === 1 || input.length < 4) return input;
 
   const inSamples = input.length / 2; // 2 bytes per int16
   const outSamples = Math.round(inSamples / ratio);
@@ -194,10 +248,86 @@ class CallSession {
     this.phone = null;
     this.callRecordId = `call-${callSid}`;
     this.closed = false;
+
+    // Gemini readiness + bounded pre-connect audio buffer
+    this.geminiOpen = false;
+    this.pendingInput = Buffer.alloc(0);
+
+    // Barge-in bookkeeping (one clear frame per interrupted turn)
+    this.interruptSent = false;
+
+    // Per-call booking idempotency: booking key -> Promise<appointment entry>
+    this.bookingPromises = new Map();
+
+    // DB `calls.id`, created in the background at call start so appointments
+    // can reference it before the call ends.
+    this.callId = null;
+    this.callIdPromise = null;
+
+    // Rate-limit repeated media-packet errors so one bad stream can't flood logs
+    this.mediaErrorCount = 0;
+    this.mediaErrorLoggedAt = 0;
   }
 
   log(...args) { console.log(`[bridge][${this.callSid}]`, ...args); }
   err(...args) { console.error(`[bridge][${this.callSid}]`, ...args); }
+
+  /** sendToolResponse guarded against a closed/absent Gemini session. */
+  _sendToolResponse(fc, response) {
+    if (this.closed || !this.geminiSession) return;
+    try {
+      this.geminiSession.sendToolResponse({
+        functionResponses: { id: fc.id, name: fc.name, response },
+      });
+    } catch (e) {
+      this.err('Error sending tool response:', e);
+    }
+  }
+
+  /** Rate-limited media error logging (max one line per 5s per call). */
+  _mediaError(stage, error) {
+    this.mediaErrorCount++;
+    const now = Date.now();
+    if (now - this.mediaErrorLoggedAt < 5000) return;
+    this.mediaErrorLoggedAt = now;
+    this.err(`Media ${stage} error (x${this.mediaErrorCount}):`, error?.message ?? error);
+    this.mediaErrorCount = 0;
+  }
+
+  /**
+   * Returns the DB `calls.id`, creating the row once. Started in the background
+   * at call start; only awaited off the audio path (e.g. before booking).
+   */
+  ensureCallRecord() {
+    if (this.callId) return Promise.resolve(this.callId);
+    if (!this.callIdPromise) {
+      this.callIdPromise = upsertCallRecord(this._startRecord())
+        .then((id) => { this.callId = id; return id; })
+        .catch((e) => { this.err('Failed to create call record:', e?.message ?? e); return null; });
+    }
+    return this.callIdPromise;
+  }
+
+  /** Minimal call row persisted at call start (final fields written on close). */
+  _startRecord() {
+    return {
+      id: this.callRecordId,
+      callSid: this.callSid,
+      caller: this.caller,
+      phone: this.phone,
+      channel: 'phone',
+      startedAt: this.startedAt,
+      endedAt: null,
+      durationSec: 0,
+      outcome: 'answered',
+      intent: null,
+      summary: null,
+      sentiment: 'neutral',
+      transcript: [],
+      bookingIds: [],
+      knowledgeQueries: [],
+    };
+  }
 
   /** Append a transcript turn, merging consecutive same-speaker turns. */
   addTranscript(role, text) {
@@ -240,10 +370,7 @@ class CallSession {
 
   /** Open a Gemini Live session for this phone call. */
   async openGeminiSession() {
-    const voiceName = process.env.MAYA_VOICE ?? 'Aoede';
-    const pitch = process.env.MAYA_PITCH ?? 'Normal';
-    const speed = process.env.MAYA_SPEED ?? 'Normal';
-
+    const { voiceName, pitch, speed } = resolveVoiceSettings();
     const systemInstruction = buildSystemInstruction(this.companyProfile, { pitch, speed });
 
     this.log(`Connecting to Gemini Live (model: ${GEMINI_MODEL}, voice: ${voiceName})`);
@@ -263,10 +390,19 @@ class CallSession {
         onopen: () => {
           doneConnect();
           this.log('Gemini Live session opened');
-          sessionPromise.then((session) => session.sendClientContent({
-            turns: [{ role: 'user', parts: [{ text: `System command: Greet the caller with: "${buildGreeting(this.companyProfile)}"` }] }],
-            turnComplete: true,
-          }));
+          sessionPromise
+            .then((session) => {
+              if (this.closed) return;
+              try {
+                session.sendClientContent({
+                  turns: [{ role: 'user', parts: [{ text: `System command: Greet the caller with: "${buildGreeting(this.companyProfile)}"` }] }],
+                  turnComplete: true,
+                });
+              } catch (e) {
+                this.err('Failed to send greeting:', e);
+              }
+            })
+            .catch((e) => this.err('Gemini session promise rejected:', e));
         },
         onmessage: (message) => {
           if (this.closed) return;
@@ -275,161 +411,271 @@ class CallSession {
           );
         },
         onerror: (err) => {
-          this.err('Gemini Live error:', err);
+          this.err('Gemini Live error:', err?.message ?? err);
         },
         onclose: (evt) => {
+          this.geminiOpen = false;
           this.log('Gemini Live session closed', evt?.code, evt?.reason);
         },
       },
     });
 
-    this.geminiSession = await sessionPromise;
+    const session = await sessionPromise;
+    if (this.closed) {
+      // The call ended while Gemini was connecting — don't retain the session.
+      try { session.close(); } catch { /* already closed */ }
+      return;
+    }
+    this.geminiSession = session;
+    this.geminiOpen = true;
     this.log('Gemini Live session ready');
+
+    // Flush any caller audio captured while Gemini was connecting.
+    this._flushPendingInput();
   }
 
   /**
    * Handle an Exotel audio media chunk — hot path, no awaits allowed.
-   * Ratio and chunk math are precomputed at module level.
+   * Decodes base64 once, buffers to 100ms chunks, resamples, forwards to Gemini.
    * @param {string} base64Payload  Base64-encoded PCM16 @ EXOTEL_SAMPLE_RATE
    */
   handleExotelMedia(base64Payload) {
-    if (this.closed || !this.geminiSession) return;
+    if (this.closed) return;
+
+    let rawPcm;
     try {
-      this.inputBuffer = Buffer.concat([this.inputBuffer, rawExotel]);
-
-      
-      // Buffer input to exactly 100ms chunks to avoid spamming the Gemini API 
-      // with tiny 20ms frames, which causes network queuing and huge VAD latency.
-      while (this.inputBuffer.length >= EXOTEL_CHUNK_BYTES) {
-        const chunk = this.inputBuffer.subarray(0, EXOTEL_CHUNK_BYTES);
-        this.inputBuffer = this.inputBuffer.subarray(EXOTEL_CHUNK_BYTES);
-
-        const rawGemini = EXOTEL_SAMPLE_RATE === GEMINI_INPUT_SAMPLE_RATE
-          ? chunk
-          : resamplePcm16(chunk, EXOTEL_TO_GEMINI_RATIO);
-
-        this.geminiSession.sendRealtimeInput({
-          media: { data: rawGemini.toString('base64'), mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}` },
-        });
-      }
+      rawPcm = Buffer.from(base64Payload, 'base64');
     } catch (e) {
-      this.err('Error processing Exotel media chunk:', e);
+      this._mediaError('decode', e);
+      return;
     }
+    if (rawPcm.length === 0) return;
+
+    // Gemini is still connecting: keep a small, bounded slice of caller audio
+    // so the first words aren't lost. Drop the oldest audio on overflow.
+    if (!this.geminiOpen || !this.geminiSession) {
+      this.pendingInput = Buffer.concat([this.pendingInput, rawPcm]);
+      if (this.pendingInput.length > MAX_PENDING_INPUT_BYTES) {
+        this.pendingInput = this.pendingInput.subarray(
+          this.pendingInput.length - MAX_PENDING_INPUT_BYTES,
+        );
+      }
+      return;
+    }
+
+    try {
+      this._ingestInput(rawPcm);
+    } catch (e) {
+      this._mediaError('forward', e);
+    }
+  }
+
+  /** Chunk + resample raw caller PCM and forward to Gemini. Hot path. */
+  _ingestInput(rawPcm) {
+    this.inputBuffer = Buffer.concat([this.inputBuffer, rawPcm]);
+
+    // Buffer to exactly 100ms chunks to avoid spamming the Gemini API with tiny
+    // frames, which causes network queuing and hurts VAD latency.
+    while (this.inputBuffer.length >= EXOTEL_CHUNK_BYTES) {
+      const chunk = this.inputBuffer.subarray(0, EXOTEL_CHUNK_BYTES);
+      this.inputBuffer = this.inputBuffer.subarray(EXOTEL_CHUNK_BYTES);
+
+      const rawGemini = EXOTEL_TO_GEMINI_RATIO === 1
+        ? chunk
+        : resamplePcm16(chunk, EXOTEL_TO_GEMINI_RATIO);
+
+      this.geminiSession.sendRealtimeInput({
+        media: { data: rawGemini.toString('base64'), mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}` },
+      });
+    }
+  }
+
+  /** Forward audio buffered while Gemini was connecting. */
+  _flushPendingInput() {
+    if (!this.pendingInput.length || !this.geminiSession) return;
+    const buffered = this.pendingInput;
+    this.pendingInput = Buffer.alloc(0);
+    this._ingestInput(buffered);
   }
 
   /** @param {import('@google/genai').LiveServerMessage} message */
   async _handleGeminiMessage(message) {
-    // Transcripts
-    const inputTranscript = message.serverContent?.inputTranscription?.text;
+    if (this.closed) return;
+    const serverContent = message.serverContent;
+
+    // Transcripts (in-memory only)
+    const inputTranscript = serverContent?.inputTranscription?.text;
     if (inputTranscript) this.addTranscript('caller', inputTranscript);
-    const outputTranscript = message.serverContent?.outputTranscription?.text;
+    const outputTranscript = serverContent?.outputTranscription?.text;
     if (outputTranscript) this.addTranscript('maya', outputTranscript);
 
-    // Tool calls
-    if (message.toolCall) {
-      this.log('Tool call received:', JSON.stringify(message.toolCall));
-      for (const fc of message.toolCall.functionCalls) {
-        await this._handleToolCall(fc);
-      }
+    // Barge-in takes priority — never play stale audio for an interrupted turn.
+    if (serverContent?.interrupted) {
+      this._handleInterrupt();
+    } else {
+      this._forwardModelAudio(serverContent);
     }
 
-    // Audio output
-    const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-    if (base64Audio) {
+    // Force-flush the tail of a turn so final (<chunk) audio isn't stuck.
+    if (serverContent?.turnComplete || serverContent?.generationComplete) {
+      this._flushOutputBuffer(true);
+      this.interruptSent = false;
+    }
+
+    // Tool calls run off the audio path; each sends its own response when ready.
+    const functionCalls = message.toolCall?.functionCalls;
+    if (functionCalls?.length) {
+      for (const fc of functionCalls) void this._handleToolCall(fc);
+    }
+
+    if (message.toolCallCancellation?.ids?.length) {
+      this.log('Tool call cancelled by Gemini:', message.toolCallCancellation.ids.join(','));
+    }
+  }
+
+  /** Forward every inline-audio part of a model turn to Exotel. */
+  _forwardModelAudio(serverContent) {
+    const parts = serverContent?.modelTurn?.parts;
+    if (!parts?.length) return;
+
+    for (const part of parts) {
+      const data = part?.inlineData?.data;
+      if (!data) continue;
       try {
-        const rawGemini = Buffer.from(base64Audio, 'base64');
-        const rawExotel = EXOTEL_SAMPLE_RATE === GEMINI_OUTPUT_SAMPLE_RATE
+        let rawGemini = Buffer.from(data, 'base64');
+        if (rawGemini.length < 2) continue;
+        if (rawGemini.length % 2 !== 0) rawGemini = rawGemini.subarray(0, rawGemini.length - 1);
+
+        const rawExotel = GEMINI_TO_EXOTEL_RATIO === 1
           ? rawGemini
           : resamplePcm16(rawGemini, GEMINI_TO_EXOTEL_RATIO);
 
         this.outputBuffer = Buffer.concat([this.outputBuffer, rawExotel]);
-        this._flushOutputBuffer();
       } catch (e) {
-        this.err('Error processing Gemini audio output:', e);
+        this._mediaError('output', e);
       }
     }
 
-    // Barge-in
-    if (message.serverContent?.interrupted) {
-      this.log('Barge-in detected — sending clear to Exotel');
-      this.outputBuffer = Buffer.alloc(0);
-      this._sendExotelFrame({ event: 'clear', streamSid: this.streamSid });
+    this._flushOutputBuffer();
+  }
+
+  /** Clear queued Exotel playback once per interrupted turn. */
+  _handleInterrupt() {
+    this.outputBuffer = Buffer.alloc(0);
+    if (this.interruptSent) return;
+    this.interruptSent = true;
+    this.log('Barge-in — clearing Exotel playback buffer');
+    this._sendExotelFrame({ event: 'clear', streamSid: this.streamSid });
+  }
+
+  /** @param {{ id: string, name: string, args?: object }} fc */
+  async _handleToolCall(fc) {
+    try {
+      if (fc.name === 'bookAppointment') {
+        await this._handleBookAppointment(fc);
+      } else if (fc.name === 'searchKnowledgeBase') {
+        await this._handleSearchKnowledge(fc);
+      } else {
+        this.log(`Unknown tool call: ${fc.name}`);
+        this._sendToolResponse(fc, { result: 'OK' });
+      }
+    } catch (e) {
+      this.err(`Tool "${fc?.name}" failed:`, e);
+      this._sendToolResponse(fc, { result: 'This action could not be completed right now.' });
     }
   }
 
-  /** @param {{ id: string, name: string, args: object }} fc */
-  async _handleToolCall(fc) {
-    if (fc.name === 'bookAppointment') {
-      const args = fc.args;
-      let result;
-      try {
-        const doneDb = timer('db-persist-appointment');
-        const entry = await persistAppointment(this.callSid, args);
-        doneDb();
-        this.bookingIds.push(entry.id);
-        this.outcome = 'booked';
-        this.intent = args.reason || 'Appointment booking';
-        this.caller = args.customerName || this.caller;
-        result = { result: `Appointment booked successfully. ID: ${entry.id}` };
-      } catch (e) {
-        this.err('Error persisting appointment:', e);
-        result = { result: 'Appointment booking recorded (storage error, please confirm manually).' };
+  async _handleBookAppointment(fc) {
+    const args = fc.args ?? {};
+    if (!args.customerName || !args.date || !args.time) {
+      this._sendToolResponse(fc, {
+        result: 'Missing booking details. Ask the caller for their name, preferred date and time.',
+      });
+      return;
+    }
+
+    const key = `${args.customerName}|${args.date}|${args.time}`.toLowerCase();
+    let result;
+
+    try {
+      // Idempotency: duplicate/concurrent calls for the same slot share one insert.
+      let booking = this.bookingPromises.get(key);
+      if (!booking) {
+        booking = (async () => {
+          const callId = await this.ensureCallRecord();
+          const doneDb = timer('db-persist-appointment');
+          const entry = await persistAppointment(this.callSid, args, callId);
+          doneDb();
+          return entry;
+        })();
+        this.bookingPromises.set(key, booking);
       }
 
-      // ✅ PERFORMANCE: Send tool response FIRST — Maya can continue speaking immediately.
-      this.geminiSession.sendToolResponse({
-        functionResponses: { id: fc.id, name: fc.name, response: result },
-      });
+      const entry = await booking;
+      if (!this.bookingIds.includes(entry.id)) this.bookingIds.push(entry.id);
+      this.outcome = 'booked';
+      this.intent = args.reason || 'Appointment booking';
+      this.caller = args.customerName || this.caller;
+      result = { result: `Appointment booked successfully. ID: ${entry.id}` };
+    } catch (e) {
+      this.err('Error persisting appointment:', e);
+      this.bookingPromises.delete(key); // allow a clean retry
+      result = { result: 'Appointment booking recorded (storage error, please confirm manually).' };
+    }
 
-      // Fire-and-forget CRM sync — must not block the call path.
-      if (getCrmProvider() !== 'none') {
-        syncToCrm({
+    // Respond to Gemini FIRST so Maya can keep talking immediately.
+    this._sendToolResponse(fc, result);
+
+    // CRM sync + audit in the background — never blocks audio.
+    if (getCrmProvider() !== 'none' && result.result.includes('successfully')) {
+      runBackground('crm-book', async () => {
+        const sync = await syncToCrm({
           contact: { name: args.customerName, phone: this.phone, source: 'phone' },
           call: { callSid: this.callSid, intent: this.intent, outcome: 'booked' },
           appointment: { date: args.date, time: args.time, reason: args.reason, status: 'confirmed' },
           company: this.companyProfile,
-        })
-          .then((sync) => logCrmSyncEvent({
-            callSid: this.callSid,
-            provider: sync.provider,
-            status: sync.ok ? 'success' : 'failed',
-            error: sync.error,
-          }))
-          .catch((e) => this.err('CRM sync error:', e));
-      }
-    } else if (fc.name === 'searchKnowledgeBase') {
-      const args = fc.args;
-      let result = [];
-      try {
-        this.knowledgeQueries.push(args.query);
-        if (!this.intent) this.intent = args.query;
-
-        const doneEmbed = timer('gemini-embed-query');
-        const response = await this.ai.models.embedContent({
-          model: 'gemini-embedding-2',
-          contents: args.query,
         });
-        doneEmbed();
-
-        const queryVector = response.embeddings?.[0]?.values;
-        if (queryVector) {
-          const doneSearch = timer('pgvector-search');
-          result = await searchKnowledgeEmbeddings(`[${queryVector.join(',')}]`, 3);
-          doneSearch();
-        }
-      } catch (e) {
-        this.err('Error searching knowledge base:', e);
-      }
-
-      this.geminiSession.sendToolResponse({
-        functionResponses: { id: fc.id, name: fc.name, response: { result } },
-      });
-    } else {
-      this.log(`Unknown tool call: ${fc.name}`);
-      this.geminiSession.sendToolResponse({
-        functionResponses: { id: fc.id, name: fc.name, response: { result: 'OK' } },
+        await logCrmSyncEvent({
+          callSid: this.callSid,
+          provider: sync.provider,
+          status: sync.ok ? 'success' : 'failed',
+          error: sync.error,
+        });
       });
     }
+  }
+
+  async _handleSearchKnowledge(fc) {
+    const query = (fc.args?.query ?? '').trim();
+    let result = [];
+    if (!query) {
+      this._sendToolResponse(fc, { result });
+      return;
+    }
+
+    try {
+      this.knowledgeQueries.push(query);
+      if (!this.intent) this.intent = query;
+
+      const doneEmbed = timer('gemini-embed-query');
+      const response = await withTimeout(
+        this.ai.models.embedContent({ model: EMBEDDING_MODEL, contents: query }),
+        EMBED_TIMEOUT_MS,
+        'embedContent',
+      );
+      doneEmbed();
+
+      const queryVector = response.embeddings?.[0]?.values;
+      if (queryVector?.length) {
+        const doneSearch = timer('pgvector-search');
+        result = await searchKnowledgeEmbeddings(`[${queryVector.join(',')}]`, 3);
+        doneSearch();
+      }
+    } catch (e) {
+      this.err('Error searching knowledge base:', e);
+    }
+
+    this._sendToolResponse(fc, { result });
   }
 
   /** Flush accumulated Gemini output in valid Exotel chunk sizes (multiples of 320 bytes). */
@@ -472,6 +718,8 @@ class CallSession {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.geminiOpen = false;
+    this.pendingInput = Buffer.alloc(0);
     this.log('Closing call session');
 
     this._flushOutputBuffer(true);
@@ -489,28 +737,29 @@ class CallSession {
       const doneDb = timer('db-upsert-call-record');
       await upsertCallRecord(record);
       doneDb();
-      this.log(`📞 Call record saved (${record.outcome}, ${record.transcript.length} turns)`);
+      this.log(`Call record saved (${record.outcome}, ${record.transcript.length} turns)`);
 
       if (getCrmProvider() !== 'none') {
-        syncToCrm({
-          contact: { name: this.caller, phone: this.phone, source: 'phone' },
-          call: {
-            callSid: this.callSid,
-            intent: this.intent,
-            outcome: record.outcome,
-            summary: record.summary,
-            durationSec: record.durationSec,
-            startedAt: record.startedAt,
-          },
-          company: this.companyProfile,
-        })
-          .then((sync) => logCrmSyncEvent({
+        runBackground('crm-close', async () => {
+          const sync = await syncToCrm({
+            contact: { name: this.caller, phone: this.phone, source: 'phone' },
+            call: {
+              callSid: this.callSid,
+              intent: this.intent,
+              outcome: record.outcome,
+              summary: record.summary,
+              durationSec: record.durationSec,
+              startedAt: record.startedAt,
+            },
+            company: this.companyProfile,
+          });
+          await logCrmSyncEvent({
             callSid: this.callSid,
             provider: sync.provider,
             status: sync.ok ? 'success' : 'failed',
             error: sync.error,
-          }))
-          .catch((e) => this.err('CRM close sync error:', e));
+          });
+        });
       }
     } catch (e) {
       this.err('Error persisting call record:', e);
@@ -569,6 +818,12 @@ async function main() {
     if (req.method === 'GET' && url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, service: 'keralai-bridge' }));
+      return;
+    }
+
+    if (req.method === 'GET' && url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('KeralaI bridge is running');
       return;
     }
 
@@ -696,27 +951,38 @@ async function main() {
 
           if (session) { console.warn('[bridge] Duplicate start event — ignoring'); break; }
 
-          // Refresh company profile from cache (cheap)
-          let profile;
-          try { profile = await getCompanyProfile(); }
-          catch (e) { profile = companyProfile; } // fallback to startup value
+          // Create the session synchronously (before any await) so concurrent
+          // 'start'/'media'/'stop' events always observe it.
+          const created = new CallSession(callSid, streamSid, ws, ai, companyProfile);
+          session = created;
+          created.caller = startMeta.from ?? startMeta.caller ?? startMeta.custom_parameters?.caller ?? 'Unknown caller';
+          created.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
 
-          session = new CallSession(callSid, streamSid, ws, ai, profile);
-          session.caller = startMeta.from ?? startMeta.caller ?? startMeta.custom_parameters?.caller ?? 'Unknown caller';
-          session.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
+          // Best-effort profile refresh (TTL-cached; falls back to startup value).
+          try { created.companyProfile = await getCompanyProfile(); }
+          catch { /* keep startup profile */ }
+
+          // Create the DB calls row in the background so bookings can reference
+          // it even though the call is still in progress.
+          void created.ensureCallRecord();
+
+          // A 'stop' may have arrived while we awaited — don't connect Gemini.
+          if (created.closed) break;
 
           try {
-            await session.openGeminiSession();
+            await created.openGeminiSession();
           } catch (e) {
             console.error(`[bridge][${callSid}] Failed to open Gemini session:`, e);
-            session = null;
-            ws.close(1011, 'Gemini session failed to open');
+            if (session === created) session = null;
+            if (ws.readyState === 1) ws.close(1011, 'Gemini session failed to open');
           }
           break;
         }
 
         case 'media': {
-          if (!session) { console.warn('[bridge] Media before start — ignoring'); break; }
+          // Media before 'start' (or after 'stop') is ignored quietly — never
+          // log per packet.
+          if (!session) break;
           const payload = frame.media?.payload;
           if (payload) session.handleExotelMedia(payload);
           break;
@@ -776,7 +1042,12 @@ async function main() {
       process.exit(1);
     }, 10_000);
 
+    // Stop accepting connections and release live WebSocket clients.
+    for (const client of wss.clients) { try { client.close(1001, 'Server shutting down'); } catch { /* ignore */ } }
+    for (const client of browserWss.clients) { try { client.close(1001, 'Server shutting down'); } catch { /* ignore */ } }
+
     server.close(async () => {
+      try { await drainBackground(3000); } catch { /* ignore */ }
       try { await closePool(); } catch (e) { console.error('[bridge] Error closing pool:', e.message); }
       clearTimeout(forceExit);
       console.log('[bridge] Shutdown complete.');
@@ -786,6 +1057,11 @@ async function main() {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // Never let a stray rejection from background work take the process down.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[bridge] Unhandled promise rejection:', reason?.message ?? reason);
+  });
 }
 
 main().catch((err) => {

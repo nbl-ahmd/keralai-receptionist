@@ -22,11 +22,17 @@ function getPool() {
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL is not set — the phone bridge needs Neon Postgres.');
   }
+  const queryTimeout = Number(process.env.PG_QUERY_TIMEOUT_MS ?? 15_000);
   pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     max: Number(process.env.PG_POOL_MAX ?? 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    // Cap how long any single query can tie up a pooled connection so a slow
+    // query can never exhaust the pool or hang a tool call indefinitely.
+    query_timeout: queryTimeout,
+    statement_timeout: queryTimeout,
+    application_name: 'keralai-bridge',
     ssl: process.env.DATABASE_URL.includes('sslmode=require')
       ? { rejectUnauthorized: false }
       : undefined,
@@ -200,12 +206,24 @@ export async function upsertCallRecord(call) {
 
 /**
  * Books an appointment for a phone call.
+ *
+ * `callId` is optional: when the caller already knows the `calls.id` (created
+ * at call start) it skips a lookup. Otherwise the id is resolved by call_sid.
+ *
  * @param {string} callSid
  * @param {{ customerName: string, date: string, time: string, reason?: string }} args
+ * @param {string|null} [callId]
  */
-export async function persistAppointment(callSid, args) {
-  const callRows = await dbQuery(`select id from calls where call_sid = $1`, [callSid]);
-  const callId = callRows[0]?.id ?? null;
+export async function persistAppointment(callSid, args, callId = null) {
+  if (!args?.customerName || !args?.date || !args?.time) {
+    throw new Error('persistAppointment: customerName, date and time are required');
+  }
+
+  let resolvedCallId = callId;
+  if (!resolvedCallId) {
+    const callRows = await dbQuery(`select id from calls where call_sid = $1`, [callSid]);
+    resolvedCallId = callRows[0]?.id ?? null;
+  }
 
   const contactId = await upsertContact({ name: args.customerName, source: 'phone' });
 
@@ -213,7 +231,7 @@ export async function persistAppointment(callSid, args) {
     `insert into appointments (call_id, contact_id, customer_name, date, time, reason, status)
      values ($1, $2, $3, $4::date, $5, $6, 'confirmed')
      returning id, customer_name, to_char(date, 'YYYY-MM-DD') as date, time, reason, status, created_at`,
-    [callId, contactId, args.customerName, args.date, args.time, args.reason ?? null],
+    [resolvedCallId, contactId, args.customerName, args.date, args.time, args.reason ?? null],
   );
 
   const row = rows[0];

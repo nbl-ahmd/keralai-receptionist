@@ -56,11 +56,26 @@ export function buildTools() {
 // System instruction builder
 // ---------------------------------------------------------------------------
 
-const DEFAULT_VOICE_SETTINGS = {
+export const DEFAULT_VOICE_SETTINGS = {
   voiceName: 'Aoede',
   pitch: 'Normal',
   speed: 'Normal',
 };
+
+/**
+ * Resolves the phone-call voice settings from the environment, falling back to
+ * the canonical defaults above. Single source of truth for phone voice config.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ voiceName: string, pitch: string, speed: string }}
+ */
+export function resolveVoiceSettings(env = process.env) {
+  return {
+    voiceName: env.MAYA_VOICE || DEFAULT_VOICE_SETTINGS.voiceName,
+    pitch: env.MAYA_PITCH || DEFAULT_VOICE_SETTINGS.pitch,
+    speed: env.MAYA_SPEED || DEFAULT_VOICE_SETTINGS.speed,
+  };
+}
 
 /**
  * Builds the full system instruction string for Maya.

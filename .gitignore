@@ -19,6 +19,9 @@ out/
 # Environment files (contain secrets)
 .env.local
 .env.*.local
+bridge/.env
+bridge/.env.local
+bridge/.env.*.local
 
 # Editor directories and files
 .vscode/*

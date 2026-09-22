@@ -18,7 +18,7 @@ export async function GET() {
     checks: {
       database: database.ok ? 'ok' : 'error',
       geminiKey: process.env.GEMINI_API_KEY ? 'configured' : 'missing',
-      browserKey: process.env.NEXT_PUBLIC_GOOGLE_API_KEY ? 'configured' : 'missing',
+      browserRelay: process.env.GEMINI_API_KEY ? 'configured' : 'missing',
       crm: process.env.CRM_PROVIDER ?? 'none',
     },
     latencyMs: Date.now() - startedAt,

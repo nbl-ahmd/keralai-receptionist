@@ -1,0 +1,20 @@
+{
+  "name": "keralai-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Standalone Exotel ↔ Gemini Live WebSocket bridge for KeralaI Receptionist",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@google/genai": "^1.38.0",
+    "dotenv": "^16.4.7",
+    "pg": "^8.23.0",
+    "ws": "^8.18.0"
+  }
+}

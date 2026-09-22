@@ -53,7 +53,6 @@ import {
   KnowledgeItem,
 } from "@/types";
 import LiveReceptionist from "@/components/LiveReceptionist";
-import { GoogleGenAI } from "@google/genai";
 
 type TabKey = "overview" | "calls" | "knowledge" | "voice";
 
@@ -421,47 +420,21 @@ export default function HomePage() {
     });
 
   const analyzeFileWithAI = async (file: File) => {
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_API_KEY || process.env.API_KEY;
-    if (!apiKey) throw new Error("Missing NEXT_PUBLIC_GOOGLE_API_KEY in environment.");
-
-    const ai = new GoogleGenAI({ apiKey });
-    const modelName =
-      process.env.NEXT_PUBLIC_GENAI_MODEL || process.env.GENAI_MODEL || "gemini-flash-lite-latest";
     const base64Data = await fileToBase64(file);
-
-    const prompt = `You are an expert business data extraction AI.
-Analyze the provided file (any type: PDF, doc, image, csv, txt). Return STRICT JSON only:
-{
-  "knowledge_content": "Detailed, structured plain-text summary with bullet lists for services/products/pricing/hours/policies/contacts.",
-  "company_profile": {
-    "name": "Business name or null",
-    "industry": "Industry or null",
-    "description": "Short description or null",
-    "address": "Full address or null",
-    "contactPhone": "Phone number or null",
-    "contactEmail": "Email or null"
-  }
-}`;
-
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: {
-        parts: [
-          { inlineData: { mimeType: file.type || "application/octet-stream", data: base64Data } },
-          { text: prompt },
-        ],
-      },
+    const response = await fetch("/api/knowledge/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mimeType: file.type || "application/octet-stream",
+        data: base64Data,
+      }),
     });
-
-    const jsonStr = (response.text || "{}").replace(/```json|```/g, "").trim();
-    try {
-      return JSON.parse(jsonStr) as {
-        knowledge_content?: string;
-        company_profile?: Partial<CompanyProfile>;
-      };
-    } catch {
-      throw new Error("Could not parse AI response. Please try a clearer file.");
-    }
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || "Could not extract file content.");
+    return data as {
+      knowledge_content?: string;
+      company_profile?: Partial<CompanyProfile>;
+    };
   };
 
   const handleFileSelect = async (file?: File | null) => {

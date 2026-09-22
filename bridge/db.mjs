@@ -1,11 +1,13 @@
 /**
- * server/db.mjs
+ * bridge/db.mjs
  *
- * Postgres access for the Exotel phone bridge.
+ * Postgres access for the Exotel phone bridge (standalone Node service).
  *
- * server.mjs is plain ESM and cannot import the TypeScript data layer, so this
- * module mirrors the queries the bridge needs. Keep the SQL in sync with
- * lib/store.ts when schemas change.
+ * Uses the `pg` Pool — correct driver for a long-lived process.
+ * Must be connected to Neon's POOLED (PgBouncer) endpoint in production
+ * so the pool's connections go through PgBouncer and respect Neon's limits.
+ *
+ * Keep the SQL in sync with lib/store.ts when schemas change.
  */
 
 import { createRequire } from 'node:module';
@@ -22,7 +24,9 @@ function getPool() {
   }
   pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    max: Number(process.env.PG_POOL_MAX ?? 5),
+    max: Number(process.env.PG_POOL_MAX ?? 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
     ssl: process.env.DATABASE_URL.includes('sslmode=require')
       ? { rejectUnauthorized: false }
       : undefined,
@@ -43,6 +47,18 @@ export async function closePool() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Company profile
+// ---------------------------------------------------------------------------
+
+/** Fetches only the updated_at timestamp — cheap version check for the profile cache. */
+export async function getProfileVersion() {
+  const rows = await dbQuery(
+    `select updated_at from company_profile where id = 1`,
+  );
+  return rows[0]?.updated_at ?? null;
+}
+
 export async function loadCompanyProfile() {
   const rows = await dbQuery(
     `select name, industry, description, address, contact_email, contact_phone
@@ -61,6 +77,10 @@ export async function loadCompanyProfile() {
     contactPhone: row.contact_phone,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Contacts
+// ---------------------------------------------------------------------------
 
 /**
  * Finds or creates the contact that a call belongs to.
@@ -93,7 +113,11 @@ export async function upsertContact(input) {
   return inserted[0].id;
 }
 
-/** Inserts or updates the call row, returning its uuid. */
+// ---------------------------------------------------------------------------
+// Calls
+// ---------------------------------------------------------------------------
+
+/** Inserts or updates the call row, replacing its transcript and knowledge-query rows. */
 export async function upsertCallRecord(call) {
   const contactId = await upsertContact({
     name: call.caller && call.caller !== 'Unknown caller' ? call.caller : null,
@@ -170,6 +194,10 @@ export async function upsertCallRecord(call) {
   return callId;
 }
 
+// ---------------------------------------------------------------------------
+// Appointments
+// ---------------------------------------------------------------------------
+
 /**
  * Books an appointment for a phone call.
  * @param {string} callSid
@@ -200,6 +228,10 @@ export async function persistAppointment(callSid, args) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Knowledge search
+// ---------------------------------------------------------------------------
+
 /**
  * Vector search over the knowledge base using pgvector.
  * @param {string} queryVectorText  pgvector literal, e.g. "[0.1,0.2,...]"
@@ -216,6 +248,10 @@ export async function searchKnowledgeEmbeddings(queryVectorText, limit = 3) {
   return rows.map((row) => ({ text: row.chunk_text, score: Number(row.score) }));
 }
 
+// ---------------------------------------------------------------------------
+// CRM audit
+// ---------------------------------------------------------------------------
+
 /** Writes a CRM sync attempt to the audit table. */
 export async function logCrmSyncEvent({ callSid, provider, status, error }) {
   try {
@@ -227,7 +263,7 @@ export async function logCrmSyncEvent({ callSid, provider, status, error }) {
        values ($1, $2, 'push', $3, $4::jsonb, $5)`,
       [contactId, provider, status, JSON.stringify({ callSid }), error ?? null],
     );
-  } catch (error) {
-    console.error('[bridge][crm] Failed to record sync event:', error.message);
+  } catch (err) {
+    console.error('[bridge][crm] Failed to record sync event:', err.message);
   }
 }

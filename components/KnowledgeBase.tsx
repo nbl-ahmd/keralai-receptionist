@@ -1,6 +1,5 @@
 import React, { useState, useRef } from 'react';
 import { KnowledgeItem, CompanyProfile } from '../types';
-import { GoogleGenAI } from '@google/genai';
 import { 
     Plus, FileText, Link as LinkIcon, Trash2, Upload, Building2, Save, 
     File, Image as ImageIcon, Loader2, Sparkles, Check
@@ -66,52 +65,14 @@ const KnowledgeBase: React.FC<KnowledgeBaseProps> = ({
     setNewContent('Initializing AI analysis...');
     
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GOOGLE_API_KEY || process.env.API_KEY });
-        const model = ai.models; 
-
-        const modelName = process.env.NEXT_PUBLIC_GENAI_MODEL || process.env.GENAI_MODEL || 'models/gemini-2.0-flash-lite-001';
-        
         const base64Data = await fileToBase64(file);
-        
-        const prompt = `
-          You are an expert business data extraction AI.
-          Analyze this document/image. Return a STRICT JSON object (no markdown formatting, just raw JSON) with the following structure:
-          {
-            "knowledge_content": "A detailed, structured plain-text summary of all services, products, menu items, prices, business hours, and policies found. Use clear lists.",
-            "company_profile": {
-               "name": "Extract Business Name if present, else null",
-               "industry": "Inferred Industry (e.g., Restaurant, Retail) if present, else null",
-               "description": "Short description of the business if present, else null",
-               "address": "Full Address if present, else null",
-               "contactPhone": "Phone Number if present, else null",
-               "contactEmail": "Email Address if present, else null"
-            }
-          }
-        `;
-
-        const response = await model.generateContent({
-            model: modelName,
-            contents: {
-                parts: [
-                    { inlineData: { mimeType: file.type, data: base64Data } },
-                    { text: prompt }
-                ]
-            }
+        const response = await fetch('/api/knowledge/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mimeType: file.type || 'application/octet-stream', data: base64Data }),
         });
-
-        const text = response.text || "{}";
-        // Clean up markdown code blocks if present
-        const jsonStr = text.replace(/```json|```/g, '').trim();
-        
-        let data;
-        try {
-            data = JSON.parse(jsonStr);
-        } catch (parseError) {
-            console.warn("Failed to parse JSON, falling back to raw text", parseError);
-            setNewContent(text); // Fallback
-            setIsAnalyzing(false);
-            return;
-        }
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || 'Could not extract file content.');
 
                 if (data.knowledge_content) {
                         setNewContent(data.knowledge_content);

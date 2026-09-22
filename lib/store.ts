@@ -86,7 +86,7 @@ function toIso(value: unknown): string {
 }
 
 function getApiKey(): string | null {
-  return process.env.GEMINI_API_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_API_KEY ?? null;
+  return process.env.GEMINI_API_KEY ?? null;
 }
 
 export function chunkText(text: string, size = CHUNK_SIZE): string[] {

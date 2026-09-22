@@ -1,0 +1,71 @@
+# render.yaml
+#
+# Render deployment configuration for the KeralaI Receptionist bridge.
+#
+# The bridge is a standalone Node.js Web Service — no Next.js, no React.
+# It connects to Neon Postgres via the POOLED (PgBouncer) connection string
+# and relays audio between Exotel and Gemini Live over WebSockets.
+#
+# To deploy:
+#   1. Push this repo to GitHub / GitLab.
+#   2. In the Render dashboard: New → Blueprint → point to this repo.
+#      Render will pick up this file automatically.
+#   3. Set the secret env vars (DATABASE_URL, GEMINI_API_KEY) in the Render
+#      dashboard under the service's "Environment" tab.
+#
+# After deploying:
+#   - Your bridge URL will be: https://<service-name>.onrender.com
+#   - Update your Exotel Voicebot applet's WebSocket URL to:
+#       wss://<service-name>.onrender.com/ws/exotel
+
+services:
+  - type: web
+    name: keralai-bridge
+    runtime: node
+    rootDir: bridge
+    buildCommand: npm install
+    startCommand: node server.mjs
+    healthCheckPath: /health
+
+    # Render injects PORT automatically — do not set it here.
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # ── Required secrets (set in Render dashboard, NOT here) ──────────────
+      - key: DATABASE_URL
+        sync: false   # Must be the Neon POOLED (PgBouncer) connection string
+      - key: GEMINI_API_KEY
+        sync: false   # Server-side key — never NEXT_PUBLIC_
+
+      # ── Optional: phone bridge behaviour ──────────────────────────────────
+      # - key: EXOTEL_SAMPLE_RATE
+      #   value: "8000"        # 8000 (default) or 16000
+      # - key: MAYA_VOICE
+      #   value: Aoede         # Aoede | Kore | Zephyr | Puck | Fenrir | Charon
+      # - key: MAYA_PITCH
+      #   value: Normal        # Low | Normal | High
+      # - key: MAYA_SPEED
+      #   value: Normal        # Slow | Normal | Fast
+      # - key: PG_POOL_MAX
+      #   value: "10"
+
+      # ── Optional: CRM webhook ─────────────────────────────────────────────
+      # - key: CRM_PROVIDER
+      #   value: webhook       # none (default) | webhook
+      # - key: CRM_WEBHOOK_URL
+      #   sync: false
+      # - key: CRM_WEBHOOK_SECRET
+      #   sync: false
+
+      # ── Optional: browser voice relay ────────────────────────────────────
+      # - key: PUBLIC_APP_ORIGIN
+      #   value: https://your-vercel-app.vercel.app
+      # - key: BROWSER_MAX_SESSIONS_PER_IP
+      #   value: "3"
+      # - key: BROWSER_SESSION_TTL_MS
+      #   value: "900000"      # 15 minutes
+
+      # ── Optional: latency debugging ───────────────────────────────────────
+      # - key: DEBUG_TIMING
+      #   value: "1"           # Enables per-operation latency logs

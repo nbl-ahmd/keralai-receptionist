@@ -1,8 +1,12 @@
 /**
- * server/crm.mjs
+ * bridge/crm.mjs
  *
  * CRM sync for the phone bridge. Mirrors lib/crm/index.ts so phone calls are
  * pushed to the CRM exactly like browser calls are.
+ *
+ * Sync is intentionally best-effort: failures are logged but never thrown into
+ * a live call path. Call syncToCrm() in a fire-and-forget chain after
+ * sendToolResponse() so Maya is never blocked waiting for an external webhook.
  */
 
 const TIMEOUT_MS = 8000;
@@ -17,6 +21,7 @@ export function getCrmProvider() {
  * Never throws — CRM outages must not affect a live call.
  *
  * @param {{ contact: object, call?: object, appointment?: object, company?: object }} payload
+ * @returns {Promise<{ ok: boolean, provider: string, externalId?: string, error?: string }>}
  */
 export async function syncToCrm(payload) {
   const provider = getCrmProvider();

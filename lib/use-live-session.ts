@@ -1,21 +1,18 @@
 "use client";
 
 /**
- * useLiveSession
+ * Browser client for the server-owned Gemini Live relay.
  *
- * Shared Gemini Live session logic for Maya. Extracted so the dashboard's voice
- * console and the landing-page demo share one implementation (audio in/out,
- * transcripts, tool calls, barge-in, and call reporting).
- *
- * The session persists call records to /api/calls unless `report` is disabled,
- * which keeps demo traffic out of real analytics.
+ * No Gemini API key is present in this module. Audio is sent to
+ * `/ws/browser`; server.mjs owns Gemini, RAG, bookings, CRM, and persistence.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GoogleGenAI, LiveServerMessage, Modality, Session } from "@google/genai";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Appointment, CompanyProfile, TranscriptTurn } from "../types";
 import { createPcmBlob, decodeAudio, decodeAudioData } from "../utils/audioUtils";
-import { Appointment, CallRecord, CompanyProfile, TranscriptTurn } from "../types";
-import { buildGreeting, buildSystemInstruction, buildTools } from "./maya-config";
+
+const INPUT_SAMPLE_RATE = 16000;
+const OUTPUT_SAMPLE_RATE = 24000;
 
 declare global {
   interface Window {
@@ -23,19 +20,12 @@ declare global {
   }
 }
 
-const LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025";
-const INPUT_SAMPLE_RATE = 16000;
-const OUTPUT_SAMPLE_RATE = 24000;
-
 export interface LiveSessionOptions {
   companyProfile: CompanyProfile;
-  /** Called when Maya books an appointment via tool call. */
-  onBookAppointment?: (apt: Appointment) => void;
-  /** Called for every transcript turn so UIs can render a live transcript. */
+  onBookAppointment?: (appointment: Appointment) => void;
   onTranscript?: (turns: TranscriptTurn[]) => void;
-  /** Persist the call record to /api/calls on hangup. Disable for demos. */
+  /** Persist this session as a real call. Demo sessions set this to false. */
   report?: boolean;
-  /** Override the opening line. Defaults to the profile-based greeting. */
   greeting?: string;
   voiceName?: string;
   pitch?: string;
@@ -55,6 +45,20 @@ export interface LiveSessionState {
   toggleMute: () => void;
 }
 
+interface RelayFrame {
+  type: string;
+  data?: string;
+  role?: TranscriptTurn["role"];
+  text?: string;
+  message?: string;
+  appointment?: Appointment;
+}
+
+function websocketUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/ws/browser`;
+}
+
 export function useLiveSession({
   companyProfile,
   onBookAppointment,
@@ -70,392 +74,225 @@ export function useLiveSession({
   const [volume, setVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
+  const transcriptRef = useRef<TranscriptTurn[]>([]);
 
-  const inputAudioContextRef = useRef<AudioContext | null>(null);
-  const outputAudioContextRef = useRef<AudioContext | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const inputContextRef = useRef<AudioContext | null>(null);
+  const outputContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const sessionRef = useRef<Session | null>(null);
-  const nextStartTimeRef = useRef<number>(0);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const nextStartTimeRef = useRef(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
   const mutedRef = useRef(false);
   const connectedRef = useRef(false);
 
-  // Per-call reporting state
-  const callIdRef = useRef<string>(`call-${Date.now()}`);
-  const startedAtRef = useRef<string>(new Date().toISOString());
-  const transcriptRef = useRef<TranscriptTurn[]>([]);
-  const bookingIdsRef = useRef<string[]>([]);
-  const knowledgeQueriesRef = useRef<string[]>([]);
-  const outcomeRef = useRef<CallRecord["outcome"]>("answered");
-  const intentRef = useRef<string | undefined>(undefined);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationRef = useRef<number | null>(null);
 
-  // Keep latest callbacks/config without re-creating connect()
-  const profileRef = useRef(companyProfile);
-  const bookRef = useRef(onBookAppointment);
-  const transcriptCbRef = useRef(onTranscript);
-  const reportRef = useRef(report);
-  const greetingRef = useRef(greeting);
-  const configRef = useRef({ voiceName, pitch, speed });
+  const bookingRef = useRef(onBookAppointment);
+  const transcriptCallbackRef = useRef(onTranscript);
+  const configRef = useRef({ report, greeting, voiceName, pitch, speed });
 
   useEffect(() => {
-    profileRef.current = companyProfile;
-    bookRef.current = onBookAppointment;
-    transcriptCbRef.current = onTranscript;
-    reportRef.current = report;
-    greetingRef.current = greeting;
-    configRef.current = { voiceName, pitch, speed };
+    bookingRef.current = onBookAppointment;
+    transcriptCallbackRef.current = onTranscript;
+    configRef.current = { report, greeting, voiceName, pitch, speed };
   }, [companyProfile, onBookAppointment, onTranscript, report, greeting, voiceName, pitch, speed]);
-
-  const pushTranscript = useCallback((role: TranscriptTurn["role"], text: string) => {
-    if (!text || !text.trim()) return;
-    const clean = text.trim();
-    const turns = transcriptRef.current;
-    const last = turns[turns.length - 1];
-    if (last && last.role === role) {
-      last.text = `${last.text} ${clean}`.trim();
-    } else {
-      turns.push({ role, text: clean, at: new Date().toISOString() });
-    }
-    const snapshot = turns.map((turn) => ({ ...turn }));
-    setTranscript(snapshot);
-    transcriptCbRef.current?.(snapshot);
-  }, []);
-
-  const reportCall = useCallback(async () => {
-    if (!reportRef.current) return;
-    const endedAt = new Date().toISOString();
-    const durationSec = Math.max(
-      0,
-      Math.round((new Date(endedAt).getTime() - new Date(startedAtRef.current).getTime()) / 1000),
-    );
-    const turns = transcriptRef.current;
-    const record: CallRecord = {
-      id: callIdRef.current,
-      callSid: callIdRef.current,
-      caller: "Browser visitor",
-      channel: "browser",
-      startedAt: startedAtRef.current,
-      endedAt,
-      durationSec,
-      outcome: outcomeRef.current,
-      intent: intentRef.current,
-      summary: turns.length
-        ? turns
-            .slice(0, 4)
-            .map((turn) => `${turn.role === "caller" ? "Caller" : "Maya"}: ${turn.text}`)
-            .join(" ")
-        : undefined,
-      sentiment: "neutral",
-      transcript: turns.map((turn) => ({ ...turn })),
-      bookingIds: [...bookingIdsRef.current],
-      knowledgeQueries: [...knowledgeQueriesRef.current],
-    };
-    try {
-      await fetch("/api/calls", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(record),
-      });
-    } catch (err) {
-      console.error("Failed to report call", err);
-    }
-  }, []);
 
   const stopPlayback = useCallback(() => {
     sourcesRef.current.forEach((source) => {
       try {
         source.stop();
       } catch {
-        /* already stopped */
+        // Already stopped.
       }
     });
     sourcesRef.current.clear();
     nextStartTimeRef.current = 0;
   }, []);
 
-  const disconnect = useCallback(async () => {
-    if (sessionRef.current) await reportCall();
-
-    if (sessionRef.current) {
-      try {
-        sessionRef.current.close();
-      } catch (err) {
-        console.error("Error closing session", err);
-      }
-      sessionRef.current = null;
+  const pushTranscript = useCallback((role: TranscriptTurn["role"], text: string) => {
+    if (!text?.trim()) return;
+    const turns = transcriptRef.current.map((turn) => ({ ...turn }));
+    const last = turns[turns.length - 1];
+    if (last?.role === role) {
+      turns[turns.length - 1] = { ...last, text: `${last.text} ${text.trim()}`.trim() };
+    } else {
+      turns.push({ role, text: text.trim(), at: new Date().toISOString() });
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    if (inputAudioContextRef.current) {
-      await inputAudioContextRef.current.close().catch(() => undefined);
-      inputAudioContextRef.current = null;
-    }
-    if (outputAudioContextRef.current) {
-      await outputAudioContextRef.current.close().catch(() => undefined);
-      outputAudioContextRef.current = null;
-    }
-    stopPlayback();
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-
-    connectedRef.current = false;
-    setIsConnected(false);
-    setVolume(0);
-  }, [reportCall, stopPlayback]);
+    transcriptRef.current = turns;
+    setTranscript(turns);
+    transcriptCallbackRef.current?.(turns);
+  }, []);
 
   const drawVisualizer = useCallback(() => {
-    if (!analyserRef.current || !canvasRef.current) return;
     const analyser = analyserRef.current;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const context = canvas?.getContext("2d");
+    if (!analyser || !canvas || !context) return;
 
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-
+    const data = new Uint8Array(analyser.frequencyBinCount);
     const draw = () => {
       if (!connectedRef.current) return;
-      animationFrameRef.current = requestAnimationFrame(draw);
-      analyser.getByteFrequencyData(dataArray);
-
-      let sum = 0;
-      for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
-      setVolume(sum / bufferLength);
-
-      ctx.fillStyle = "rgb(248, 250, 252)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      const barWidth = (canvas.width / bufferLength) * 2.5;
+      animationRef.current = requestAnimationFrame(draw);
+      analyser.getByteFrequencyData(data);
+      const average = data.reduce((sum, value) => sum + value, 0) / data.length;
+      setVolume(average);
+      context.fillStyle = "rgb(248, 250, 252)";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const barWidth = (canvas.width / data.length) * 2.5;
       let x = 0;
-      for (let i = 0; i < bufferLength; i++) {
-        const barHeight = dataArray[i] / 1.5;
-        const gradient = ctx.createLinearGradient(0, canvas.height, 0, 0);
+      data.forEach((value) => {
+        const height = value / 1.5;
+        const gradient = context.createLinearGradient(0, canvas.height, 0, 0);
         gradient.addColorStop(0, "#10b981");
         gradient.addColorStop(1, "#059669");
-        ctx.fillStyle = gradient;
-        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+        context.fillStyle = gradient;
+        context.fillRect(x, canvas.height - height, barWidth, height);
         x += barWidth + 1;
-      }
+      });
     };
     draw();
   }, []);
 
+  const disconnect = useCallback(async () => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type: "stop" }));
+      socketRef.current.close(1000, "Client ended session");
+    }
+    socketRef.current = null;
+    processorRef.current?.disconnect();
+    sourceRef.current?.disconnect();
+    processorRef.current = null;
+    sourceRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (inputContextRef.current) await inputContextRef.current.close().catch(() => undefined);
+    if (outputContextRef.current) await outputContextRef.current.close().catch(() => undefined);
+    inputContextRef.current = null;
+    outputContextRef.current = null;
+    stopPlayback();
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    connectedRef.current = false;
+    setIsConnected(false);
+    setVolume(0);
+  }, [stopPlayback]);
+
   const connect = useCallback(async () => {
     setError(null);
-
-    const apiKey =
-      process.env.NEXT_PUBLIC_GOOGLE_API_KEY ||
-      process.env.NEXT_PUBLIC_API_KEY ||
-      process.env.API_KEY;
-    if (!apiKey) {
-      setError("API key is missing. Add NEXT_PUBLIC_GOOGLE_API_KEY to your environment.");
-      return;
-    }
-
-    // Reset per-call state
-    callIdRef.current = `call-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    startedAtRef.current = new Date().toISOString();
     transcriptRef.current = [];
-    bookingIdsRef.current = [];
-    knowledgeQueriesRef.current = [];
-    outcomeRef.current = "answered";
-    intentRef.current = undefined;
     setTranscript([]);
+    connectedRef.current = false;
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
-
-      inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
+      const inputContext = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: INPUT_SAMPLE_RATE,
       });
-      outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
+      const outputContext = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: OUTPUT_SAMPLE_RATE,
       });
-
+      inputContextRef.current = inputContext;
+      outputContextRef.current = outputContext;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const analyser = outputAudioContextRef.current.createAnalyser();
+      const analyser = outputContext.createAnalyser();
       analyser.fftSize = 256;
       analyserRef.current = analyser;
 
-      const profile = profileRef.current;
-      const { voiceName: voice, pitch: p, speed: s } = configRef.current;
+      const socket = new WebSocket(websocketUrl());
+      socketRef.current = socket;
 
-      const sessionPromise = ai.live.connect({
-        model: LIVE_MODEL,
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-          systemInstruction: buildSystemInstruction(profile, { pitch: p, speed: s }),
-          tools: buildTools(),
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-        },
-        callbacks: {
-          onopen: () => {
-            connectedRef.current = true;
-            setIsConnected(true);
+      socket.onmessage = async (event) => {
+        const frame = JSON.parse(event.data) as RelayFrame;
+        if (frame.type === "connected") {
+          connectedRef.current = true;
+          setIsConnected(true);
+          drawVisualizer();
+          return;
+        }
+        if (frame.type === "transcript" && frame.role && frame.text) {
+          pushTranscript(frame.role, frame.text);
+          return;
+        }
+        if (frame.type === "booking" && frame.appointment) {
+          bookingRef.current?.(frame.appointment);
+          return;
+        }
+        if (frame.type === "error") {
+          setError(frame.message || "Voice relay error.");
+          return;
+        }
+        if (frame.type === "interrupted") {
+          stopPlayback();
+          return;
+        }
+        if (frame.type === "audio" && frame.data && outputContextRef.current) {
+          const context = outputContextRef.current;
+          nextStartTimeRef.current = Math.max(nextStartTimeRef.current, context.currentTime);
+          const audioBuffer = await decodeAudioData(
+            decodeAudio(frame.data),
+            context,
+            OUTPUT_SAMPLE_RATE,
+            1,
+          );
+          const source = context.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(analyserRef.current || context.destination);
+          if (analyserRef.current) analyserRef.current.connect(context.destination);
+          source.addEventListener("ended", () => sourcesRef.current.delete(source));
+          source.start(nextStartTimeRef.current);
+          nextStartTimeRef.current += audioBuffer.duration;
+          sourcesRef.current.add(source);
+        }
+      };
 
-            // Instant greeting
-            const openingLine = greetingRef.current || buildGreeting(profile);
-            sessionPromise.then((session) =>
-              session.sendClientContent({
-                turns: [
-                  {
-                    role: "user",
-                    parts: [{ text: `System command: Greet the caller with: "${openingLine}"` }],
-                  },
-                ],
-                turnComplete: true,
-              }),
-            );
+      socket.onerror = () => setError("Could not connect to the secure voice relay. Start the bridge server.");
+      socket.onclose = () => {
+        connectedRef.current = false;
+        setIsConnected(false);
+      };
 
-            const inputCtx = inputAudioContextRef.current;
-            if (!inputCtx || !streamRef.current) return;
-
-            const source = inputCtx.createMediaStreamSource(streamRef.current);
-            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
-            processor.onaudioprocess = (event) => {
-              if (mutedRef.current) return;
-              const inputData = event.inputBuffer.getChannelData(0);
-              sessionPromise.then((session) =>
-                session.sendRealtimeInput({ media: createPcmBlob(inputData) }),
-              );
-            };
-            source.connect(processor);
-            processor.connect(inputCtx.destination);
-          },
-
-          onmessage: async (message: LiveServerMessage) => {
-            const inputText = message.serverContent?.inputTranscription?.text;
-            if (inputText) pushTranscript("caller", inputText);
-            const outputText = message.serverContent?.outputTranscription?.text;
-            if (outputText) pushTranscript("maya", outputText);
-
-            if (message.toolCall) {
-              for (const fc of message.toolCall.functionCalls ?? []) {
-                if (fc.name === "bookAppointment") {
-                  const args = fc.args as {
-                    customerName: string;
-                    date: string;
-                    time: string;
-                    reason?: string;
-                  };
-                  const appointment: Appointment = {
-                    id: crypto.randomUUID(),
-                    customerName: args.customerName,
-                    date: args.date,
-                    time: args.time,
-                    reason: args.reason,
-                    status: "confirmed",
-                    createdAt: new Date().toISOString(),
-                  };
-                  bookRef.current?.(appointment);
-                  bookingIdsRef.current.push(appointment.id);
-                  outcomeRef.current = "booked";
-                  intentRef.current = args.reason || "Appointment booking";
-
-                  sessionPromise.then((session) =>
-                    session.sendToolResponse({
-                      functionResponses: {
-                        id: fc.id,
-                        name: fc.name,
-                        response: { result: "Appointment booked successfully." },
-                      },
-                    }),
-                  );
-                } else if (fc.name === "searchKnowledgeBase") {
-                  const args = fc.args as { query: string };
-                  knowledgeQueriesRef.current.push(args.query);
-                  if (!intentRef.current) intentRef.current = args.query;
-
-                  fetch("/api/knowledge/search", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: args.query }),
-                  })
-                    .then((res) => res.json())
-                    .then((data) => {
-                      sessionPromise.then((session) =>
-                        session.sendToolResponse({
-                          functionResponses: {
-                            id: fc.id,
-                            name: fc.name,
-                            response: { result: data.results ?? [] },
-                          },
-                        }),
-                      );
-                    })
-                    .catch(() => {
-                      sessionPromise.then((session) =>
-                        session.sendToolResponse({
-                          functionResponses: {
-                            id: fc.id,
-                            name: fc.name,
-                            response: { result: [] },
-                          },
-                        }),
-                      );
-                    });
-                }
-              }
-            }
-
-            const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            const outputCtx = outputAudioContextRef.current;
-            if (base64Audio && outputCtx) {
-              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-              const audioBuffer = await decodeAudioData(decodeAudio(base64Audio), outputCtx, OUTPUT_SAMPLE_RATE, 1);
-              const source = outputCtx.createBufferSource();
-              source.buffer = audioBuffer;
-
-              if (analyserRef.current) {
-                source.connect(analyserRef.current);
-                analyserRef.current.connect(outputCtx.destination);
-              } else {
-                source.connect(outputCtx.destination);
-              }
-              source.addEventListener("ended", () => sourcesRef.current.delete(source));
-              source.start(nextStartTimeRef.current);
-              nextStartTimeRef.current += audioBuffer.duration;
-              sourcesRef.current.add(source);
-            }
-
-            if (message.serverContent?.interrupted) stopPlayback();
-          },
-
-          onclose: () => {
-            connectedRef.current = false;
-            setIsConnected(false);
-          },
-
-          onerror: (err) => {
-            console.error("Gemini Live error:", err);
-            setError("Connection error. Please try again.");
-            void disconnect();
-          },
-        },
+      await new Promise<void>((resolve, reject) => {
+        socket.onopen = () => {
+          const config = configRef.current;
+          socket.send(JSON.stringify({
+            type: "start",
+            report: config.report,
+            greeting: config.greeting,
+            voiceName: config.voiceName,
+            pitch: config.pitch,
+            speed: config.speed,
+          }));
+          resolve();
+        };
+        socket.addEventListener("error", () => reject(new Error("Voice relay connection failed.")), { once: true });
       });
 
-      sessionRef.current = await sessionPromise;
-      drawVisualizer();
-    } catch (err) {
-      console.error("Connection failed:", err);
-      setError(err instanceof Error ? err.message : "Failed to connect to the AI service.");
-      void disconnect();
+      const source = inputContext.createMediaStreamSource(stream);
+      const processor = inputContext.createScriptProcessor(4096, 1, 1);
+      sourceRef.current = source;
+      processorRef.current = processor;
+      processor.onaudioprocess = (event) => {
+        if (mutedRef.current || socket.readyState !== WebSocket.OPEN) return;
+        const blob = createPcmBlob(event.inputBuffer.getChannelData(0));
+        socket.send(JSON.stringify({ type: "audio", data: blob.data, mimeType: blob.mimeType }));
+      };
+      source.connect(processor);
+      processor.connect(inputContext.destination);
+    } catch (error) {
+      console.error("Voice relay connection failed:", error);
+      setError(error instanceof Error ? error.message : "Could not start the voice session.");
+      await disconnect();
     }
   }, [disconnect, drawVisualizer, pushTranscript, stopPlayback]);
 
   const toggleMute = useCallback(() => {
-    setIsMuted((prev) => {
-      mutedRef.current = !prev;
-      return !prev;
+    setIsMuted((previous) => {
+      mutedRef.current = !previous;
+      return !previous;
     });
   }, []);
 
@@ -473,7 +310,6 @@ export function useLiveSession({
   };
 }
 
-/** Voice options shared by the console and landing demo. */
 export const VOICE_OPTIONS = [
   { id: "Aoede", label: "Aoede", gender: "Female", desc: "Warm & Professional" },
   { id: "Kore", label: "Kore", gender: "Female", desc: "Calm & Professional" },
@@ -482,6 +318,3 @@ export const VOICE_OPTIONS = [
   { id: "Fenrir", label: "Fenrir", gender: "Male", desc: "Authoritative" },
   { id: "Charon", label: "Charon", gender: "Male", desc: "Deep & Resonant" },
 ] as const;
-
-export { LIVE_MODEL };
-export const useMemoizedTools = () => useMemo(() => buildTools(), []);

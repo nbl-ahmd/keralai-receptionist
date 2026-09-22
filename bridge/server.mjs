@@ -111,7 +111,7 @@ async function getCompanyProfile() {
 
 // ─── Audio constants ──────────────────────────────────────────────────────────
 
-const GEMINI_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+const GEMINI_MODEL = 'gemini-3.8-live';
 const GEMINI_INPUT_SAMPLE_RATE = 16000;  // Gemini Live expects 16 kHz input
 const GEMINI_OUTPUT_SAMPLE_RATE = 24000; // Gemini Live outputs 24 kHz
 

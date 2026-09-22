@@ -2,9 +2,9 @@
 #
 # Render deployment configuration for the KeralaI Receptionist bridge.
 #
-# The bridge is a standalone Node.js Web Service — no Next.js, no React.
+# The bridge is a Node.js Web Service that also serves the Next.js app.
 # It connects to Neon Postgres via the POOLED (PgBouncer) connection string
-# and relays audio between Exotel and Gemini Live over WebSockets.
+# and relays audio between Exotel/browser and Gemini Live over WebSockets.
 #
 # To deploy:
 #   1. Push this repo to GitHub / GitLab.
@@ -22,10 +22,12 @@ services:
   - type: web
     name: keralai-bridge
     runtime: node
-    rootDir: bridge
-    buildCommand: npm install
-    startCommand: node server.mjs
-    healthCheckPath: /health
+    # Keep the repository root here: bridge/server.mjs imports Next.js and the
+    # root package.json owns the complete runtime dependency graph.
+    rootDir: .
+    buildCommand: npm ci
+    startCommand: npm run start:bridge
+    healthCheckPath: /ping
 
     # Render injects PORT automatically — do not set it here.
     envVars:

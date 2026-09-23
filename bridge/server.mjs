@@ -37,6 +37,7 @@
 
 import 'dotenv/config';
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI, Modality } from '@google/genai';
@@ -190,7 +191,9 @@ const MAX_PENDING_INPUT_BYTES = EXOTEL_SAMPLE_RATE * 2 * 2;
  * @returns {Buffer}         Resampled PCM16 LE mono samples
  */
 function resamplePcm16(input, ratio) {
-  if (ratio === 1 || input.length < 4) return input;
+  if (ratio === 1) return input;
+  if (input.length % 2 !== 0) input = input.subarray(0, input.length - 1);
+  if (input.length < 4) return input;
 
   const inSamples = input.length / 2; // 2 bytes per int16
   const outSamples = Math.round(inSamples / ratio);
@@ -251,6 +254,7 @@ class CallSession {
 
     // Gemini readiness + bounded pre-connect audio buffer
     this.geminiOpen = false;
+    this.geminiClosed = false;
     this.pendingInput = Buffer.alloc(0);
 
     // Barge-in bookkeeping (one clear frame per interrupted turn)
@@ -415,14 +419,23 @@ class CallSession {
         },
         onclose: (evt) => {
           this.geminiOpen = false;
+          this.geminiClosed = true;
           this.log('Gemini Live session closed', evt?.code, evt?.reason);
+          // Unexpected drop mid-call: don't leave the caller in dead air while
+          // pendingInput silently overflows. End the call (idempotent).
+          if (!this.closed) {
+            this.err('Gemini disconnected unexpectedly — ending call');
+            try { if (this.exotelWs.readyState === 1) this.exotelWs.close(1011, 'Gemini disconnected'); } catch { /* ignore */ }
+            this.close().catch((e) => this.err('Error closing after Gemini drop:', e));
+          }
         },
       },
     });
 
     const session = await sessionPromise;
-    if (this.closed) {
-      // The call ended while Gemini was connecting — don't retain the session.
+    if (this.closed || this.geminiClosed) {
+      // The call ended (or Gemini already dropped) while connecting — don't
+      // retain a dead session.
       try { session.close(); } catch { /* already closed */ }
       return;
     }
@@ -646,7 +659,7 @@ class CallSession {
   }
 
   async _handleSearchKnowledge(fc) {
-    const query = (fc.args?.query ?? '').trim();
+    const query = String(fc.args?.query ?? '').trim();
     let result = [];
     if (!query) {
       this._sendToolResponse(fc, { result });
@@ -730,6 +743,10 @@ class CallSession {
     }
 
     try {
+      // Serialise with the start-time record creation: both upserts replace the
+      // transcript rows, so interleaving them can drop the final transcript.
+      await this.ensureCallRecord();
+
       if (this.outcome === 'answered' && this.transcript.length === 0) {
         this.outcome = 'missed';
       }
@@ -925,11 +942,17 @@ async function main() {
     /** @type {CallSession | null} */
     let session = null;
 
+    // Cap per-connection protocol warnings so a broken/hostile peer can't flood logs.
+    let protocolWarnings = 0;
+    const noteProtocol = (msg) => { if (protocolWarnings++ < 5) console.warn(msg); };
+
     ws.on('message', async (raw) => {
       let frame;
       try { frame = JSON.parse(raw.toString()); } catch {
-        console.warn('[bridge] Received non-JSON WebSocket frame — ignoring'); return;
+        noteProtocol('[bridge] Received non-JSON WebSocket frame — ignoring'); return;
       }
+      // JSON.parse("null"/"123"/'"x"') yields a non-object; frame.event would throw.
+      if (!frame || typeof frame !== 'object') return;
 
       switch (frame.event) {
         case 'connected':
@@ -938,10 +961,16 @@ async function main() {
 
         case 'start': {
           const startMeta = frame.start ?? frame;
-          const callSid =
+          const rawCallSid =
             frame.call_sid ?? frame.callSid ??
             startMeta.call_sid ?? startMeta.callSid ??
-            startMeta.call?.sid ?? 'unknown';
+            startMeta.call?.sid;
+          // Never fall back to a shared constant: `calls.call_sid` is UNIQUE, so
+          // two malformed starts would otherwise overwrite the same row.
+          const callSid =
+            typeof rawCallSid === 'string' && rawCallSid.trim()
+              ? rawCallSid.trim()
+              : `unknown-${randomUUID()}`;
           const streamSid =
             frame.stream_sid ?? frame.streamSid ??
             startMeta.stream_sid ?? startMeta.streamSid ??
@@ -974,6 +1003,9 @@ async function main() {
           } catch (e) {
             console.error(`[bridge][${callSid}] Failed to open Gemini session:`, e);
             if (session === created) session = null;
+            // Persist a final record (and clear the start row) rather than
+            // leaving a dangling "in progress" call.
+            try { await created.close(); } catch { /* logged inside close() */ }
             if (ws.readyState === 1) ws.close(1011, 'Gemini session failed to open');
           }
           break;
@@ -998,7 +1030,7 @@ async function main() {
           break;
 
         default:
-          console.log('[bridge] Unknown Exotel event:', frame.event);
+          noteProtocol(`[bridge] Unknown Exotel event: ${frame.event}`);
       }
     });
 

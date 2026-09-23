@@ -7,6 +7,30 @@ export interface KnowledgeItem {
   fileName?: string;
 }
 
+export type VoiceName = 'Aoede' | 'Kore' | 'Zephyr' | 'Puck' | 'Fenrir' | 'Charon';
+export type VoicePitch = 'Low' | 'Normal' | 'High';
+export type VoiceSpeed = 'Slow' | 'Normal' | 'Fast';
+
+export interface VoiceOption {
+  id: VoiceName;
+  label: string;
+  gender: 'Female' | 'Male';
+  desc: string;
+}
+
+/** Gemini Live prebuilt voices available to Maya. */
+export const VOICE_OPTIONS: VoiceOption[] = [
+  { id: 'Aoede', label: 'Aoede', gender: 'Female', desc: 'Warm & Professional' },
+  { id: 'Kore', label: 'Kore', gender: 'Female', desc: 'Calm & Professional' },
+  { id: 'Zephyr', label: 'Zephyr', gender: 'Female', desc: 'Friendly & Warm' },
+  { id: 'Puck', label: 'Puck', gender: 'Male', desc: 'Deep & Steady' },
+  { id: 'Fenrir', label: 'Fenrir', gender: 'Male', desc: 'Authoritative' },
+  { id: 'Charon', label: 'Charon', gender: 'Male', desc: 'Deep & Resonant' },
+];
+
+export const VOICE_PITCHES: VoicePitch[] = ['Low', 'Normal', 'High'];
+export const VOICE_SPEEDS: VoiceSpeed[] = ['Slow', 'Normal', 'Fast'];
+
 export interface CompanyProfile {
   name: string;
   industry: string;
@@ -14,6 +38,14 @@ export interface CompanyProfile {
   contactEmail: string;
   contactPhone: string;
   address: string;
+  /** Dashboard-controlled agent voice settings (optional for backwards compat). */
+  voiceName?: VoiceName;
+  voicePitch?: VoicePitch;
+  voiceSpeed?: VoiceSpeed;
+  /** Whether the bridge has Maya speak an opening greeting. */
+  greetingEnabled?: boolean;
+  /** Custom opening line; when empty the default greeting is used. */
+  greetingText?: string | null;
 }
 
 export interface Appointment {

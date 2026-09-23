@@ -26,6 +26,8 @@
  *   MAYA_VOICE            — Gemini voice name (default Aoede)
  *   MAYA_PITCH            — Low | Normal | High (default Normal)
  *   MAYA_SPEED            — Slow | Normal | Fast (default Normal)
+ *   MAYA_GREETING         — "0" disables the server greeting (use when an
+ *                           Exotel greeting/IVR applet greets the caller). Default on.
  *   PUBLIC_APP_ORIGIN     — Exact browser origin allowed for /ws/browser
  *   BROWSER_MAX_SESSIONS_PER_IP — Per-IP limit for /ws/browser (default 3)
  *   BROWSER_SESSION_TTL_MS      — Max browser session duration in ms (default 900000)
@@ -78,8 +80,13 @@ import {
   buildGreeting,
   buildSystemInstruction,
   buildTools,
+  isGreetingEnabled,
   resolveVoiceSettings,
 } from './shared/maya-config.mjs';
+
+// Server-side opening greeting. Disable with MAYA_GREETING=0 when an Exotel
+// greeting/IVR applet already greets the caller.
+const GREETING_ENABLED = isGreetingEnabled();
 
 // ─── DEBUG_TIMING helper ──────────────────────────────────────────────────────
 const debugTiming = process.env.DEBUG_TIMING === '1';
@@ -197,22 +204,38 @@ function refreshCompanyProfileInBackground() {
 }
 
 /**
- * Returns the company profile from the in-memory cache. After the initial warm
- * load this never awaits the DB on a call path: when the TTL expires a refresh
- * is kicked off in the background and the current cached value is returned.
+ * Returns the company profile (which now carries the dashboard-controlled voice
+ * and greeting settings).
+ *
+ * `force: true` awaits a version check so dashboard changes apply to the very
+ * next call; otherwise the cached value is returned and a refresh runs in the
+ * background once the TTL expires.
+ *
+ * @param {{ force?: boolean }} [options]
  */
-async function getCompanyProfile() {
+async function getCompanyProfile({ force = false } = {}) {
   const now = Date.now();
-  if (_cachedProfile) {
-    if ((now - _lastProfileCheck) >= PROFILE_TTL_MS) {
-      _lastProfileCheck = now;
-      refreshCompanyProfileInBackground();
-    }
-    return _cachedProfile;
+
+  if (!_cachedProfile) {
+    _lastProfileCheck = now;
+    return refreshCompanyProfile();
   }
 
-  _lastProfileCheck = now;
-  return refreshCompanyProfile();
+  if (force) {
+    _lastProfileCheck = now;
+    try {
+      return await refreshCompanyProfile();
+    } catch (e) {
+      console.error('[bridge] Profile refresh failed:', e?.message ?? e);
+      return _cachedProfile;
+    }
+  }
+
+  if ((now - _lastProfileCheck) >= PROFILE_TTL_MS) {
+    _lastProfileCheck = now;
+    refreshCompanyProfileInBackground();
+  }
+  return _cachedProfile;
 }
 
 // ─── Audio constants ──────────────────────────────────────────────────────────
@@ -470,7 +493,19 @@ class CallSession {
 
   /** Open a Gemini Live session for this phone call. */
   async openGeminiSession() {
-    const { voiceName, pitch, speed } = resolveVoiceSettings();
+    // Prefer dashboard-configured voice settings; fall back to env/defaults.
+    const envVoice = resolveVoiceSettings();
+    const voiceName = this.companyProfile.voiceName || envVoice.voiceName;
+    const pitch = this.companyProfile.voicePitch || envVoice.pitch;
+    const speed = this.companyProfile.voiceSpeed || envVoice.speed;
+
+    // Prefer dashboard greeting toggle; fall back to the env default.
+    const greetingEnabled =
+      typeof this.companyProfile.greetingEnabled === 'boolean'
+        ? this.companyProfile.greetingEnabled
+        : GREETING_ENABLED;
+    const greetingText = this.companyProfile.greetingText || buildGreeting(this.companyProfile);
+
     const systemInstruction = buildSystemInstruction(this.companyProfile, { pitch, speed });
 
     this.log(`Connecting to Gemini Live (model: ${GEMINI_MODEL}, voice: ${voiceName})`);
@@ -502,12 +537,16 @@ class CallSession {
         onopen: () => {
           doneConnect();
           this.log('Gemini Live session opened');
+          if (!greetingEnabled) {
+            this.log('Server greeting disabled — waiting for the caller');
+            return;
+          }
           sessionPromise
             .then((session) => {
               if (this.closed) return;
               try {
                 session.sendClientContent({
-                  turns: [{ role: 'user', parts: [{ text: `System command: Greet the caller with: "${buildGreeting(this.companyProfile)}"` }] }],
+                  turns: [{ role: 'user', parts: [{ text: `System command: Greet the caller with: "${greetingText}"` }] }],
                   turnComplete: true,
                 });
               } catch (e) {
@@ -1242,8 +1281,9 @@ async function main() {
           created.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
           logPerf('call-start', { call: callSid, stream: streamSid, model: GEMINI_MODEL, rate: exotelRate });
 
-          // Best-effort profile refresh (TTL-cached; falls back to startup value).
-          try { created.companyProfile = await getCompanyProfile(); }
+          // Refresh settings before connecting so dashboard changes apply to this
+          // call. Falls back to the cached/startup profile on DB failure.
+          try { created.companyProfile = await getCompanyProfile({ force: true }); }
           catch { /* keep startup profile */ }
 
           // Create the DB calls row in the background so bookings can reference
@@ -1312,6 +1352,7 @@ async function main() {
 ║  Gemini out  : ${GEMINI_OUTPUT_SAMPLE_RATE} Hz                              ║
 ║  Profile TTL : ${PROFILE_TTL_MS / 1000}s                              ║
 ║  CRM         : ${getCrmProvider()}                                  ║
+║  Greeting    : ${GREETING_ENABLED ? 'ON (server)' : 'OFF (external/Exotel)'}                ║
 ║  DEBUG_TIMING: ${debugTiming ? 'ON' : 'off'}                                ║
 ╚══════════════════════════════════════════════════════════════╝
 `);

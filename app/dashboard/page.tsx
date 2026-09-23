@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Rocket,
   Send,
+  Settings2,
   Trash2,
   UploadCloud,
   User,
@@ -584,6 +585,11 @@ export default function HomePage() {
               ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
               : "Syncing…"}
           </span>
+          <Button variant="ghost" className="gap-2 text-slate-600" asChild>
+            <Link href="/dashboard/settings">
+              <Settings2 className="h-4 w-4" /> Settings
+            </Link>
+          </Button>
           <Button variant="ghost" className="gap-2 text-slate-600" asChild>
             <Link href="/dashboard/performance">
               <Gauge className="h-4 w-4" /> Performance

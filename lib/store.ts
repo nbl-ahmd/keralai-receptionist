@@ -26,6 +26,10 @@ import {
   KnowledgeItem,
   ToolMetric,
   TranscriptTurn,
+  VOICE_OPTIONS,
+  VoiceName,
+  VoicePitch,
+  VoiceSpeed,
 } from "../types";
 import { query, queryOne } from "../db/client";
 
@@ -138,10 +142,36 @@ interface ProfileRow {
   address: string;
   contact_email: string;
   contact_phone: string;
+  voice_name: string | null;
+  voice_pitch: string | null;
+  voice_speed: string | null;
+  greeting_enabled: boolean | null;
+  greeting_text: string | null;
+}
+
+const VOICE_IDS = new Set<string>(VOICE_OPTIONS.map((option) => option.id));
+
+function normalizeVoiceName(value: unknown): VoiceName {
+  const candidate = String(value ?? "");
+  return VOICE_IDS.has(candidate) ? (candidate as VoiceName) : "Aoede";
+}
+
+function normalizePitch(value: unknown): VoicePitch {
+  const candidate = String(value ?? "");
+  return candidate === "Low" || candidate === "High" ? candidate : "Normal";
+}
+
+function normalizeSpeed(value: unknown): VoiceSpeed {
+  const candidate = String(value ?? "");
+  return candidate === "Slow" || candidate === "Fast" ? candidate : "Normal";
 }
 
 /** Accepts legacy keys (location/email/phone) and normalises to CompanyProfile. */
 export function normalizeProfile(input: Record<string, unknown>): CompanyProfile {
+  const greetingText =
+    input.greetingText === null || input.greetingText === undefined
+      ? null
+      : String(input.greetingText).slice(0, 500);
   return {
     name: String(input.name ?? ""),
     industry: String(input.industry ?? ""),
@@ -149,15 +179,21 @@ export function normalizeProfile(input: Record<string, unknown>): CompanyProfile
     address: String(input.address ?? input.location ?? ""),
     contactEmail: String(input.contactEmail ?? input.email ?? ""),
     contactPhone: String(input.contactPhone ?? input.phone ?? ""),
+    voiceName: normalizeVoiceName(input.voiceName),
+    voicePitch: normalizePitch(input.voicePitch),
+    voiceSpeed: normalizeSpeed(input.voiceSpeed),
+    // Default on unless explicitly disabled.
+    greetingEnabled: input.greetingEnabled === undefined ? true : Boolean(input.greetingEnabled),
+    greetingText: greetingText && greetingText.trim() ? greetingText : null,
   };
 }
 
-export async function getProfile(): Promise<CompanyProfile> {
-  const row = await queryOne<ProfileRow>(
-    `select name, industry, description, address, contact_email, contact_phone
-       from company_profile where id = 1`,
-  );
-  if (!row) return { ...EMPTY_PROFILE };
+const PROFILE_SELECT = `
+  select name, industry, description, address, contact_email, contact_phone,
+         voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text
+    from company_profile where id = 1`;
+
+function mapProfileRow(row: ProfileRow): CompanyProfile {
   return {
     name: row.name,
     industry: row.industry,
@@ -165,14 +201,36 @@ export async function getProfile(): Promise<CompanyProfile> {
     address: row.address,
     contactEmail: row.contact_email,
     contactPhone: row.contact_phone,
+    voiceName: normalizeVoiceName(row.voice_name),
+    voicePitch: normalizePitch(row.voice_pitch),
+    voiceSpeed: normalizeSpeed(row.voice_speed),
+    greetingEnabled: row.greeting_enabled ?? true,
+    greetingText: row.greeting_text ?? null,
   };
+}
+
+export async function getProfile(): Promise<CompanyProfile> {
+  try {
+    const row = await queryOne<ProfileRow>(PROFILE_SELECT);
+    return row ? mapProfileRow(row) : { ...EMPTY_PROFILE };
+  } catch (error) {
+    // Pre-003 schema (voice setting columns absent): fall back to base columns.
+    console.warn("[store] voice setting columns missing, run migrations:", error instanceof Error ? error.message : error);
+    const row = await queryOne<ProfileRow>(
+      `select name, industry, description, address, contact_email, contact_phone
+         from company_profile where id = 1`,
+    );
+    return row ? mapProfileRow(row) : { ...EMPTY_PROFILE };
+  }
 }
 
 export async function saveProfile(profile: CompanyProfile): Promise<CompanyProfile> {
   const normalised = normalizeProfile(profile as unknown as Record<string, unknown>);
   await query(
-    `insert into company_profile (id, name, industry, description, address, contact_email, contact_phone, updated_at)
-     values (1, $1, $2, $3, $4, $5, $6, now())
+    `insert into company_profile (
+       id, name, industry, description, address, contact_email, contact_phone,
+       voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text, updated_at)
+     values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
      on conflict (id) do update set
        name = excluded.name,
        industry = excluded.industry,
@@ -180,6 +238,11 @@ export async function saveProfile(profile: CompanyProfile): Promise<CompanyProfi
        address = excluded.address,
        contact_email = excluded.contact_email,
        contact_phone = excluded.contact_phone,
+       voice_name = excluded.voice_name,
+       voice_pitch = excluded.voice_pitch,
+       voice_speed = excluded.voice_speed,
+       greeting_enabled = excluded.greeting_enabled,
+       greeting_text = excluded.greeting_text,
        updated_at = now()`,
     [
       normalised.name,
@@ -188,6 +251,11 @@ export async function saveProfile(profile: CompanyProfile): Promise<CompanyProfi
       normalised.address,
       normalised.contactEmail,
       normalised.contactPhone,
+      normalised.voiceName,
+      normalised.voicePitch,
+      normalised.voiceSpeed,
+      normalised.greetingEnabled,
+      normalised.greetingText,
     ],
   );
   return normalised;

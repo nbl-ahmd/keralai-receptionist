@@ -86,6 +86,8 @@ The bridge is configured via `render.yaml` for Render Web Service deployment (Ro
 - Resamples Exotel PCM (8 kHz) ↔ Gemini Live (16 kHz in / 24 kHz out) with precomputed ratios;
 - In-memory profile caching with TTL + version-check query;
 - Fire-and-forget background CRM sync;
+- **Dashboard-managed voice settings** (Dashboard → Settings): voice, pitch, speed, and an opening-greeting toggle/custom text, stored in `company_profile` and applied to the next call. Env vars (`MAYA_VOICE`, `MAYA_PITCH`, `MAYA_SPEED`, `MAYA_GREETING`) are fallback defaults only;
+- Audio sample rate auto-detected per call from Exotel (`start.media_format.sample_rate` / `?sample-rate=`);
 - Shuts down gracefully on `SIGTERM`/`SIGINT`.
 
 Point your Exotel Voicebot applet's WebSocket URL at:

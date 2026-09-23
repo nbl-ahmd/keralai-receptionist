@@ -78,6 +78,21 @@ export function resolveVoiceSettings(env = process.env) {
 }
 
 /**
+ * Whether the bridge should have Maya speak an opening greeting.
+ *
+ * Set MAYA_GREETING=0|false|off|no|disabled to disable it — useful when an
+ * Exotel greeting/IVR applet already greets the caller. Default: enabled.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {boolean}
+ */
+export function isGreetingEnabled(env = process.env) {
+  const raw = String(env.MAYA_GREETING ?? '').trim().toLowerCase();
+  if (raw === '') return true;
+  return !['0', 'false', 'off', 'no', 'disabled'].includes(raw);
+}
+
+/**
  * Builds the full system instruction string for Maya.
  *
  * @param {object} companyProfile  Company details (name, industry, description, address, contactPhone, contactEmail)

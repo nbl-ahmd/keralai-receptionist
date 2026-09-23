@@ -102,22 +102,43 @@ export async function getProfileVersion() {
 }
 
 export async function loadCompanyProfile() {
-  const rows = await dbQuery(
-    `select name, industry, description, address, contact_email, contact_phone
-       from company_profile where id = 1`,
-  );
-  const row = rows[0];
-  if (!row) {
-    return { name: '', industry: '', description: '', contactEmail: '', contactPhone: '', address: '' };
-  }
-  return {
+  const map = (row) => ({
     name: row.name,
     industry: row.industry,
     description: row.description,
     address: row.address,
     contactEmail: row.contact_email,
     contactPhone: row.contact_phone,
-  };
+    voiceName: row.voice_name ?? undefined,
+    voicePitch: row.voice_pitch ?? undefined,
+    voiceSpeed: row.voice_speed ?? undefined,
+    greetingEnabled: row.greeting_enabled ?? undefined,
+    greetingText: row.greeting_text ?? null,
+  });
+
+  try {
+    const rows = await dbQuery(
+      `select name, industry, description, address, contact_email, contact_phone,
+              voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text
+         from company_profile where id = 1`,
+    );
+    return rows[0]
+      ? map(rows[0])
+      : { name: '', industry: '', description: '', contactEmail: '', contactPhone: '', address: '' };
+  } catch (error) {
+    // Pre-003 schema (voice setting columns absent): fall back to base columns.
+    console.error(
+      '[bridge][db] voice setting columns missing — run migrations:',
+      error.message,
+    );
+    const rows = await dbQuery(
+      `select name, industry, description, address, contact_email, contact_phone
+         from company_profile where id = 1`,
+    );
+    return rows[0]
+      ? map(rows[0])
+      : { name: '', industry: '', description: '', contactEmail: '', contactPhone: '', address: '' };
+  }
 }
 
 // ---------------------------------------------------------------------------

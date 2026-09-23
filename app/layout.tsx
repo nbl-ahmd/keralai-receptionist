@@ -8,7 +8,10 @@ const plus = Plus_Jakarta_Sans({
   display: "swap",
 });
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://keralai-receptionist.vercel.app";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
   title: "KeralAI Receptionist",
   description: "Premium AI receptionist console built for modern hospitality teams.",
 };

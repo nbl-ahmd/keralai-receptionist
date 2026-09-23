@@ -309,6 +309,9 @@ export default function LandingPage() {
             <span className="flex items-center gap-1.5">
               <Globe2 className="h-4 w-4" /> Malayalam + English
             </span>
+            <Link href="/privacy" className="font-semibold text-slate-700 hover:text-emerald-700">
+              Privacy
+            </Link>
             <Link href="/dashboard" className="font-semibold text-slate-700 hover:text-emerald-700">
               Dashboard
             </Link>

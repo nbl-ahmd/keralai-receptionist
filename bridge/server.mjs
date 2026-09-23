@@ -10,6 +10,7 @@
  * Endpoints:
  *   GET  /health          — Render health check, returns 200 {"ok":true}
  *   GET  /ping            — Lightweight keep-alive endpoint (no DB, HEAD/GET supported)
+ *   GET  /metrics         — Aggregate latency/throughput snapshot (JSON, no PII)
  *   WS   /ws/exotel       — Exotel phone bridge (PCM audio ↔ Gemini Live)
  *   WS   /ws/browser      — Browser voice relay (audio ↔ Gemini Live)
  *
@@ -33,7 +34,13 @@
  *   CRM_TIMEOUT_MS        — CRM webhook timeout in ms (default 8000)
  *   EMBED_TIMEOUT_MS      — Embedding request timeout in ms (default 8000)
  *   BARGE_IN_MUTE_MS      — Barge-in audio-mute watchdog in ms (default 2000)
- *   DEBUG_TIMING          — Set to "1" to log latency for key operations
+ *   DEBUG_TIMING          — Set to "1" to log per-phase latency for key operations
+ *   LATENCY_LOG           — "0" disables [perf] aggregate logging (default on)
+ *   LATENCY_LOG_INTERVAL_MS — Per-call summary interval in ms (default 30000; 0 = off)
+ *   VERBOSE_AUDIO_LOG     — "1" logs every audio chunk (noisy; default off)
+ *   SLOW_DB_MS            — Warn for DB queries slower than this (default 250)
+ *   METRICS_ENABLED       — "0" disables GET /metrics (default on)
+ *   METRICS_TOKEN         — If set, /metrics requires ?token= or x-metrics-token
  */
 
 import 'dotenv/config';
@@ -50,10 +57,23 @@ import {
   logCrmSyncEvent,
   persistAppointment,
   searchKnowledgeEmbeddings,
+  upsertCallMetrics,
   upsertCallRecord,
 } from './db.mjs';
 import { getCrmProvider, syncToCrm } from './crm.mjs';
 import { BrowserSession } from './browser-session.mjs';
+import {
+  CallMetrics,
+  LATENCY_LOG_INTERVAL_MS,
+  hrNow,
+  latencyLogEnabled,
+  logCallStats,
+  logPerf,
+  msSince,
+  processMetrics,
+  snapshotProcess,
+  verboseAudio,
+} from './metrics.mjs';
 import {
   buildGreeting,
   buildSystemInstruction,
@@ -87,11 +107,27 @@ function timer(label) {
  */
 const _backgroundTasks = new Set();
 function runBackground(label, fn) {
+  const startedNs = hrNow();
+  const duringCall = processMetrics.activeCalls > 0;
+  processMetrics.backgroundTasks++;
   const task = (async () => {
     try {
       await fn();
+      logPerf('bg', {
+        task: label,
+        dur_ms: msSince(startedNs).toFixed(1),
+        ok: 1,
+        during_call: duringCall ? 1 : 0,
+      });
     } catch (error) {
+      processMetrics.backgroundFailures++;
       console.error(`[bridge][bg:${label}] failed:`, error?.message ?? error);
+      logPerf('bg', {
+        task: label,
+        dur_ms: msSince(startedNs).toFixed(1),
+        ok: 0,
+        during_call: duringCall ? 1 : 0,
+      });
     }
   })();
   _backgroundTasks.add(task);
@@ -189,19 +225,24 @@ const GEMINI_OUTPUT_SAMPLE_RATE = 24000; // Gemini Live outputs 24 kHz
 
 const EXOTEL_SAMPLE_RATE = parseInt(process.env.EXOTEL_SAMPLE_RATE ?? '8000', 10);
 
-// Exotel chunk size: multiples of 320 bytes, target ~100ms
-// 8 kHz 16-bit: 100ms = 8000 * 0.1 * 2 = 1600 bytes = 5 × 320
-// 16 kHz 16-bit: 100ms = 16000 * 0.1 * 2 = 3200 bytes = 10 × 320
-const EXOTEL_CHUNK_BYTES = EXOTEL_SAMPLE_RATE === 16000 ? 3200 : 1600;
+// The Exotel Voicebot applet can be configured at 8000/16000/24000 Hz via the
+// WebSocket URL (?sample-rate=) and reports it in `start.media_format.sample_rate`.
+// The bridge must resample using the ACTUAL call rate or caller audio is garbled.
+const DEFAULT_EXOTEL_RATE =
+  EXOTEL_SAMPLE_RATE === 16000 || EXOTEL_SAMPLE_RATE === 24000 || EXOTEL_SAMPLE_RATE === 8000
+    ? EXOTEL_SAMPLE_RATE
+    : 8000;
 
-// Session-level constants — precomputed so resamplePcm16 never divides per chunk
-const EXOTEL_TO_GEMINI_RATIO = EXOTEL_SAMPLE_RATE / GEMINI_INPUT_SAMPLE_RATE;
-const GEMINI_TO_EXOTEL_RATIO = GEMINI_OUTPUT_SAMPLE_RATE / EXOTEL_SAMPLE_RATE;
+/** Coerce a value to a supported Exotel rate, or null. */
+function normalizeExotelRate(value) {
+  const rate = Number(value);
+  return rate === 8000 || rate === 16000 || rate === 24000 ? rate : null;
+}
 
-// Bounded buffer for caller audio that arrives while Gemini is still connecting.
-// ~2 seconds of 16-bit PCM — enough to cover connect latency without growing
-// without limit if Gemini never comes up.
-const MAX_PENDING_INPUT_BYTES = EXOTEL_SAMPLE_RATE * 2 * 2;
+// 100 ms of PCM16 at `rate` bytes; always a multiple of 320 (Exotel requirement).
+function exotelChunkBytes(rate) {
+  return Math.round(rate / 5);
+}
 
 // Safety net: if Gemini doesn't send `turnComplete` after an interruption, stop
 // muting model audio after this long so the call can't go permanently silent.
@@ -251,14 +292,22 @@ class CallSession {
    * @param {WebSocket} exotelWs
    * @param {import('@google/genai').GoogleGenAI} ai
    * @param {object} companyProfile
+   * @param {number} exotelRate  Actual call sample rate (8000/16000/24000)
    */
-  constructor(callSid, streamSid, streamKey, exotelWs, ai, companyProfile) {
+  constructor(callSid, streamSid, streamKey, exotelWs, ai, companyProfile, exotelRate) {
     this.callSid = callSid;
     this.streamSid = streamSid;
     this.streamKey = streamKey === 'stream_sid' ? 'stream_sid' : 'streamSid';
     this.exotelWs = exotelWs;
     this.ai = ai;
     this.companyProfile = companyProfile;
+
+    // Per-call audio math (precomputed once so the hot path never divides).
+    this.exotelRate = normalizeExotelRate(exotelRate) ?? DEFAULT_EXOTEL_RATE;
+    this.toGeminiRatio = this.exotelRate / GEMINI_INPUT_SAMPLE_RATE;
+    this.toExotelRatio = GEMINI_OUTPUT_SAMPLE_RATE / this.exotelRate;
+    this.chunkBytes = exotelChunkBytes(this.exotelRate);
+    this.maxPendingInputBytes = this.exotelRate * 2 * 2; // ~2 s of 16-bit PCM
 
     /** @type {import('@google/genai').Session | null} */
     this.geminiSession = null;
@@ -303,6 +352,21 @@ class CallSession {
     // Rate-limit repeated media-packet errors so one bad stream can't flood logs
     this.mediaErrorCount = 0;
     this.mediaErrorLoggedAt = 0;
+
+    // Latency / throughput instrumentation for this call.
+    this.metrics = new CallMetrics(callSid);
+    this._statsTimer = null;
+    processMetrics.activeCalls++;
+    processMetrics.totalCalls++;
+    if (latencyLogEnabled && LATENCY_LOG_INTERVAL_MS > 0) {
+      this._statsTimer = setInterval(() => this._logStats('interval'), LATENCY_LOG_INTERVAL_MS);
+      this._statsTimer.unref?.();
+    }
+  }
+
+  /** Emit a compact aggregate latency/throughput line for this call. */
+  _logStats(kind) {
+    logCallStats(kind, this.metrics.snapshot(), { outcome: this.outcome, channel: 'phone' });
   }
 
   log(...args) { console.log(`[bridge][${this.callSid}]`, ...args); }
@@ -412,6 +476,7 @@ class CallSession {
     this.log(`Connecting to Gemini Live (model: ${GEMINI_MODEL}, voice: ${voiceName})`);
 
     const doneConnect = timer('gemini-live-connect');
+    const connectStartNs = hrNow();
     const sessionPromise = this.ai.live.connect({
       model: GEMINI_MODEL,
       config: {
@@ -421,6 +486,17 @@ class CallSession {
         tools: buildTools(),
         inputAudioTranscription: {},
         outputAudioTranscription: {},
+        realtimeInputConfig: {
+          automaticActivityDetection: {
+            disabled: false,
+            startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
+            endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
+            silenceDurationMs: 280,
+            prefixPaddingMs: 60,
+          },
+          activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+          turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
+        },
       },
       callbacks: {
         onopen: () => {
@@ -473,6 +549,14 @@ class CallSession {
     }
     this.geminiSession = session;
     this.geminiOpen = true;
+    const connectMs = msSince(connectStartNs);
+    this.metrics.setGeminiConnect(connectMs);
+    logPerf('gemini', {
+      call: this.callSid,
+      connect_ms: connectMs.toFixed(0),
+      model: GEMINI_MODEL,
+      buffered_kb: Number((this.pendingInput.length / 1024).toFixed(1)),
+    });
     this.log('Gemini Live session ready');
 
     // Flush any caller audio captured while Gemini was connecting.
@@ -500,9 +584,9 @@ class CallSession {
     // so the first words aren't lost. Drop the oldest audio on overflow.
     if (!this.geminiOpen || !this.geminiSession) {
       this.pendingInput = Buffer.concat([this.pendingInput, rawPcm]);
-      if (this.pendingInput.length > MAX_PENDING_INPUT_BYTES) {
+      if (this.pendingInput.length > this.maxPendingInputBytes) {
         this.pendingInput = this.pendingInput.subarray(
-          this.pendingInput.length - MAX_PENDING_INPUT_BYTES,
+          this.pendingInput.length - this.maxPendingInputBytes,
         );
       }
       return;
@@ -521,17 +605,23 @@ class CallSession {
 
     // Buffer to exactly 100ms chunks to avoid spamming the Gemini API with tiny
     // frames, which causes network queuing and hurts VAD latency.
-    while (this.inputBuffer.length >= EXOTEL_CHUNK_BYTES) {
-      const chunk = this.inputBuffer.subarray(0, EXOTEL_CHUNK_BYTES);
-      this.inputBuffer = this.inputBuffer.subarray(EXOTEL_CHUNK_BYTES);
+    while (this.inputBuffer.length >= this.chunkBytes) {
+      const chunk = this.inputBuffer.subarray(0, this.chunkBytes);
+      this.inputBuffer = this.inputBuffer.subarray(this.chunkBytes);
 
-      const rawGemini = EXOTEL_TO_GEMINI_RATIO === 1
+      const t0 = hrNow();
+      const rawGemini = this.toGeminiRatio === 1
         ? chunk
-        : resamplePcm16(chunk, EXOTEL_TO_GEMINI_RATIO);
+        : resamplePcm16(chunk, this.toGeminiRatio);
 
+      // NOTE: `media` maps to the legacy `realtimeInput.mediaChunks` field and is
+      // ignored as audio input by the Live API. Realtime audio must use `audio`.
       this.geminiSession.sendRealtimeInput({
-        media: { data: rawGemini.toString('base64'), mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}` },
+        audio: { data: rawGemini.toString('base64'), mimeType: `audio/pcm;rate=${GEMINI_INPUT_SAMPLE_RATE}` },
       });
+      const procMs = msSince(t0);
+      this.metrics.noteInbound(procMs, chunk.length);
+      if (verboseAudio) logPerf('audio-in', { call: this.callSid, bytes: chunk.length, ms: procMs.toFixed(2) });
     }
   }
 
@@ -595,9 +685,9 @@ class CallSession {
         if (rawGemini.length < 2) continue;
         if (rawGemini.length % 2 !== 0) rawGemini = rawGemini.subarray(0, rawGemini.length - 1);
 
-        const rawExotel = GEMINI_TO_EXOTEL_RATIO === 1
+        const rawExotel = this.toExotelRatio === 1
           ? rawGemini
-          : resamplePcm16(rawGemini, GEMINI_TO_EXOTEL_RATIO);
+          : resamplePcm16(rawGemini, this.toExotelRatio);
 
         this.outputBuffer = Buffer.concat([this.outputBuffer, rawExotel]);
       } catch (e) {
@@ -610,6 +700,7 @@ class CallSession {
 
   /** Clear queued Exotel playback once per interrupted turn. */
   _handleInterrupt() {
+    this.metrics.noteInterrupt();
     this.outputMuted = true;
     this.outputBuffer = Buffer.alloc(0);
 
@@ -623,7 +714,8 @@ class CallSession {
     if (this.interruptSent) return;
     this.interruptSent = true;
     this.log('Barge-in — clearing Exotel playback buffer');
-    this._sendExotelFrame({ event: 'clear', [this.streamKey]: this.streamSid });
+    const sent = this._sendExotelFrame({ event: 'clear', [this.streamKey]: this.streamSid });
+    logPerf('barge-in', { call: this.callSid, clear_sent: sent ? 1 : 0, interrupts: this.metrics.interrupts });
   }
 
   _clearUnmuteTimer() {
@@ -635,6 +727,8 @@ class CallSession {
 
   /** @param {{ id: string, name: string, args?: object }} fc */
   async _handleToolCall(fc) {
+    const startedNs = hrNow();
+    let ok = true;
     try {
       if (fc.name === 'bookAppointment') {
         await this._handleBookAppointment(fc);
@@ -645,8 +739,18 @@ class CallSession {
         this._sendToolResponse(fc, { result: 'OK' });
       }
     } catch (e) {
+      ok = false;
       this.err(`Tool "${fc?.name}" failed:`, e);
       this._sendToolResponse(fc, { result: 'This action could not be completed right now.' });
+    } finally {
+      const toolMs = msSince(startedNs);
+      this.metrics.recordTool(fc?.name ?? 'unknown', toolMs, ok);
+      logPerf('tool', {
+        call: this.callSid,
+        name: fc?.name ?? 'unknown',
+        dur_ms: toolMs.toFixed(1),
+        ok: ok ? 1 : 0,
+      });
     }
   }
 
@@ -745,9 +849,9 @@ class CallSession {
 
   /** Flush accumulated Gemini output in valid Exotel chunk sizes (multiples of 320 bytes). */
   _flushOutputBuffer(force = false) {
-    while (this.outputBuffer.length >= EXOTEL_CHUNK_BYTES) {
-      const chunk = this.outputBuffer.subarray(0, EXOTEL_CHUNK_BYTES);
-      this.outputBuffer = this.outputBuffer.subarray(EXOTEL_CHUNK_BYTES);
+    while (this.outputBuffer.length >= this.chunkBytes) {
+      const chunk = this.outputBuffer.subarray(0, this.chunkBytes);
+      this.outputBuffer = this.outputBuffer.subarray(this.chunkBytes);
       this._sendMediaToExotel(chunk);
     }
 
@@ -763,26 +867,37 @@ class CallSession {
 
   /** @param {Buffer} pcm16Buf */
   _sendMediaToExotel(pcm16Buf) {
-    this._sendExotelFrame({
+    const t0 = hrNow();
+    const sent = this._sendExotelFrame({
       event: 'media',
       [this.streamKey]: this.streamSid,
       media: { payload: pcm16Buf.toString('base64') },
     });
+    const procMs = msSince(t0);
+    if (sent) this.metrics.noteOutbound(procMs, pcm16Buf.length, 1);
+    if (verboseAudio && sent) logPerf('audio-out', { call: this.callSid, bytes: pcm16Buf.length, ms: procMs.toFixed(2) });
   }
 
-  /** @param {object} frame */
+  /**
+   * @param {object} frame
+   * @returns {boolean} true if the frame was written to the Exotel socket
+   */
   _sendExotelFrame(frame) {
-    if (this.exotelWs.readyState !== 1 /* OPEN */) return;
+    if (this.exotelWs.readyState !== 1 /* OPEN */) return false;
     try {
       this.exotelWs.send(JSON.stringify(frame));
+      return true;
     } catch (e) {
       this.err('Error sending frame to Exotel:', e);
+      return false;
     }
   }
 
   async close() {
     if (this.closed) return;
     this.closed = true;
+    processMetrics.activeCalls = Math.max(0, processMetrics.activeCalls - 1);
+    if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; }
     this.geminiOpen = false;
     this.outputMuted = false;
     this._clearUnmuteTimer();
@@ -806,9 +921,32 @@ class CallSession {
       }
       const record = this.buildCallRecord();
       const doneDb = timer('db-upsert-call-record');
-      await upsertCallRecord(record);
+      const callId = await upsertCallRecord(record);
       doneDb();
       this.log(`Call record saved (${record.outcome}, ${record.transcript.length} turns)`);
+
+      // Persist per-call latency/throughput for later dashboard audits.
+      const m = this.metrics.snapshot();
+      await upsertCallMetrics(callId, {
+        callSid: this.callSid,
+        channel: 'phone',
+        outcome: record.outcome,
+        durationSec: record.durationSec,
+        geminiConnectMs: m.geminiConnectMs,
+        inChunks: m.inChunks,
+        inBytes: m.inBytes,
+        outFrames: m.outFrames,
+        outBytes: m.outBytes,
+        inProcAvg: m.inProcMs.avg,
+        inProcP95: m.inProcMs.p95,
+        outProcAvg: m.outProcMs.avg,
+        outProcP95: m.outProcMs.p95,
+        turnCount: m.turns.count,
+        turnAvgMs: m.turns.avg,
+        turnP95Ms: m.turns.p95,
+        interrupts: m.interrupts,
+        tools: m.tools,
+      });
 
       if (getCrmProvider() !== 'none') {
         runBackground('crm-close', async () => {
@@ -835,6 +973,8 @@ class CallSession {
     } catch (e) {
       this.err('Error persisting call record:', e);
     }
+
+    this._logStats('close');
   }
 }
 
@@ -898,6 +1038,29 @@ async function main() {
       return;
     }
 
+    // Aggregate latency/throughput snapshot for benchmarking (no PII).
+    if (req.method === 'GET' && url === '/metrics') {
+      if (process.env.METRICS_ENABLED === '0') {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+        return;
+      }
+      const token = process.env.METRICS_TOKEN;
+      if (token) {
+        const provided =
+          new URL(req.url, 'http://localhost').searchParams.get('token') ??
+          req.headers['x-metrics-token'];
+        if (provided !== token) {
+          res.writeHead(401, { 'Content-Type': 'text/plain' });
+          res.end('Unauthorized');
+          return;
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(snapshotProcess(), null, 2));
+      return;
+    }
+
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not Found');
   });
@@ -908,18 +1071,36 @@ async function main() {
   const browserSessionsByIp = new Map();
   const maxBrowserSessionsPerIp = Number(process.env.BROWSER_MAX_SESSIONS_PER_IP ?? 3);
 
+  // Comma-separated allow-list, normalised (trim, lowercase, no trailing "/")
+  // so a trailing slash or casing difference can't cause a spurious 403.
+  // Unset/empty => allow any origin (previous behaviour).
+  const allowedBrowserOrigins = (process.env.PUBLIC_APP_ORIGIN ?? '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, '').toLowerCase())
+    .filter(Boolean);
+  const normalizeOrigin = (value) => (value ?? '').trim().replace(/\/+$/, '').toLowerCase();
+  let browserOriginRejects = 0;
+  console.log(
+    '[bridge] /ws/browser allowed origins:',
+    allowedBrowserOrigins.length ? allowedBrowserOrigins.join(', ') : 'any (PUBLIC_APP_ORIGIN unset)',
+  );
+
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');
 
     if (url.pathname === '/ws/exotel') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
     } else if (url.pathname === '/ws/browser') {
-      const configuredOrigin = process.env.PUBLIC_APP_ORIGIN;
       const origin = req.headers.origin;
       const ip = req.socket.remoteAddress ?? 'unknown';
       const activeSessions = browserSessionsByIp.get(ip) ?? 0;
 
-      if (configuredOrigin && origin && origin !== configuredOrigin) {
+      if (allowedBrowserOrigins.length && origin && !allowedBrowserOrigins.includes(normalizeOrigin(origin))) {
+        if (browserOriginRejects++ < 5) {
+          console.warn(
+            `[bridge] Rejected /ws/browser origin "${origin}" (allowed: ${allowedBrowserOrigins.join(', ')})`,
+          );
+        }
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();
         return;
@@ -993,6 +1174,11 @@ async function main() {
   wss.on('connection', (ws, req) => {
     console.log('[bridge] New Exotel WebSocket connection from', req.socket.remoteAddress);
 
+    // Applet URL may carry ?sample-rate=8000|16000|24000 (authoritative at start).
+    const queryRate =
+      normalizeExotelRate(new URL(req.url ?? '/', 'http://localhost').searchParams.get('sample-rate')) ??
+      DEFAULT_EXOTEL_RATE;
+
     /** @type {CallSession | null} */
     let session = null;
 
@@ -1037,16 +1223,24 @@ async function main() {
           const streamSid =
             typeof rawStreamSid === 'string' && rawStreamSid.trim() ? rawStreamSid.trim() : 'unknown';
 
-          console.log(`[bridge] Call started — callSid=${callSid}, streamSid=${streamSid}`);
+          // Prefer the rate Exotel reports for this call, then the applet URL
+          // query param, then the env default.
+          const exotelRate =
+            normalizeExotelRate(startMeta.media_format?.sample_rate) ?? queryRate;
+
+          console.log(
+            `[bridge] Call started — callSid=${callSid}, streamSid=${streamSid}, rate=${exotelRate}Hz`,
+          );
 
           if (session) { console.warn('[bridge] Duplicate start event — ignoring'); break; }
 
           // Create the session synchronously (before any await) so concurrent
           // 'start'/'media'/'stop' events always observe it.
-          const created = new CallSession(callSid, streamSid, streamKey, ws, ai, companyProfile);
+          const created = new CallSession(callSid, streamSid, streamKey, ws, ai, companyProfile, exotelRate);
           session = created;
           created.caller = startMeta.from ?? startMeta.caller ?? startMeta.custom_parameters?.caller ?? 'Unknown caller';
           created.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
+          logPerf('call-start', { call: callSid, stream: streamSid, model: GEMINI_MODEL, rate: exotelRate });
 
           // Best-effort profile refresh (TTL-cached; falls back to startup value).
           try { created.companyProfile = await getCompanyProfile(); }
@@ -1113,7 +1307,7 @@ async function main() {
 ║  Exotel WS   :  ws://localhost:${port}/ws/exotel              ║
 ║  Browser WS  :  ws://localhost:${port}/ws/browser             ║
 ║                                                              ║
-║  Exotel rate : ${EXOTEL_SAMPLE_RATE} Hz                                ║
+║  Exotel rate : ${DEFAULT_EXOTEL_RATE} Hz (default; per-call via applet) ║
 ║  Gemini in   : ${GEMINI_INPUT_SAMPLE_RATE} Hz                              ║
 ║  Gemini out  : ${GEMINI_OUTPUT_SAMPLE_RATE} Hz                              ║
 ║  Profile TTL : ${PROFILE_TTL_MS / 1000}s                              ║

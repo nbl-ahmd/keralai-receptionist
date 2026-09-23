@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   Clock,
   Database,
+  Gauge,
   Headset,
   Loader2,
   MessageSquarePlus,
@@ -583,6 +584,11 @@ export default function HomePage() {
               ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
               : "Syncing…"}
           </span>
+          <Button variant="ghost" className="gap-2 text-slate-600" asChild>
+            <Link href="/dashboard/performance">
+              <Gauge className="h-4 w-4" /> Performance
+            </Link>
+          </Button>
           <Button variant="ghost" className="gap-2 text-slate-600" onClick={() => loadAll()} disabled={isRefreshing}>
             <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} /> Refresh
           </Button>

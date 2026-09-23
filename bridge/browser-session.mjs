@@ -13,11 +13,26 @@ import {
   logCrmSyncEvent,
   persistAppointment,
   searchKnowledgeEmbeddings,
+  upsertCallMetrics,
   upsertCallRecord,
 } from './db.mjs';
 import { getCrmProvider, syncToCrm } from './crm.mjs';
+import {
+  CallMetrics,
+  LATENCY_LOG_INTERVAL_MS,
+  hrNow,
+  latencyLogEnabled,
+  logCallStats,
+  logPerf,
+  msSince,
+  processMetrics,
+  verboseAudio,
+} from './metrics.mjs';
 
 const MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+
+/** Base64 length -> approximate decoded byte count (for throughput metrics). */
+const b64Bytes = (data) => Math.floor((data?.length ?? 0) * 0.75);
 
 export class BrowserSession {
   constructor(ws, ai, companyProfile, buildInstruction, buildTools, buildGreeting) {
@@ -42,6 +57,18 @@ export class BrowserSession {
     this.pitch = 'Normal';
     this.speed = 'Normal';
     this.report = true;
+
+    this.metrics = new CallMetrics(this.callSid);
+    this._statsTimer = null;
+    processMetrics.activeCalls++;
+    processMetrics.totalCalls++;
+    if (latencyLogEnabled && LATENCY_LOG_INTERVAL_MS > 0) {
+      this._statsTimer = setInterval(
+        () => logCallStats('interval', this.metrics.snapshot(), { outcome: this.outcome, channel: 'browser' }),
+        LATENCY_LOG_INTERVAL_MS,
+      );
+      this._statsTimer.unref?.();
+    }
   }
 
   send(frame) {
@@ -76,6 +103,7 @@ export class BrowserSession {
     this.pitch = typeof options.pitch === 'string' ? options.pitch : 'Normal';
     this.speed = typeof options.speed === 'string' ? options.speed : 'Normal';
 
+    const connectStartNs = hrNow();
     const sessionPromise = this.ai.live.connect({
       model: MODEL,
       config: {
@@ -88,6 +116,17 @@ export class BrowserSession {
         tools: this.buildTools(),
         inputAudioTranscription: {},
         outputAudioTranscription: {},
+        realtimeInputConfig: {
+          automaticActivityDetection: {
+            disabled: false,
+            startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
+            endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
+            silenceDurationMs: 280,
+            prefixPaddingMs: 60,
+          },
+          activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+          turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
+        },
       },
       callbacks: {
         onopen: () => {
@@ -114,6 +153,14 @@ export class BrowserSession {
     });
     try {
       this.geminiSession = await sessionPromise;
+      const connectMs = msSince(connectStartNs);
+      this.metrics.setGeminiConnect(connectMs);
+      logPerf('gemini', {
+        call: this.callSid,
+        channel: 'browser',
+        connect_ms: connectMs.toFixed(0),
+        model: MODEL,
+      });
     } finally {
       this._opening = false;
     }
@@ -127,6 +174,8 @@ export class BrowserSession {
 
     if (message.toolCall) {
       for (const fc of message.toolCall.functionCalls ?? []) {
+        const toolStartNs = hrNow();
+        let toolOk = true;
         if (fc.name === 'bookAppointment') {
           const args = fc.args;
           let result;
@@ -147,6 +196,7 @@ export class BrowserSession {
             this.send({ type: 'booking', appointment });
             result = { result: 'Appointment booked successfully.' };
           } catch (error) {
+            toolOk = false;
             console.error('[browser][relay] booking failed:', error);
             result = { result: 'Unable to save the appointment. Please offer another way to follow up.' };
           }
@@ -184,28 +234,60 @@ export class BrowserSession {
             const values = embedding.embeddings?.[0]?.values;
             if (values) results = await searchKnowledgeEmbeddings(`[${values.join(',')}]`, 3);
           } catch (error) {
+            toolOk = false;
             console.error('[browser][relay] RAG failed:', error);
           }
           this.geminiSession.sendToolResponse({
             functionResponses: { id: fc.id, name: fc.name, response: { result: results } },
           });
         }
+
+        const toolMs = msSince(toolStartNs);
+        this.metrics.recordTool(fc?.name ?? 'unknown', toolMs, toolOk);
+        logPerf('tool', {
+          call: this.callSid,
+          channel: 'browser',
+          name: fc?.name ?? 'unknown',
+          dur_ms: toolMs.toFixed(1),
+          ok: toolOk ? 1 : 0,
+        });
       }
     }
 
     const audio = message.serverContent?.modelTurn?.parts?.find((p) => p.inlineData)?.inlineData?.data;
-    if (audio) this.send({ type: 'audio', data: audio });
-    if (message.serverContent?.interrupted) this.send({ type: 'interrupted' });
+    if (audio) {
+      const t0 = hrNow();
+      this.send({ type: 'audio', data: audio });
+      const procMs = msSince(t0);
+      this.metrics.noteOutbound(procMs, b64Bytes(audio), 1);
+      if (verboseAudio) {
+        logPerf('audio-out', { call: this.callSid, channel: 'browser', bytes: b64Bytes(audio), ms: procMs.toFixed(2) });
+      }
+    }
+    if (message.serverContent?.interrupted) {
+      this.metrics.noteInterrupt();
+      this.send({ type: 'interrupted' });
+    }
   }
 
   sendAudio(data, mimeType = 'audio/pcm;rate=16000') {
     if (this.closed || !this.geminiSession || !data) return;
-    this.geminiSession.sendRealtimeInput({ media: { data, mimeType } });
+    const t0 = hrNow();
+    // `audio` (not `media`) is the current realtime-input field; `media` maps to
+    // the legacy `mediaChunks` and is not treated as audio input.
+    this.geminiSession.sendRealtimeInput({ audio: { data, mimeType } });
+    const procMs = msSince(t0);
+    this.metrics.noteInbound(procMs, b64Bytes(data));
+    if (verboseAudio) {
+      logPerf('audio-in', { call: this.callSid, channel: 'browser', bytes: b64Bytes(data), ms: procMs.toFixed(2) });
+    }
   }
 
   async close() {
     if (this.closed) return;
     this.closed = true;
+    processMetrics.activeCalls = Math.max(0, processMetrics.activeCalls - 1);
+    if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; }
     const endedAt = new Date().toISOString();
     const durationSec = Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(this.startedAt)) / 1000));
     if (this.outcome === 'answered' && this.transcript.length === 0) this.outcome = 'abandoned';
@@ -213,11 +295,12 @@ export class BrowserSession {
     if (!this.report) {
       try { this.geminiSession?.close(); } catch { /* already closed */ }
       this.geminiSession = null;
+      logCallStats('close', this.metrics.snapshot(), { outcome: this.outcome, channel: 'browser', report: 0 });
       return;
     }
 
     try {
-      await upsertCallRecord({
+      const callId = await upsertCallRecord({
         id: this.callSid,
         callSid: this.callSid,
         caller: 'Browser visitor',
@@ -232,6 +315,28 @@ export class BrowserSession {
         transcript: this.transcript,
         bookingIds: this.bookingIds,
         knowledgeQueries: this.knowledgeQueries,
+      });
+
+      const m = this.metrics.snapshot();
+      await upsertCallMetrics(callId, {
+        callSid: this.callSid,
+        channel: 'browser',
+        outcome: this.outcome,
+        durationSec,
+        geminiConnectMs: m.geminiConnectMs,
+        inChunks: m.inChunks,
+        inBytes: m.inBytes,
+        outFrames: m.outFrames,
+        outBytes: m.outBytes,
+        inProcAvg: m.inProcMs.avg,
+        inProcP95: m.inProcMs.p95,
+        outProcAvg: m.outProcMs.avg,
+        outProcP95: m.outProcMs.p95,
+        turnCount: m.turns.count,
+        turnAvgMs: m.turns.avg,
+        turnP95Ms: m.turns.p95,
+        interrupts: m.interrupts,
+        tools: m.tools,
       });
 
       if (getCrmProvider() !== 'none') {
@@ -254,5 +359,6 @@ export class BrowserSession {
 
     try { this.geminiSession?.close(); } catch { /* already closed */ }
     this.geminiSession = null;
+    logCallStats('close', this.metrics.snapshot(), { outcome: this.outcome, channel: 'browser', report: 1 });
   }
 }

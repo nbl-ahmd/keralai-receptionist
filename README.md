@@ -62,7 +62,7 @@ Everything is documented in `.env.local.example` and `bridge/.env.example`. The 
 | `DATABASE_URL` | Vercel & Render | **Required.** Neon pooled connection string (`sslmode=require`). |
 | `GEMINI_API_KEY` | Vercel & Render | **Required** server-side. Used by bridge, embeddings, knowledge chat. |
 | `NEXT_PUBLIC_BRIDGE_WS_URL` | Vercel | **Required in production.** Public WebSocket origin of the Render bridge, e.g. `wss://keralai-bridge.onrender.com`. The browser demo connects here (the dashboard and bridge are different hosts). |
-| `PUBLIC_APP_ORIGIN` | Render bridge | Optional allowed origin for browser WebSocket relay, e.g. `https://keralai-receptionist.vercel.app`. |
+| `PUBLIC_APP_ORIGIN` | Render bridge | Optional origin allow-list for the browser WebSocket relay. Comma-separated, e.g. `https://keralai-receptionist.vercel.app`. Trailing slashes/casing ignored; if unset, any origin is allowed. A mismatch returns HTTP 403 on the `/ws/browser` handshake. |
 | `CRM_PROVIDER` / `CRM_WEBHOOK_URL` | Vercel & Render | Optional CRM mirroring. |
 
 > The browser demo cannot derive the relay URL from `window.location` because the
@@ -91,6 +91,29 @@ The bridge is configured via `render.yaml` for Render Web Service deployment (Ro
 Point your Exotel Voicebot applet's WebSocket URL at:
 `wss://<render-service-name>.onrender.com/ws/exotel`
 
+### Observability / latency
+
+The bridge emits low-volume, structured `[bridge][perf]` lines to stdout (Render logs) so you can
+see where time is spent without logging per audio chunk:
+
+- `call-start`, `gemini` (connect ms + buffered audio), `barge-in`, `tool` (duration + ok), `crm`
+  (duration + ok), and `bg` (background task duration, and whether it ran during a call).
+- A per-call aggregate (`kind=interval` every `LATENCY_LOG_INTERVAL_MS`, and `kind=close`): audio
+  in/out throughput, audio processing avg/p95, turn latency avg/p95, interrupts, and per-tool stats.
+- `[bridge][db] slow query <ms>ms: …` for queries over `SLOW_DB_MS` (default 250).
+- `GET /metrics` returns a JSON snapshot (counters + latency percentiles) for benchmarking;
+  protect it with `METRICS_TOKEN` or disable with `METRICS_ENABLED=0`.
+- Set `LATENCY_LOG=0` to silence perf logs, or `VERBOSE_AUDIO_LOG=1` for per-chunk tracing.
+
+**Persisted history:** the bridge also writes one `call_metrics` row per completed call (phone and
+browser in report mode) via `upsertCallMetrics` — the aggregate above, keyed to `calls.id`. Run
+`npm run migrate` to create the table (`db/migrations/002_call_metrics.sql`). The dashboard's
+**Performance** page (`/dashboard/performance`) reads it through `GET /api/call-metrics` and shows
+only real, stored data (no placeholders).
+
+> Background work (CRM sync, audit writes, call-record upserts) is logged as `[perf] bg …` with
+> `during_call=1`; because the audio path never awaits it, inbound/outbound processing times stay
+> flat while it runs — useful for verifying async behaviour.
 
 ---
 

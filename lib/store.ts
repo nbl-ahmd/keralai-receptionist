@@ -16,12 +16,15 @@
 import { GoogleGenAI } from "@google/genai";
 import {
   Appointment,
+  CallMetric,
+  CallMetricsSummary,
   CallOutcome,
   CallRecord,
   CompanyProfile,
   Contact,
   DashboardMetrics,
   KnowledgeItem,
+  ToolMetric,
   TranscriptTurn,
 } from "../types";
 import { query, queryOne } from "../db/client";
@@ -763,5 +766,146 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     appointments: Number(row?.appointments ?? 0),
     confirmedAppointments: Number(row?.confirmed_appointments ?? 0),
     knowledgeLookups: Number(row?.knowledge_lookups ?? 0),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Per-call performance metrics (written by the bridge at call end)
+// ---------------------------------------------------------------------------
+
+const num = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const round = (value: number | null, digits = 1): number | null =>
+  value === null ? null : Number(value.toFixed(digits));
+
+interface CallMetricRow {
+  call_id: string;
+  call_sid: string;
+  caller: string | null;
+  channel: string;
+  outcome: string | null;
+  started_at: string | null;
+  created_at: string;
+  duration_sec: number;
+  gemini_connect_ms: number | null;
+  in_chunks: number;
+  in_bytes: string | number;
+  out_frames: number;
+  out_bytes: string | number;
+  in_proc_avg_ms: number | null;
+  in_proc_p95_ms: number | null;
+  out_proc_avg_ms: number | null;
+  out_proc_p95_ms: number | null;
+  turn_count: number;
+  turn_avg_ms: number | null;
+  turn_p95_ms: number | null;
+  interrupts: number;
+  tools: Record<string, { count?: number; avg?: number; min?: number; max?: number; p50?: number; p95?: number; failed?: number }> | null;
+}
+
+function mapCallMetricRow(row: CallMetricRow): CallMetric {
+  const tools: Record<string, ToolMetric> = {};
+  for (const [name, t] of Object.entries(row.tools ?? {})) {
+    tools[name] = {
+      count: Number(t?.count ?? 0),
+      avg: Number(t?.avg ?? 0),
+      min: num(t?.min) ?? undefined,
+      max: num(t?.max) ?? undefined,
+      p50: num(t?.p50) ?? undefined,
+      p95: Number(t?.p95 ?? 0),
+      failed: Number(t?.failed ?? 0),
+    };
+  }
+  return {
+    callId: row.call_id,
+    callSid: row.call_sid,
+    caller: row.caller,
+    channel: row.channel,
+    outcome: row.outcome,
+    startedAt: row.started_at,
+    createdAt: row.created_at,
+    durationSec: Number(row.duration_sec ?? 0),
+    geminiConnectMs: num(row.gemini_connect_ms),
+    inChunks: Number(row.in_chunks ?? 0),
+    inBytes: Number(row.in_bytes ?? 0),
+    outFrames: Number(row.out_frames ?? 0),
+    outBytes: Number(row.out_bytes ?? 0),
+    inProcAvgMs: num(row.in_proc_avg_ms),
+    inProcP95Ms: num(row.in_proc_p95_ms),
+    outProcAvgMs: num(row.out_proc_avg_ms),
+    outProcP95Ms: num(row.out_proc_p95_ms),
+    turnCount: Number(row.turn_count ?? 0),
+    turnAvgMs: num(row.turn_avg_ms),
+    turnP95Ms: num(row.turn_p95_ms),
+    interrupts: Number(row.interrupts ?? 0),
+    tools,
+  };
+}
+
+/** Most recent per-call metrics, joined with the call for caller/start time. */
+export async function getCallMetrics(limit = 100): Promise<CallMetric[]> {
+  const rows = await query<CallMetricRow>(
+    `select m.call_id, m.call_sid, c.caller, m.channel, m.outcome, c.started_at, m.created_at,
+            m.duration_sec, m.gemini_connect_ms, m.in_chunks, m.in_bytes, m.out_frames, m.out_bytes,
+            m.in_proc_avg_ms, m.in_proc_p95_ms, m.out_proc_avg_ms, m.out_proc_p95_ms,
+            m.turn_count, m.turn_avg_ms, m.turn_p95_ms, m.interrupts, m.tools
+       from call_metrics m
+       join calls c on c.id = m.call_id
+      order by m.created_at desc
+      limit $1`,
+    [Math.min(Math.max(limit, 1), 500)],
+  );
+  return rows.map(mapCallMetricRow);
+}
+
+/** Platform-wide rollup across all stored call metrics. */
+export async function getCallMetricsSummary(): Promise<CallMetricsSummary> {
+  const row = await queryOne<{
+    samples: string;
+    avg_duration: number | null;
+    avg_gemini_connect: number | null;
+    avg_in_proc: number | null;
+    avg_out_proc: number | null;
+    avg_turn: number | null;
+    p50_turn: number | null;
+    p95_turn: number | null;
+    worst_turn_p95: number | null;
+    total_interrupts: string | null;
+    total_in_bytes: string | null;
+    total_out_bytes: string | null;
+  }>(`
+    select
+      count(*) as samples,
+      avg(duration_sec) as avg_duration,
+      avg(gemini_connect_ms) as avg_gemini_connect,
+      avg(in_proc_avg_ms) as avg_in_proc,
+      avg(out_proc_avg_ms) as avg_out_proc,
+      avg(turn_avg_ms) as avg_turn,
+      percentile_cont(0.5) within group (order by turn_avg_ms) as p50_turn,
+      percentile_cont(0.95) within group (order by turn_avg_ms) as p95_turn,
+      max(turn_p95_ms) as worst_turn_p95,
+      sum(interrupts) as total_interrupts,
+      sum(in_bytes) as total_in_bytes,
+      sum(out_bytes) as total_out_bytes
+    from call_metrics
+  `);
+
+  return {
+    samples: Number(row?.samples ?? 0),
+    avgDurationSec: round(num(row?.avg_duration)),
+    avgGeminiConnectMs: round(num(row?.avg_gemini_connect), 0),
+    avgInProcMs: round(num(row?.avg_in_proc), 2),
+    avgOutProcMs: round(num(row?.avg_out_proc), 2),
+    avgTurnMs: round(num(row?.avg_turn), 0),
+    p50TurnMs: round(num(row?.p50_turn), 0),
+    p95TurnMs: round(num(row?.p95_turn), 0),
+    worstTurnP95Ms: round(num(row?.worst_turn_p95), 0),
+    totalInterrupts: Number(row?.total_interrupts ?? 0),
+    totalInBytes: Number(row?.total_in_bytes ?? 0),
+    totalOutBytes: Number(row?.total_out_bytes ?? 0),
   };
 }

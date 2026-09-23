@@ -9,6 +9,8 @@
  * sendToolResponse() so Maya is never blocked waiting for an external webhook.
  */
 
+import { hrNow, logPerf, msSince, processMetrics } from './metrics.mjs';
+
 const TIMEOUT_MS = Number(process.env.CRM_TIMEOUT_MS ?? 8000);
 
 export function getCrmProvider() {
@@ -32,6 +34,8 @@ export async function syncToCrm(payload) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const startedNs = hrNow();
+  let ok = false;
 
   try {
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
@@ -63,6 +67,7 @@ export async function syncToCrm(payload) {
       /* non-JSON responses are acceptable */
     }
 
+    ok = true;
     return { ok: true, provider, externalId };
   } catch (error) {
     const message = error?.name === 'AbortError'
@@ -71,5 +76,10 @@ export async function syncToCrm(payload) {
     return { ok: false, provider, error: message };
   } finally {
     clearTimeout(timeout);
+    const ms = msSince(startedNs);
+    processMetrics.crmLatency.record(ms);
+    if (ok) processMetrics.crmSyncs++;
+    else processMetrics.crmFailures++;
+    logPerf('crm', { provider, dur_ms: ms.toFixed(1), ok: ok ? 1 : 0 });
   }
 }

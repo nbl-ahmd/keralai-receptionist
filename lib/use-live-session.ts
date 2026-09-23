@@ -13,6 +13,8 @@ import { createPcmBlob, decodeAudio, decodeAudioData } from "../utils/audioUtils
 
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
+/** Give up (and surface an error) if the relay isn't ready within this window. */
+const CONNECT_TIMEOUT_MS = 20000;
 
 declare global {
   interface Window {
@@ -34,6 +36,7 @@ export interface LiveSessionOptions {
 
 export interface LiveSessionState {
   isConnected: boolean;
+  isConnecting: boolean;
   isMuted: boolean;
   volume: number;
   error: string | null;
@@ -82,6 +85,7 @@ export function useLiveSession({
   speed = "Normal",
 }: LiveSessionOptions): LiveSessionState {
   const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +106,7 @@ export function useLiveSession({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
+  const connectTimeoutRef = useRef<number | null>(null);
 
   const bookingRef = useRef(onBookAppointment);
   const transcriptCallbackRef = useRef(onTranscript);
@@ -169,7 +174,16 @@ export function useLiveSession({
     draw();
   }, []);
 
+  const clearConnectTimeout = useCallback(() => {
+    if (connectTimeoutRef.current !== null) {
+      window.clearTimeout(connectTimeoutRef.current);
+      connectTimeoutRef.current = null;
+    }
+  }, []);
+
   const disconnect = useCallback(async () => {
+    clearConnectTimeout();
+    setIsConnecting(false);
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({ type: "stop" }));
       socketRef.current.close(1000, "Client ended session");
@@ -190,10 +204,12 @@ export function useLiveSession({
     connectedRef.current = false;
     setIsConnected(false);
     setVolume(0);
-  }, [stopPlayback]);
+  }, [clearConnectTimeout, stopPlayback]);
 
   const connect = useCallback(async () => {
     setError(null);
+    clearConnectTimeout();
+    setIsConnecting(true);
     transcriptRef.current = [];
     setTranscript([]);
     connectedRef.current = false;
@@ -221,7 +237,9 @@ export function useLiveSession({
       socket.onmessage = async (event) => {
         const frame = JSON.parse(event.data) as RelayFrame;
         if (frame.type === "connected") {
+          clearConnectTimeout();
           connectedRef.current = true;
+          setIsConnecting(false);
           setIsConnected(true);
           drawVisualizer();
           return;
@@ -235,6 +253,8 @@ export function useLiveSession({
           return;
         }
         if (frame.type === "error") {
+          clearConnectTimeout();
+          setIsConnecting(false);
           setError(frame.message || "Voice relay error.");
           return;
         }
@@ -262,11 +282,27 @@ export function useLiveSession({
         }
       };
 
-      socket.onerror = () => setError(`Could not reach the voice relay at ${url}. Check the bridge URL.`);
+      socket.onerror = () => {
+        clearConnectTimeout();
+        setIsConnecting(false);
+        setError(`Could not reach the voice relay at ${url}. Check the bridge URL.`);
+      };
       socket.onclose = () => {
+        clearConnectTimeout();
         connectedRef.current = false;
+        setIsConnecting(false);
         setIsConnected(false);
       };
+
+      // If the relay never reports ready (bad URL, bridge down, rejected origin),
+      // fail visibly instead of leaving the button stuck on "Connecting…".
+      connectTimeoutRef.current = window.setTimeout(() => {
+        connectTimeoutRef.current = null;
+        if (!connectedRef.current) {
+          setError(`The voice relay didn't respond in time (${url}). Please try again.`);
+          void disconnect();
+        }
+      }, CONNECT_TIMEOUT_MS);
 
       await new Promise<void>((resolve, reject) => {
         socket.onopen = () => {
@@ -300,7 +336,7 @@ export function useLiveSession({
       setError(error instanceof Error ? error.message : "Could not start the voice session.");
       await disconnect();
     }
-  }, [disconnect, drawVisualizer, pushTranscript, stopPlayback]);
+  }, [clearConnectTimeout, disconnect, drawVisualizer, pushTranscript, stopPlayback]);
 
   const toggleMute = useCallback(() => {
     setIsMuted((previous) => {
@@ -311,6 +347,7 @@ export function useLiveSession({
 
   return {
     isConnected,
+    isConnecting,
     isMuted,
     volume,
     error,

@@ -115,6 +115,59 @@ export interface DashboardMetrics {
   knowledgeLookups: number;
 }
 
+/** Per-tool latency stats recorded for a call. */
+export interface ToolMetric {
+  count: number;
+  avg: number;
+  min?: number;
+  max?: number;
+  p50?: number;
+  p95: number;
+  failed: number;
+}
+
+/** Aggregated latency/throughput metrics for one completed call. */
+export interface CallMetric {
+  callId: string;
+  callSid: string;
+  caller: string | null;
+  channel: string;
+  outcome: string | null;
+  startedAt: string | null;
+  createdAt: string;
+  durationSec: number;
+  geminiConnectMs: number | null;
+  inChunks: number;
+  inBytes: number;
+  outFrames: number;
+  outBytes: number;
+  inProcAvgMs: number | null;
+  inProcP95Ms: number | null;
+  outProcAvgMs: number | null;
+  outProcP95Ms: number | null;
+  turnCount: number;
+  turnAvgMs: number | null;
+  turnP95Ms: number | null;
+  interrupts: number;
+  tools: Record<string, ToolMetric>;
+}
+
+/** Platform-wide rollup over all stored call metrics. */
+export interface CallMetricsSummary {
+  samples: number;
+  avgDurationSec: number | null;
+  avgGeminiConnectMs: number | null;
+  avgInProcMs: number | null;
+  avgOutProcMs: number | null;
+  avgTurnMs: number | null;
+  p50TurnMs: number | null;
+  p95TurnMs: number | null;
+  worstTurnP95Ms: number | null;
+  totalInterrupts: number;
+  totalInBytes: number;
+  totalOutBytes: number;
+}
+
 export enum ViewState {
   DASHBOARD = 'DASHBOARD',
   KNOWLEDGE_BASE = 'KNOWLEDGE_BASE',

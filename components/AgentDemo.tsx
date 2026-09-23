@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarCheck,
   Headset,
+  Loader2,
   Mic,
   MicOff,
   Pause,
@@ -101,7 +102,7 @@ export default function AgentDemo({
 }: AgentDemoProps) {
   const [activeAgentId, setActiveAgentId] = useState<DemoAgentId>(defaultAgentId);
   const [elapsed, setElapsed] = useState(0);
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
 
   const activeAgent = useMemo(
     () => agents.find((agent) => agent.id === activeAgentId) ?? agents[0],
@@ -116,7 +117,7 @@ export default function AgentDemo({
     [companyProfile],
   );
 
-  const { isConnected, isMuted, volume, error, transcript, connect, disconnect, toggleMute } =
+  const { isConnected, isConnecting, isMuted, volume, error, transcript, connect, disconnect, toggleMute } =
     useLiveSession({
       companyProfile: profile,
       report: false, // keep demo traffic out of real analytics
@@ -136,8 +137,16 @@ export default function AgentDemo({
     return () => window.clearInterval(interval);
   }, [isConnected]);
 
+  // Scroll only the transcript panel — never the page — and only when the user
+  // is already reading the latest messages (so scrolling back isn't yanked).
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const container = transcriptContainerRef.current;
+    if (!container) return;
+    const nearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 96;
+    if (!nearBottom) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    container.scrollTo({ top: container.scrollHeight, behavior: reduceMotion ? "auto" : "smooth" });
   }, [transcript]);
 
   // Disconnect when switching agents mid-call
@@ -220,10 +229,15 @@ export default function AgentDemo({
               {!isConnected ? (
                 <button
                   onClick={() => void connect()}
-                  className="flex h-16 w-16 items-center justify-center rounded-full bg-white shadow-lg transition hover:scale-105"
-                  aria-label="Start demo call"
+                  disabled={isConnecting}
+                  className="flex h-16 w-16 items-center justify-center rounded-full bg-white shadow-lg transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:scale-100"
+                  aria-label={isConnecting ? "Connecting" : "Start demo call"}
                 >
-                  <Phone className="h-7 w-7 text-emerald-600" />
+                  {isConnecting ? (
+                    <Loader2 className="h-7 w-7 animate-spin text-emerald-600" />
+                  ) : (
+                    <Phone className="h-7 w-7 text-emerald-600" />
+                  )}
                 </button>
               ) : (
                 <button
@@ -240,7 +254,9 @@ export default function AgentDemo({
           <div className="flex items-center gap-4 text-xs font-semibold uppercase tracking-wider text-slate-500">
             <span className="tabular-nums">{isConnected ? formatTimer(elapsed) : "00:00"}</span>
             <span className="h-3 w-px bg-slate-300" />
-            <span>{isMuted ? "Paused" : isConnected ? "Listening" : "Ready"}</span>
+            <span aria-live="polite">
+              {isConnecting ? "Connecting…" : isMuted ? "Paused" : isConnected ? "Listening" : "Ready"}
+            </span>
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-2">
@@ -254,9 +270,15 @@ export default function AgentDemo({
             ) : (
               <button
                 onClick={() => void connect()}
-                className="flex items-center gap-2 rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-md transition hover:bg-slate-800"
+                disabled={isConnecting}
+                className="flex items-center gap-2 rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-md transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-slate-900"
               >
-                <Mic className="h-4 w-4" /> Start voice demo
+                {isConnecting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Mic className="h-4 w-4" />
+                )}
+                {isConnecting ? "Connecting…" : "Start voice demo"}
               </button>
             )}
             {isConnected && (
@@ -282,12 +304,21 @@ export default function AgentDemo({
             </span>
           </div>
 
-          <div className="mt-4 h-[340px] flex-1 space-y-3 overflow-y-auto pr-1">
+          <div
+            ref={transcriptContainerRef}
+            className="mt-4 h-[340px] flex-1 space-y-3 overflow-y-auto pr-1"
+            aria-busy={isConnecting}
+          >
             {transcript.length === 0 && (
-              <div className="rounded-2xl bg-slate-50 p-4 text-xs leading-relaxed text-slate-500">
-                {isConnected
-                  ? `Maya is greeting you: “${openingLine}”`
-                  : "Start the demo and speak naturally. The transcript appears here in real time."}
+              <div className="flex items-center gap-2 rounded-2xl bg-slate-50 p-4 text-xs leading-relaxed text-slate-500">
+                {isConnecting && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-600" />}
+                <span>
+                  {isConnecting
+                    ? "Connecting to Maya…"
+                    : isConnected
+                      ? `Maya is greeting you: “${openingLine}”`
+                      : "Start the demo and speak naturally. The transcript appears here in real time."}
+                </span>
               </div>
             )}
             {transcript.map((turn, index) => (
@@ -303,7 +334,6 @@ export default function AgentDemo({
                 {turn.text}
               </div>
             ))}
-            <div ref={transcriptEndRef} />
           </div>
 
           {onBuildAgent && (

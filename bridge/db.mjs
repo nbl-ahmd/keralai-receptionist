@@ -11,6 +11,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { SLOW_DB_MS, hrNow, msSince, processMetrics } from './metrics.mjs';
 
 const require = createRequire(import.meta.url);
 const { Pool } = require('pg');
@@ -42,8 +43,24 @@ function getPool() {
 }
 
 export async function dbQuery(text, params = []) {
-  const result = await getPool().query(text, params);
-  return result.rows;
+  const startedNs = hrNow();
+  try {
+    const result = await getPool().query(text, params);
+    const ms = msSince(startedNs);
+    processMetrics.dbQueries++;
+    processMetrics.dbLatency.record(ms);
+    if (ms >= SLOW_DB_MS) {
+      processMetrics.dbSlow++;
+      console.warn(
+        `[bridge][db] slow query ${ms.toFixed(0)}ms: ${text.replace(/\s+/g, ' ').trim().slice(0, 90)}`,
+      );
+    }
+    return result.rows;
+  } catch (error) {
+    processMetrics.dbErrors++;
+    console.error('[bridge][db] query failed:', error.message);
+    throw error;
+  }
 }
 
 export async function closePool() {
@@ -217,6 +234,77 @@ export async function upsertCallRecord(call) {
   }
 
   return callId;
+}
+
+// ---------------------------------------------------------------------------
+// Call metrics (per-call latency/throughput, for dashboard audits)
+// ---------------------------------------------------------------------------
+
+/**
+ * Persists aggregate latency/throughput metrics for a completed call.
+ * One row per call (keyed by call_id). Best-effort: logs, never throws.
+ *
+ * @param {string} callId  `calls.id`
+ * @param {object} metrics  Flattened CallMetrics snapshot (see metrics.mjs)
+ * @returns {Promise<boolean>}
+ */
+export async function upsertCallMetrics(callId, metrics) {
+  if (!callId || !metrics) return false;
+  try {
+    await dbQuery(
+      `insert into call_metrics (
+         call_id, call_sid, channel, outcome, duration_sec, gemini_connect_ms,
+         in_chunks, in_bytes, out_frames, out_bytes,
+         in_proc_avg_ms, in_proc_p95_ms, out_proc_avg_ms, out_proc_p95_ms,
+         turn_count, turn_avg_ms, turn_p95_ms, interrupts, tools, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb, now())
+       on conflict (call_id) do update set
+         call_sid = excluded.call_sid,
+         channel = excluded.channel,
+         outcome = excluded.outcome,
+         duration_sec = excluded.duration_sec,
+         gemini_connect_ms = excluded.gemini_connect_ms,
+         in_chunks = excluded.in_chunks,
+         in_bytes = excluded.in_bytes,
+         out_frames = excluded.out_frames,
+         out_bytes = excluded.out_bytes,
+         in_proc_avg_ms = excluded.in_proc_avg_ms,
+         in_proc_p95_ms = excluded.in_proc_p95_ms,
+         out_proc_avg_ms = excluded.out_proc_avg_ms,
+         out_proc_p95_ms = excluded.out_proc_p95_ms,
+         turn_count = excluded.turn_count,
+         turn_avg_ms = excluded.turn_avg_ms,
+         turn_p95_ms = excluded.turn_p95_ms,
+         interrupts = excluded.interrupts,
+         tools = excluded.tools,
+         updated_at = now()`,
+      [
+        callId,
+        metrics.callSid,
+        metrics.channel ?? 'phone',
+        metrics.outcome ?? null,
+        metrics.durationSec ?? 0,
+        metrics.geminiConnectMs ?? null,
+        metrics.inChunks ?? 0,
+        metrics.inBytes ?? 0,
+        metrics.outFrames ?? 0,
+        metrics.outBytes ?? 0,
+        metrics.inProcAvg ?? null,
+        metrics.inProcP95 ?? null,
+        metrics.outProcAvg ?? null,
+        metrics.outProcP95 ?? null,
+        metrics.turnCount ?? 0,
+        metrics.turnAvgMs ?? null,
+        metrics.turnP95Ms ?? null,
+        metrics.interrupts ?? 0,
+        JSON.stringify(metrics.tools ?? {}),
+      ],
+    );
+    return true;
+  } catch (error) {
+    console.error('[bridge][db] Failed to persist call metrics:', error.message);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

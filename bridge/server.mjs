@@ -32,6 +32,7 @@
  *   PG_QUERY_TIMEOUT_MS   — Per-query timeout in ms (default 15000)
  *   CRM_TIMEOUT_MS        — CRM webhook timeout in ms (default 8000)
  *   EMBED_TIMEOUT_MS      — Embedding request timeout in ms (default 8000)
+ *   BARGE_IN_MUTE_MS      — Barge-in audio-mute watchdog in ms (default 2000)
  *   DEBUG_TIMING          — Set to "1" to log latency for key operations
  */
 
@@ -123,38 +124,59 @@ function withTimeout(promise, ms, label) {
 let _cachedProfile = null;
 let _profileUpdatedAt = null;
 let _lastProfileCheck = 0;
+let _profileRefreshing = false;
 const PROFILE_TTL_MS = Number(process.env.PROFILE_CACHE_TTL_MS ?? 5 * 60 * 1000); // 5 min default
 
 /**
- * Returns the company profile from in-memory cache, refreshing only when:
- *   1. The TTL has elapsed since the last version check, AND
- *   2. The DB's updated_at has changed.
- * This means a single cheap query every TTL interval — not every call.
+ * Loads/refreshes the profile from the DB. Only awaits when the DB's updated_at
+ * has changed. Used for the very first (cold) load and background refreshes.
  */
-async function getCompanyProfile() {
-  const now = Date.now();
-  if (_cachedProfile && (now - _lastProfileCheck) < PROFILE_TTL_MS) {
-    return _cachedProfile;
-  }
-
+async function refreshCompanyProfile() {
   const doneVersion = timer('profile-version-check');
   const version = await getProfileVersion();
   doneVersion();
 
-  _lastProfileCheck = now;
   const versionStr = version ? new Date(version).toISOString() : null;
-
   if (_cachedProfile && versionStr === _profileUpdatedAt) {
     return _cachedProfile; // unchanged — skip the full load
   }
 
   const doneLoad = timer('profile-full-load');
-  _cachedProfile = await loadCompanyProfile();
+  const profile = await loadCompanyProfile();
   doneLoad();
+  _cachedProfile = profile;
   _profileUpdatedAt = versionStr;
 
-  console.log(`[bridge] Company profile loaded/refreshed: "${_cachedProfile.name || '(unnamed)'}"`);
-  return _cachedProfile;
+  console.log(`[bridge] Company profile loaded/refreshed: "${profile.name || '(unnamed)'}"`);
+  return profile;
+}
+
+/** Refresh without awaiting — errors are contained (never an unhandled rejection). */
+function refreshCompanyProfileInBackground() {
+  if (_profileRefreshing) return;
+  _profileRefreshing = true;
+  refreshCompanyProfile()
+    .catch((e) => console.error('[bridge] Background profile refresh failed:', e?.message ?? e))
+    .finally(() => { _profileRefreshing = false; });
+}
+
+/**
+ * Returns the company profile from the in-memory cache. After the initial warm
+ * load this never awaits the DB on a call path: when the TTL expires a refresh
+ * is kicked off in the background and the current cached value is returned.
+ */
+async function getCompanyProfile() {
+  const now = Date.now();
+  if (_cachedProfile) {
+    if ((now - _lastProfileCheck) >= PROFILE_TTL_MS) {
+      _lastProfileCheck = now;
+      refreshCompanyProfileInBackground();
+    }
+    return _cachedProfile;
+  }
+
+  _lastProfileCheck = now;
+  return refreshCompanyProfile();
 }
 
 // ─── Audio constants ──────────────────────────────────────────────────────────
@@ -180,6 +202,10 @@ const GEMINI_TO_EXOTEL_RATIO = GEMINI_OUTPUT_SAMPLE_RATE / EXOTEL_SAMPLE_RATE;
 // ~2 seconds of 16-bit PCM — enough to cover connect latency without growing
 // without limit if Gemini never comes up.
 const MAX_PENDING_INPUT_BYTES = EXOTEL_SAMPLE_RATE * 2 * 2;
+
+// Safety net: if Gemini doesn't send `turnComplete` after an interruption, stop
+// muting model audio after this long so the call can't go permanently silent.
+const BARGE_IN_MUTE_MS = Number(process.env.BARGE_IN_MUTE_MS ?? 2000);
 
 // ─── Audio resampling ─────────────────────────────────────────────────────────
 
@@ -220,13 +246,16 @@ class CallSession {
   /**
    * @param {string} callSid
    * @param {string} streamSid
+   * @param {'streamSid'|'stream_sid'} streamKey  Outbound field name to match
+   *   whichever convention this Exotel/Twilio-compatible stream used inbound.
    * @param {WebSocket} exotelWs
    * @param {import('@google/genai').GoogleGenAI} ai
    * @param {object} companyProfile
    */
-  constructor(callSid, streamSid, exotelWs, ai, companyProfile) {
+  constructor(callSid, streamSid, streamKey, exotelWs, ai, companyProfile) {
     this.callSid = callSid;
     this.streamSid = streamSid;
+    this.streamKey = streamKey === 'stream_sid' ? 'stream_sid' : 'streamSid';
     this.exotelWs = exotelWs;
     this.ai = ai;
     this.companyProfile = companyProfile;
@@ -257,8 +286,11 @@ class CallSession {
     this.geminiClosed = false;
     this.pendingInput = Buffer.alloc(0);
 
-    // Barge-in bookkeeping (one clear frame per interrupted turn)
+    // Barge-in bookkeeping: one clear frame per interrupted turn, and mute
+    // model audio until the interrupted turn's `turnComplete` arrives.
     this.interruptSent = false;
+    this.outputMuted = false;
+    this._unmuteTimer = null;
 
     // Per-call booking idempotency: booking key -> Promise<appointment entry>
     this.bookingPromises = new Map();
@@ -531,8 +563,10 @@ class CallSession {
 
     // Force-flush the tail of a turn so final (<chunk) audio isn't stuck.
     if (serverContent?.turnComplete || serverContent?.generationComplete) {
-      this._flushOutputBuffer(true);
+      this._clearUnmuteTimer();
+      this.outputMuted = false; // interrupted turn is over — accept new audio
       this.interruptSent = false;
+      this._flushOutputBuffer(true);
     }
 
     // Tool calls run off the audio path; each sends its own response when ready.
@@ -548,6 +582,8 @@ class CallSession {
 
   /** Forward every inline-audio part of a model turn to Exotel. */
   _forwardModelAudio(serverContent) {
+    // Discard stale audio from an interrupted turn until its turnComplete.
+    if (this.outputMuted) return;
     const parts = serverContent?.modelTurn?.parts;
     if (!parts?.length) return;
 
@@ -574,11 +610,27 @@ class CallSession {
 
   /** Clear queued Exotel playback once per interrupted turn. */
   _handleInterrupt() {
+    this.outputMuted = true;
     this.outputBuffer = Buffer.alloc(0);
+
+    // Watchdog: unmute even if the interrupted turn never reports completion.
+    this._clearUnmuteTimer();
+    this._unmuteTimer = setTimeout(() => {
+      this._unmuteTimer = null;
+      if (!this.closed) this.outputMuted = false;
+    }, BARGE_IN_MUTE_MS);
+
     if (this.interruptSent) return;
     this.interruptSent = true;
     this.log('Barge-in — clearing Exotel playback buffer');
-    this._sendExotelFrame({ event: 'clear', streamSid: this.streamSid });
+    this._sendExotelFrame({ event: 'clear', [this.streamKey]: this.streamSid });
+  }
+
+  _clearUnmuteTimer() {
+    if (this._unmuteTimer) {
+      clearTimeout(this._unmuteTimer);
+      this._unmuteTimer = null;
+    }
   }
 
   /** @param {{ id: string, name: string, args?: object }} fc */
@@ -713,7 +765,7 @@ class CallSession {
   _sendMediaToExotel(pcm16Buf) {
     this._sendExotelFrame({
       event: 'media',
-      streamSid: this.streamSid,
+      [this.streamKey]: this.streamSid,
       media: { payload: pcm16Buf.toString('base64') },
     });
   }
@@ -732,6 +784,8 @@ class CallSession {
     if (this.closed) return;
     this.closed = true;
     this.geminiOpen = false;
+    this.outputMuted = false;
+    this._clearUnmuteTimer();
     this.pendingInput = Buffer.alloc(0);
     this.log('Closing call session');
 
@@ -971,10 +1025,17 @@ async function main() {
             typeof rawCallSid === 'string' && rawCallSid.trim()
               ? rawCallSid.trim()
               : `unknown-${randomUUID()}`;
-          const streamSid =
+          const rawStreamSid =
             frame.stream_sid ?? frame.streamSid ??
             startMeta.stream_sid ?? startMeta.streamSid ??
-            startMeta.stream?.sid ?? 'unknown';
+            startMeta.stream?.sid;
+          // Mirror the inbound field name on outbound frames so we work with
+          // either Twilio (`streamSid`) or snake_case (`stream_sid`) streams.
+          const streamKey = (frame.stream_sid != null || startMeta.stream_sid != null)
+            ? 'stream_sid'
+            : 'streamSid';
+          const streamSid =
+            typeof rawStreamSid === 'string' && rawStreamSid.trim() ? rawStreamSid.trim() : 'unknown';
 
           console.log(`[bridge] Call started — callSid=${callSid}, streamSid=${streamSid}`);
 
@@ -982,7 +1043,7 @@ async function main() {
 
           // Create the session synchronously (before any await) so concurrent
           // 'start'/'media'/'stop' events always observe it.
-          const created = new CallSession(callSid, streamSid, ws, ai, companyProfile);
+          const created = new CallSession(callSid, streamSid, streamKey, ws, ai, companyProfile);
           session = created;
           created.caller = startMeta.from ?? startMeta.caller ?? startMeta.custom_parameters?.caller ?? 'Unknown caller';
           created.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;

@@ -61,8 +61,15 @@ Everything is documented in `.env.local.example` and `bridge/.env.example`. The 
 | --- | --- | --- |
 | `DATABASE_URL` | Vercel & Render | **Required.** Neon pooled connection string (`sslmode=require`). |
 | `GEMINI_API_KEY` | Vercel & Render | **Required** server-side. Used by bridge, embeddings, knowledge chat. |
-| `PUBLIC_APP_ORIGIN` | Render bridge | Optional allowed origin for browser WebSocket relay. |
+| `NEXT_PUBLIC_BRIDGE_WS_URL` | Vercel | **Required in production.** Public WebSocket origin of the Render bridge, e.g. `wss://keralai-bridge.onrender.com`. The browser demo connects here (the dashboard and bridge are different hosts). |
+| `PUBLIC_APP_ORIGIN` | Render bridge | Optional allowed origin for browser WebSocket relay, e.g. `https://keralai-receptionist.vercel.app`. |
 | `CRM_PROVIDER` / `CRM_WEBHOOK_URL` | Vercel & Render | Optional CRM mirroring. |
+
+> The browser demo cannot derive the relay URL from `window.location` because the
+> dashboard (Vercel) and the bridge (Render) are separate services. Set
+> `NEXT_PUBLIC_BRIDGE_WS_URL` on Vercel and redeploy (it is inlined at build
+> time); otherwise the client falls back to the page origin and `/ws/browser`
+> returns 404.
 
 ---
 
@@ -73,9 +80,9 @@ npm run dev:bridge         # local development bridge
 npm run start:bridge       # production start
 ```
 
-The bridge is configured via `render.yaml` for Render Web Service deployment:
-- Health check probe: `GET /health`
-- WebSocket endpoints: `ws://<host>:<port>/ws/exotel` and `/ws/browser`
+The bridge is configured via `render.yaml` for Render Web Service deployment (Root Directory `bridge`, Start Command `node server.mjs`):
+- Health check probe: `GET /ping` (alias `GET /health`)
+- WebSocket endpoints: `wss://<bridge-host>/ws/exotel` and `wss://<bridge-host>/ws/browser`
 - Resamples Exotel PCM (8 kHz) ↔ Gemini Live (16 kHz in / 24 kHz out) with precomputed ratios;
 - In-memory profile caching with TTL + version-check query;
 - Fire-and-forget background CRM sync;

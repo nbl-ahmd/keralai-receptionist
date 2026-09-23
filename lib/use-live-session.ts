@@ -54,7 +54,19 @@ interface RelayFrame {
   appointment?: Appointment;
 }
 
+/**
+ * The voice relay lives on the standalone bridge service (Render), which is a
+ * different origin from the Next.js dashboard (Vercel). Point at it explicitly
+ * via NEXT_PUBLIC_BRIDGE_WS_URL (e.g. wss://keralai-bridge.onrender.com).
+ * Falls back to the current origin for a same-host deployment (local dev).
+ */
+const BRIDGE_WS_URL = process.env.NEXT_PUBLIC_BRIDGE_WS_URL;
+
 function websocketUrl(): string {
+  if (BRIDGE_WS_URL) {
+    const base = BRIDGE_WS_URL.replace(/\/+$/, "");
+    return `${base}/ws/browser`;
+  }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws/browser`;
 }
@@ -202,7 +214,8 @@ export function useLiveSession({
       analyser.fftSize = 256;
       analyserRef.current = analyser;
 
-      const socket = new WebSocket(websocketUrl());
+      const url = websocketUrl();
+      const socket = new WebSocket(url);
       socketRef.current = socket;
 
       socket.onmessage = async (event) => {
@@ -249,7 +262,7 @@ export function useLiveSession({
         }
       };
 
-      socket.onerror = () => setError("Could not connect to the secure voice relay. Start the bridge server.");
+      socket.onerror = () => setError(`Could not reach the voice relay at ${url}. Check the bridge URL.`);
       socket.onclose = () => {
         connectedRef.current = false;
         setIsConnected(false);
@@ -268,7 +281,7 @@ export function useLiveSession({
           }));
           resolve();
         };
-        socket.addEventListener("error", () => reject(new Error("Voice relay connection failed.")), { once: true });
+        socket.addEventListener("error", () => reject(new Error(`Voice relay connection failed (${url}).`)), { once: true });
       });
 
       const source = inputContext.createMediaStreamSource(stream);

@@ -53,6 +53,25 @@ export async function closePool() {
   }
 }
 
+/**
+ * Runs `fn(client)` inside a single transaction on one pooled connection.
+ * Used for operations that must hold a lock or be atomic.
+ */
+export async function withTransaction(fn) {
+  const client = await getPool().connect();
+  try {
+    await client.query('begin');
+    const result = await fn(client);
+    await client.query('commit');
+    return result;
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Company profile
 // ---------------------------------------------------------------------------
@@ -207,6 +226,12 @@ export async function upsertCallRecord(call) {
 /**
  * Books an appointment for a phone call.
  *
+ * Idempotent across calls/processes: a transaction-scoped advisory lock
+ * serialises bookings for the same (name, date, time), and an existing
+ * confirmed appointment for that slot is returned instead of inserting a
+ * duplicate. (No schema change / unique index, so the Next.js `addAppointment`
+ * path is unaffected.)
+ *
  * `callId` is optional: when the caller already knows the `calls.id` (created
  * at call start) it skips a lookup. Otherwise the id is resolved by call_sid.
  *
@@ -219,23 +244,43 @@ export async function persistAppointment(callSid, args, callId = null) {
     throw new Error('persistAppointment: customerName, date and time are required');
   }
 
-  let resolvedCallId = callId;
-  if (!resolvedCallId) {
-    const callRows = await dbQuery(`select id from calls where call_sid = $1`, [callSid]);
-    resolvedCallId = callRows[0]?.id ?? null;
-  }
+  const lockKey = `${args.customerName}|${args.date}|${args.time}`.toLowerCase();
 
-  const contactId = await upsertContact({ name: args.customerName, source: 'phone' });
+  const { row, existed } = await withTransaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock(hashtext($1)::bigint)', [lockKey]);
 
-  const rows = await dbQuery(
-    `insert into appointments (call_id, contact_id, customer_name, date, time, reason, status)
-     values ($1, $2, $3, $4::date, $5, $6, 'confirmed')
-     returning id, customer_name, to_char(date, 'YYYY-MM-DD') as date, time, reason, status, created_at`,
-    [resolvedCallId, contactId, args.customerName, args.date, args.time, args.reason ?? null],
-  );
+    const existing = await client.query(
+      `select id, customer_name, to_char(date, 'YYYY-MM-DD') as date, time, reason, status
+         from appointments
+        where lower(customer_name) = lower($1) and date = $2::date and time = $3 and status = 'confirmed'
+        order by created_at
+        limit 1`,
+      [args.customerName, args.date, args.time],
+    );
+    if (existing.rows[0]) return { row: existing.rows[0], existed: true };
 
-  const row = rows[0];
-  console.log(`[bridge] 📅 Appointment persisted: ${row.id} for ${row.customer_name}`);
+    let resolvedCallId = callId;
+    if (!resolvedCallId) {
+      const callRows = await client.query(`select id from calls where call_sid = $1`, [callSid]);
+      resolvedCallId = callRows.rows[0]?.id ?? null;
+    }
+
+    const contactRows = await client.query(
+      `insert into contacts (name, phone, source, last_contact_at)
+       values ($1, $2, 'phone', now()) returning id`,
+      [args.customerName, null],
+    );
+
+    const inserted = await client.query(
+      `insert into appointments (call_id, contact_id, customer_name, date, time, reason, status)
+       values ($1, $2, $3, $4::date, $5, $6, 'confirmed')
+       returning id, customer_name, to_char(date, 'YYYY-MM-DD') as date, time, reason, status, created_at`,
+      [resolvedCallId, contactRows.rows[0].id, args.customerName, args.date, args.time, args.reason ?? null],
+    );
+    return { row: inserted.rows[0], existed: false };
+  });
+
+  if (!existed) console.log(`[bridge] Appointment persisted: ${row.id} for ${row.customer_name}`);
   return {
     id: row.id,
     customerName: row.customer_name,

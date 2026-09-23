@@ -28,6 +28,7 @@ export class BrowserSession {
     this.buildTools = buildTools;
     this.buildGreeting = buildGreeting;
     this.geminiSession = null;
+    this._opening = false;
     this.closed = false;
     this.callSid = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.startedAt = new Date().toISOString();
@@ -65,6 +66,10 @@ export class BrowserSession {
   }
 
   async open(options = {}) {
+    // Idempotent start: ignore a repeated 'start' while opening or already open.
+    if (this.closed || this.geminiSession || this._opening) return;
+    this._opening = true;
+
     this.report = options.report !== false;
     this.greeting = typeof options.greeting === 'string' ? options.greeting.slice(0, 300) : null;
     this.voiceName = typeof options.voiceName === 'string' ? options.voiceName : 'Aoede';
@@ -107,7 +112,11 @@ export class BrowserSession {
         onclose: () => this.send({ type: 'closed' }),
       },
     });
-    this.geminiSession = await sessionPromise;
+    try {
+      this.geminiSession = await sessionPromise;
+    } finally {
+      this._opening = false;
+    }
   }
 
   async handleGeminiMessage(message) {

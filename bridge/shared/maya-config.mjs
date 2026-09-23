@@ -26,14 +26,61 @@ export function buildTools() {
           name: 'bookAppointment',
           parameters: {
             type: 'OBJECT',
-            description: 'Book an appointment for a customer.',
+            description:
+              'Book an appointment/table for a customer. Use only after collecting name, date and time.',
             properties: {
               customerName: { type: 'STRING', description: 'Name of the customer' },
+              phone: { type: 'STRING', description: 'Caller phone number (optional)' },
               date: { type: 'STRING', description: 'Date of appointment (YYYY-MM-DD)' },
               time: { type: 'STRING', description: 'Time of appointment (HH:MM)' },
               reason: { type: 'STRING', description: 'Reason for appointment (optional)' },
             },
             required: ['customerName', 'date', 'time'],
+          },
+        },
+        {
+          name: 'requestCallback',
+          parameters: {
+            type: 'OBJECT',
+            description:
+              'Register a request for someone from the team to call the customer back later. Use when the caller asks to be called back or wants to speak to a human.',
+            properties: {
+              customerName: { type: 'STRING', description: 'Name of the customer' },
+              phone: { type: 'STRING', description: 'Phone number to call back (optional)' },
+              preferredTime: { type: 'STRING', description: 'Preferred time to be called (optional)' },
+              reason: { type: 'STRING', description: 'Why they want a callback (optional)' },
+            },
+            required: ['customerName'],
+          },
+        },
+        {
+          name: 'captureQuoteRequest',
+          parameters: {
+            type: 'OBJECT',
+            description:
+              'Capture a quote/pricing request. Use when the caller asks about pricing, a quote, or an estimate for work or a project.',
+            properties: {
+              customerName: { type: 'STRING', description: 'Name of the customer' },
+              phone: { type: 'STRING', description: 'Phone number (optional)' },
+              projectType: { type: 'STRING', description: 'Type of project/service (optional)' },
+              details: { type: 'STRING', description: 'Details about what they need (optional)' },
+              timeline: { type: 'STRING', description: 'When they need it (optional)' },
+            },
+            required: ['customerName'],
+          },
+        },
+        {
+          name: 'takeMessage',
+          parameters: {
+            type: 'OBJECT',
+            description:
+              'Take a general message for the team. Use as a catch-all when the query is not a booking, callback or quote request, or when the caller wants to leave information.',
+            properties: {
+              customerName: { type: 'STRING', description: 'Name of the customer' },
+              phone: { type: 'STRING', description: 'Phone number (optional)' },
+              message: { type: 'STRING', description: 'The message to pass on' },
+            },
+            required: ['customerName', 'message'],
           },
         },
         {
@@ -121,10 +168,17 @@ export function buildSystemInstruction(companyProfile, voiceSettings = {}) {
   return `You are Maya, a warm, professional, and efficient AI receptionist for ${companyProfile.name || 'us'}, located in ${companyProfile.address || 'Kerala'}.
 1. LANGUAGE: You MUST speak Malayalam fluently. You can also speak English if the user prefers, or mix them (Manglish) for a natural Kerala business feel.
 2. ROLE: Answer customer queries about the business, services, menu, etc. based on the Company Details and by searching the knowledge base.
-3. BOOKING: If a user wants to book an appointment/table, ask for their Name, Date, and Time, then use the 'bookAppointment' tool.
-4. TONE: Be polite, welcoming, and speak at a natural, unhurried pace, like a helpful human receptionist. Use phrases like "Namaskaram" (Hello), "Endha vishayam?" (What is the matter?), "Sheri" (Okay).
-5. CONTEXT: You are representing ${companyProfile.name || 'the business'}. Always refer to the company as "we" or "us".
-6. KNOWLEDGE BASE: Call 'searchKnowledgeBase' only when a caller explicitly asks about services, pricing, process, policies, or specific business details. DO NOT use this tool for greetings, goodbyes, basic conversational interactions (e.g., "yes", "okay", "thank you"), or information already in this prompt. Use only the returned content; never guess. If the answer is not found, politely say you do not have that information and offer to take a message.
+3. TONE: Be polite, welcoming, and speak at a natural, unhurried pace, like a helpful human receptionist. Use phrases like "Namaskaram" (Hello), "Endha vishayam?" (What is the matter?), "Sheri" (Okay).
+4. CONTEXT: You are representing ${companyProfile.name || 'the business'}. Always refer to the company as "we" or "us".
+5. KNOWLEDGE BASE: Call 'searchKnowledgeBase' when the caller asks about services, process, policies, or business details. Do NOT use it for greetings, goodbyes, basic conversational replies (e.g. "yes", "okay", "thank you"), or information already in this prompt. Use only the returned content; never guess. If the answer is not found, politely say you do not have that information and offer to take a message.
+6. TAKE ACTION WITH TOOLS — choose exactly one action for the caller's intent:
+   - Wants to book / reserve / schedule an appointment or table → collect Name, Date, Time, then call 'bookAppointment'.
+   - Wants a phone call back / to speak to a person → call 'requestCallback' (ask for name and a preferred time).
+   - Asks about pricing / a quote / an estimate → answer from the knowledge base if you can, and call 'captureQuoteRequest' to log the request.
+   - Anything else that needs follow-up, or the caller wants to leave information → call 'takeMessage'.
+   - Simple questions answerable from the knowledge base or this prompt → just answer; no tool needed.
+   Always collect at least the caller's name before calling an action tool. Include the phone number when the caller provides it.
+7. NEVER CONFIRM WITHOUT SUCCESS: Only tell the caller an action is done AFTER the tool returns a successful result. If a tool returns an error or failure, apologise, say you could not complete it right now, and offer to try again or take a message. Never say "booked", "noted", "requested" or similar unless the tool actually succeeded.
 
 ${profileInstruction}
 

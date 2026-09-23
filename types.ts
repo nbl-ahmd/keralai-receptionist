@@ -200,6 +200,50 @@ export interface CallMetricsSummary {
   totalOutBytes: number;
 }
 
+export interface CallbackRequest {
+  id: string;
+  callSid: string | null;
+  customerName: string;
+  phone: string | null;
+  preferredTime: string | null;
+  reason: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface QuoteRequest {
+  id: string;
+  callSid: string | null;
+  customerName: string;
+  phone: string | null;
+  projectType: string | null;
+  details: string | null;
+  timeline: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface MessageRow {
+  id: string;
+  callSid: string | null;
+  customerName: string;
+  phone: string | null;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface CallLogRow {
+  id: string;
+  callSid: string;
+  callerNumber: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  summary: string | null;
+  transcript: TranscriptTurn[] | null;
+  createdAt: string;
+}
+
 export enum ViewState {
   DASHBOARD = 'DASHBOARD',
   KNOWLEDGE_BASE = 'KNOWLEDGE_BASE',

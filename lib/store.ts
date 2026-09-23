@@ -18,12 +18,16 @@ import {
   Appointment,
   CallMetric,
   CallMetricsSummary,
+  CallLogRow,
   CallOutcome,
   CallRecord,
+  CallbackRequest,
   CompanyProfile,
   Contact,
   DashboardMetrics,
   KnowledgeItem,
+  MessageRow,
+  QuoteRequest,
   ToolMetric,
   TranscriptTurn,
   VOICE_OPTIONS,
@@ -976,4 +980,142 @@ export async function getCallMetricsSummary(): Promise<CallMetricsSummary> {
     totalInBytes: Number(row?.total_in_bytes ?? 0),
     totalOutBytes: Number(row?.total_out_bytes ?? 0),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Call actions: callback requests, quote requests, messages, call log
+// ---------------------------------------------------------------------------
+
+const clampLimit = (limit: number) => Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
+
+export async function getCallbackRequests(limit = 100): Promise<CallbackRequest[]> {
+  const rows = await query<{
+    id: string;
+    call_sid: string | null;
+    customer_name: string;
+    phone: string | null;
+    preferred_time: string | null;
+    reason: string | null;
+    status: string;
+    created_at: unknown;
+  }>(
+    `select cr.id, c.call_sid, cr.customer_name, cr.phone, cr.preferred_time, cr.reason, cr.status, cr.created_at
+       from callback_requests cr
+       left join calls c on c.id = cr.call_id
+      order by cr.created_at desc
+      limit $1`,
+    [clampLimit(limit)],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    callSid: row.call_sid,
+    customerName: row.customer_name,
+    phone: row.phone,
+    preferredTime: row.preferred_time,
+    reason: row.reason,
+    status: row.status,
+    createdAt: toIso(row.created_at),
+  }));
+}
+
+export async function updateCallbackStatus(id: string, status: string): Promise<void> {
+  if (!isUuid(id)) return;
+  await query(`update callback_requests set status = $2, updated_at = now() where id = $1`, [id, status]);
+}
+
+export async function getQuoteRequests(limit = 100): Promise<QuoteRequest[]> {
+  const rows = await query<{
+    id: string;
+    call_sid: string | null;
+    customer_name: string;
+    phone: string | null;
+    project_type: string | null;
+    details: string | null;
+    timeline: string | null;
+    status: string;
+    created_at: unknown;
+  }>(
+    `select qr.id, c.call_sid, qr.customer_name, qr.phone, qr.project_type, qr.details, qr.timeline, qr.status, qr.created_at
+       from quote_requests qr
+       left join calls c on c.id = qr.call_id
+      order by qr.created_at desc
+      limit $1`,
+    [clampLimit(limit)],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    callSid: row.call_sid,
+    customerName: row.customer_name,
+    phone: row.phone,
+    projectType: row.project_type,
+    details: row.details,
+    timeline: row.timeline,
+    status: row.status,
+    createdAt: toIso(row.created_at),
+  }));
+}
+
+export async function updateQuoteStatus(id: string, status: string): Promise<void> {
+  if (!isUuid(id)) return;
+  await query(`update quote_requests set status = $2, updated_at = now() where id = $1`, [id, status]);
+}
+
+export async function getMessages(limit = 100): Promise<MessageRow[]> {
+  const rows = await query<{
+    id: string;
+    call_sid: string | null;
+    customer_name: string;
+    phone: string | null;
+    message: string;
+    read: boolean;
+    created_at: unknown;
+  }>(
+    `select m.id, c.call_sid, m.customer_name, m.phone, m.message, m.read, m.created_at
+       from messages m
+       left join calls c on c.id = m.call_id
+      order by m.created_at desc
+      limit $1`,
+    [clampLimit(limit)],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    callSid: row.call_sid,
+    customerName: row.customer_name,
+    phone: row.phone,
+    message: row.message,
+    read: Boolean(row.read),
+    createdAt: toIso(row.created_at),
+  }));
+}
+
+export async function markMessageRead(id: string, read = true): Promise<void> {
+  if (!isUuid(id)) return;
+  await query(`update messages set read = $2 where id = $1`, [id, read]);
+}
+
+export async function getCallLog(limit = 100): Promise<CallLogRow[]> {
+  const rows = await query<{
+    id: string;
+    call_sid: string;
+    caller_number: string | null;
+    started_at: unknown;
+    ended_at: unknown;
+    summary: string | null;
+    transcript: TranscriptTurn[] | null;
+    created_at: unknown;
+  }>(
+    `select id, call_sid, caller_number, started_at, ended_at, summary, transcript, created_at
+       from call_log order by created_at desc limit $1`,
+    [clampLimit(limit)],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    callSid: row.call_sid,
+    callerNumber: row.caller_number,
+    startedAt: row.started_at ? toIso(row.started_at) : null,
+    endedAt: row.ended_at ? toIso(row.ended_at) : null,
+    summary: row.summary,
+    transcript: row.transcript ?? null,
+    createdAt: toIso(row.created_at),
+  }));
 }

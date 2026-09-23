@@ -12,6 +12,9 @@ import { Modality } from '@google/genai';
 import {
   logCrmSyncEvent,
   persistAppointment,
+  persistCallbackRequest,
+  persistMessage,
+  persistQuoteRequest,
   searchKnowledgeEmbeddings,
   upsertCallMetrics,
   upsertCallRecord,
@@ -239,6 +242,37 @@ export class BrowserSession {
           }
           this.geminiSession.sendToolResponse({
             functionResponses: { id: fc.id, name: fc.name, response: { result: results } },
+          });
+        } else if (
+          fc.name === 'requestCallback' ||
+          fc.name === 'captureQuoteRequest' ||
+          fc.name === 'takeMessage'
+        ) {
+          let response;
+          try {
+            if (this.report) {
+              if (fc.name === 'requestCallback') {
+                await persistCallbackRequest(this.callSid, fc.args, null);
+              } else if (fc.name === 'captureQuoteRequest') {
+                await persistQuoteRequest(this.callSid, fc.args, null);
+              } else {
+                await persistMessage(this.callSid, fc.args, null);
+              }
+            }
+            response = { result: 'Saved successfully.' };
+          } catch (error) {
+            toolOk = false;
+            console.error('[browser][relay] action failed:', error);
+            response = {
+              result: 'FAILED: could not save due to a system error. Do not confirm; apologise and offer to try again.',
+            };
+          }
+          this.geminiSession.sendToolResponse({
+            functionResponses: { id: fc.id, name: fc.name, response },
+          });
+        } else if (fc.name) {
+          this.geminiSession.sendToolResponse({
+            functionResponses: { id: fc.id, name: fc.name, response: { result: 'OK' } },
           });
         }
 

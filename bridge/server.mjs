@@ -58,6 +58,10 @@ import {
   loadCompanyProfile,
   logCrmSyncEvent,
   persistAppointment,
+  persistCallbackRequest,
+  persistCallLog,
+  persistMessage,
+  persistQuoteRequest,
   searchKnowledgeEmbeddings,
   upsertCallMetrics,
   upsertCallRecord,
@@ -768,9 +772,16 @@ class CallSession {
   async _handleToolCall(fc) {
     const startedNs = hrNow();
     let ok = true;
+    this.log(`Tool call: ${fc.name} args=${JSON.stringify(fc.args ?? {})}`);
     try {
       if (fc.name === 'bookAppointment') {
         await this._handleBookAppointment(fc);
+      } else if (fc.name === 'requestCallback') {
+        await this._handleRequestCallback(fc);
+      } else if (fc.name === 'captureQuoteRequest') {
+        await this._handleQuoteRequest(fc);
+      } else if (fc.name === 'takeMessage') {
+        await this._handleTakeMessage(fc);
       } else if (fc.name === 'searchKnowledgeBase') {
         await this._handleSearchKnowledge(fc);
       } else {
@@ -780,7 +791,11 @@ class CallSession {
     } catch (e) {
       ok = false;
       this.err(`Tool "${fc?.name}" failed:`, e);
-      this._sendToolResponse(fc, { result: 'This action could not be completed right now.' });
+      // Tell Gemini explicitly NOT to confirm success to the caller.
+      this._sendToolResponse(fc, {
+        result:
+          'FAILED: the action could not be saved due to a system error. Do NOT tell the caller it succeeded. Apologise and offer to try again or take a message.',
+      });
     } finally {
       const toolMs = msSince(startedNs);
       this.metrics.recordTool(fc?.name ?? 'unknown', toolMs, ok);
@@ -824,11 +839,16 @@ class CallSession {
       this.outcome = 'booked';
       this.intent = args.reason || 'Appointment booking';
       this.caller = args.customerName || this.caller;
-      result = { result: `Appointment booked successfully. ID: ${entry.id}` };
+      result = {
+        result: `Appointment booked successfully for ${args.date} at ${args.time} (status: ${entry.status}).`,
+      };
     } catch (e) {
       this.err('Error persisting appointment:', e);
       this.bookingPromises.delete(key); // allow a clean retry
-      result = { result: 'Appointment booking recorded (storage error, please confirm manually).' };
+      result = {
+        result:
+          'FAILED: the appointment could not be saved due to a system error. Do NOT confirm the booking. Apologise and offer to try again or take a message.',
+      };
     }
 
     // Respond to Gemini FIRST so Maya can keep talking immediately.
@@ -851,6 +871,51 @@ class CallSession {
         });
       });
     }
+  }
+
+  async _handleRequestCallback(fc) {
+    const args = fc.args ?? {};
+    if (!args.customerName) {
+      this._sendToolResponse(fc, {
+        result: 'No caller name yet. Ask the caller for their name, then call requestCallback again.',
+      });
+      return;
+    }
+    const callId = await this.ensureCallRecord();
+    const entry = await persistCallbackRequest(this.callSid, args, callId);
+    if (!this.intent) this.intent = 'Callback request';
+    this.caller = args.customerName || this.caller;
+    this._sendToolResponse(fc, { result: `Callback request saved successfully (ID: ${entry.id}).` });
+  }
+
+  async _handleQuoteRequest(fc) {
+    const args = fc.args ?? {};
+    if (!args.customerName) {
+      this._sendToolResponse(fc, {
+        result: 'No caller name yet. Ask the caller for their name, then call captureQuoteRequest again.',
+      });
+      return;
+    }
+    const callId = await this.ensureCallRecord();
+    const entry = await persistQuoteRequest(this.callSid, args, callId);
+    if (!this.intent) this.intent = 'Quote request';
+    this.caller = args.customerName || this.caller;
+    this._sendToolResponse(fc, { result: `Quote request saved successfully (ID: ${entry.id}).` });
+  }
+
+  async _handleTakeMessage(fc) {
+    const args = fc.args ?? {};
+    if (!args.customerName || !args.message) {
+      this._sendToolResponse(fc, {
+        result: 'Need the caller name and the message. Ask for what is missing, then call takeMessage again.',
+      });
+      return;
+    }
+    const callId = await this.ensureCallRecord();
+    const entry = await persistMessage(this.callSid, args, callId);
+    if (!this.intent) this.intent = 'Message taken';
+    this.caller = args.customerName || this.caller;
+    this._sendToolResponse(fc, { result: `Message saved successfully (ID: ${entry.id}).` });
   }
 
   async _handleSearchKnowledge(fc) {
@@ -985,6 +1050,16 @@ class CallSession {
         turnP95Ms: m.turns.p95,
         interrupts: m.interrupts,
         tools: m.tools,
+      });
+
+      // Always leave a per-call log row, even if no action tool was called.
+      await persistCallLog({
+        callSid: this.callSid,
+        callerNumber: this.phone,
+        startedAt: record.startedAt,
+        endedAt: record.endedAt,
+        summary: record.summary,
+        transcript: record.transcript,
       });
 
       if (getCrmProvider() !== 'none') {

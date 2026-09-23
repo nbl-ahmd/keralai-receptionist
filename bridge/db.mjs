@@ -345,7 +345,7 @@ export async function upsertCallMetrics(callId, metrics) {
  * at call start) it skips a lookup. Otherwise the id is resolved by call_sid.
  *
  * @param {string} callSid
- * @param {{ customerName: string, date: string, time: string, reason?: string }} args
+ * @param {{ customerName: string, phone?: string, date: string, time: string, reason?: string }} args
  * @param {string|null} [callId]
  */
 export async function persistAppointment(callSid, args, callId = null) {
@@ -353,6 +353,7 @@ export async function persistAppointment(callSid, args, callId = null) {
     throw new Error('persistAppointment: customerName, date and time are required');
   }
 
+  const phone = args.phone?.trim() || null;
   const lockKey = `${args.customerName}|${args.date}|${args.time}`.toLowerCase();
 
   const { row, existed } = await withTransaction(async (client) => {
@@ -361,7 +362,8 @@ export async function persistAppointment(callSid, args, callId = null) {
     const existing = await client.query(
       `select id, customer_name, to_char(date, 'YYYY-MM-DD') as date, time, reason, status
          from appointments
-        where lower(customer_name) = lower($1) and date = $2::date and time = $3 and status = 'confirmed'
+        where lower(customer_name) = lower($1) and date = $2::date and time = $3
+          and status in ('pending','confirmed')
         order by created_at
         limit 1`,
       [args.customerName, args.date, args.time],
@@ -377,14 +379,14 @@ export async function persistAppointment(callSid, args, callId = null) {
     const contactRows = await client.query(
       `insert into contacts (name, phone, source, last_contact_at)
        values ($1, $2, 'phone', now()) returning id`,
-      [args.customerName, null],
+      [args.customerName, phone],
     );
 
     const inserted = await client.query(
-      `insert into appointments (call_id, contact_id, customer_name, date, time, reason, status)
-       values ($1, $2, $3, $4::date, $5, $6, 'confirmed')
+      `insert into appointments (call_id, contact_id, customer_name, customer_phone, date, time, reason, status)
+       values ($1, $2, $3, $4, $5::date, $6, $7, 'pending')
        returning id, customer_name, to_char(date, 'YYYY-MM-DD') as date, time, reason, status, created_at`,
-      [resolvedCallId, contactRows.rows[0].id, args.customerName, args.date, args.time, args.reason ?? null],
+      [resolvedCallId, contactRows.rows[0].id, args.customerName, phone, args.date, args.time, args.reason ?? null],
     );
     return { row: inserted.rows[0], existed: false };
   });
@@ -397,7 +399,95 @@ export async function persistAppointment(callSid, args, callId = null) {
     time: row.time,
     reason: row.reason,
     status: row.status,
+    existed,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Call actions: callback requests, quote requests, messages, call log
+// ---------------------------------------------------------------------------
+
+/** Resolve `calls.id` for a call_sid, unless already known. */
+async function resolveCallId(callSid, callId) {
+  if (callId) return callId;
+  const rows = await dbQuery(`select id from calls where call_sid = $1`, [callSid]);
+  return rows[0]?.id ?? null;
+}
+
+/** requestCallback → callback_requests (status 'pending'). */
+export async function persistCallbackRequest(callSid, args, callId = null) {
+  if (!args?.customerName) throw new Error('requestCallback: customerName is required');
+  const resolvedCallId = await resolveCallId(callSid, callId);
+  const rows = await dbQuery(
+    `insert into callback_requests (call_id, customer_name, phone, preferred_time, reason, status)
+     values ($1, $2, $3, $4, $5, 'pending')
+     returning id, customer_name, preferred_time, status`,
+    [resolvedCallId, args.customerName, args.phone?.trim() || null, args.preferredTime ?? null, args.reason ?? null],
+  );
+  const row = rows[0];
+  console.log(`[bridge] Callback request persisted: ${row.id}`);
+  return { id: row.id, customerName: row.customer_name, preferredTime: row.preferred_time, status: row.status };
+}
+
+/** captureQuoteRequest → quote_requests (status 'new'). */
+export async function persistQuoteRequest(callSid, args, callId = null) {
+  if (!args?.customerName) throw new Error('captureQuoteRequest: customerName is required');
+  const resolvedCallId = await resolveCallId(callSid, callId);
+  const rows = await dbQuery(
+    `insert into quote_requests (call_id, customer_name, phone, project_type, details, timeline, status)
+     values ($1, $2, $3, $4, $5, $6, 'new')
+     returning id, customer_name, project_type, status`,
+    [
+      resolvedCallId,
+      args.customerName,
+      args.phone?.trim() || null,
+      args.projectType ?? null,
+      args.details ?? null,
+      args.timeline ?? null,
+    ],
+  );
+  const row = rows[0];
+  console.log(`[bridge] Quote request persisted: ${row.id}`);
+  return { id: row.id, customerName: row.customer_name, projectType: row.project_type, status: row.status };
+}
+
+/** takeMessage → messages (read false). */
+export async function persistMessage(callSid, args, callId = null) {
+  if (!args?.customerName || !args?.message) {
+    throw new Error('takeMessage: customerName and message are required');
+  }
+  const resolvedCallId = await resolveCallId(callSid, callId);
+  const rows = await dbQuery(
+    `insert into messages (call_id, customer_name, phone, message)
+     values ($1, $2, $3, $4)
+     returning id, customer_name`,
+    [resolvedCallId, args.customerName, args.phone?.trim() || null, args.message],
+  );
+  const row = rows[0];
+  console.log(`[bridge] Message persisted: ${row.id}`);
+  return { id: row.id, customerName: row.customer_name };
+}
+
+/** Always-on per-call log row. Best-effort; never throws. */
+export async function persistCallLog({ callSid, callerNumber, startedAt, endedAt, summary, transcript }) {
+  try {
+    await dbQuery(
+      `insert into call_log (call_sid, caller_number, started_at, ended_at, summary, transcript)
+       values ($1, $2, $3::timestamptz, $4::timestamptz, $5, $6::jsonb)`,
+      [
+        callSid,
+        callerNumber ?? null,
+        startedAt ?? null,
+        endedAt ?? null,
+        summary ?? null,
+        transcript ? JSON.stringify(transcript) : null,
+      ],
+    );
+    return true;
+  } catch (error) {
+    console.error('[bridge][db] Failed to write call_log:', error.message);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -115,9 +115,9 @@ const KnowledgeBase: React.FC<KnowledgeBaseProps> = ({
                 // If the current global profile is generic/default, auto-save to App state
                 if (companyProfile.name === 'Your Business Name') {
                     onUpdateProfile(updatedProfile);
-                    setExtractedInfoMsg(`Extracted business details for "${name}" and updated Company Profile.`);
+                    setExtractedInfoMsg(`Extracted details for "${name}" and updated Assistant profile.`);
                 } else {
-                    setExtractedInfoMsg(`Detected business details for "${name}". Check the Company Profile tab to review and save.`);
+                    setExtractedInfoMsg(`Detected details for "${name}". Check the Assistant profile tab to review and save.`);
                 }
             }
         }
@@ -178,7 +178,7 @@ const KnowledgeBase: React.FC<KnowledgeBaseProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-6">
         <div>
           <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Knowledge Base</h2>
-          <p className="text-slate-500 mt-1">Manage business intelligence for your AI receptionist.</p>
+          <p className="text-slate-500 mt-1">What your assistant knows and can apply.</p>
         </div>
         
         <div className="flex bg-slate-100/80 p-1.5 rounded-xl">
@@ -200,7 +200,7 @@ const KnowledgeBase: React.FC<KnowledgeBaseProps> = ({
                     : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50 shadow-none'
                 }`}
             >
-                Company Profile
+                Assistant profile
             </button>
         </div>
       </div>
@@ -214,7 +214,7 @@ const KnowledgeBase: React.FC<KnowledgeBaseProps> = ({
                     </div>
                     <div>
                         <h3 className="text-lg font-bold text-slate-900">Business Identity</h3>
-                        <p className="text-slate-500 text-sm">This information defines how Maya represents your company.</p>
+                        <p className="text-slate-500 text-sm">Details your assistant uses to introduce you accurately.</p>
                     </div>
                 </div>
 
@@ -279,7 +279,7 @@ const KnowledgeBase: React.FC<KnowledgeBaseProps> = ({
                             value={profileForm.description}
                             onChange={(e) => setProfileForm({...profileForm, description: e.target.value})}
                             className="w-full rounded-lg border-slate-200 bg-slate-50 p-3 text-slate-900 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all resize-none"
-                            placeholder="Describe your business, what makes it special, and how you want Maya to represent you."
+                            placeholder="Describe your work and how you would like calls handled."
                         />
                     </div>
                 </div>

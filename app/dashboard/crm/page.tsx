@@ -139,33 +139,35 @@ export default function CrmPage() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-8 sm:flex-row sm:items-center sm:justify-between lg:pt-10">
+    <div className="min-h-screen bg-[hsl(var(--background))]">
+      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-8">
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard"
-            className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
             title="Back to dashboard"
+            aria-label="Back to dashboard"
           >
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-emerald-700">Reception OS</p>
-            <h1 className="text-2xl font-bold text-slate-900">Inbox (CRM)</h1>
-            <p className="text-sm text-slate-500">Everything the receptionist captured on calls.</p>
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Inbox</h1>
+            <p className="mt-0.5 text-sm text-slate-500">Everything your assistant captured on calls.</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <span className="hidden text-xs text-slate-500 sm:block">
             {lastSynced ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Syncing…"}
           </span>
-          <Button variant="ghost" className="gap-2 text-slate-600" onClick={() => load()} disabled={isRefreshing}>
-            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} /> Refresh
+          <Button variant="ghost" size="sm" className="gap-1.5 text-slate-600" onClick={() => load()} disabled={isRefreshing}>
+            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+            <span className="hidden sm:inline">Refresh</span>
           </Button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-12">
+      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-14 sm:px-6">
         {error && (
           <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             <TriangleAlert className="h-4 w-4 shrink-0" />
@@ -179,18 +181,18 @@ export default function CrmPage() {
           </div>
         ) : (
           <Tabs defaultValue="appointments" className="w-full">
-            <TabsList className="flex w-full flex-wrap gap-2">
-              <TabsTrigger value="appointments" className="gap-2">
-                <CalendarClock className="h-4 w-4" /> Appointments <Badge variant="secondary">{counts.appointments}</Badge>
+            <TabsList className="grid w-full grid-cols-2 gap-1.5 sm:grid-cols-4">
+              <TabsTrigger value="appointments" className="w-full gap-1.5 px-2">
+                <CalendarClock className="h-4 w-4 shrink-0" /> Appointments <Badge variant="secondary">{counts.appointments}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="callbacks" className="gap-2">
-                <PhoneCall className="h-4 w-4" /> Callbacks <Badge variant="secondary">{counts.callbacks}</Badge>
+              <TabsTrigger value="callbacks" className="w-full gap-1.5 px-2">
+                <PhoneCall className="h-4 w-4 shrink-0" /> Callbacks <Badge variant="secondary">{counts.callbacks}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="quotes" className="gap-2">
-                <Sparkles className="h-4 w-4" /> Quotes <Badge variant="secondary">{counts.quotes}</Badge>
+              <TabsTrigger value="quotes" className="w-full gap-1.5 px-2">
+                <Sparkles className="h-4 w-4 shrink-0" /> Quotes <Badge variant="secondary">{counts.quotes}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="messages" className="gap-2">
-                <MessageSquare className="h-4 w-4" /> Messages <Badge variant="secondary">{counts.messages}</Badge>
+              <TabsTrigger value="messages" className="w-full gap-1.5 px-2">
+                <MessageSquare className="h-4 w-4 shrink-0" /> Messages <Badge variant="secondary">{counts.messages}</Badge>
               </TabsTrigger>
             </TabsList>
 
@@ -199,10 +201,10 @@ export default function CrmPage() {
               <Card className="shadow-card">
                 <CardHeader>
                   <CardTitle>Appointments</CardTitle>
-                  <CardDescription>Bookings captured by Maya (newest first).</CardDescription>
+                  <CardDescription>Bookings arranged by your assistant (newest first).</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-[560px] pr-2">
+                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
                     <Table
                       head={["Guest", "Phone", "When", "Reason", "Status", ""]}
                       empty="No appointments yet."
@@ -237,7 +239,7 @@ export default function CrmPage() {
                   <CardDescription>Callers who asked to be called back.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-[560px] pr-2">
+                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
                     <Table
                       head={["Name", "Phone", "Preferred", "Reason", "Status", ""]}
                       empty="No callback requests yet."
@@ -272,7 +274,7 @@ export default function CrmPage() {
                   <CardDescription>Callers who asked for pricing or a quote.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-[560px] pr-2">
+                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
                     <Table
                       head={["Name", "Phone", "Project", "Details", "Timeline", "Status", ""]}
                       empty="No quote requests yet."
@@ -313,7 +315,7 @@ export default function CrmPage() {
                   )}
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-[560px] pr-2">
+                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
                     <div className="space-y-3">
                       {data.messages.length === 0 && (
                         <p className="py-10 text-center text-sm text-slate-500">No messages yet.</p>

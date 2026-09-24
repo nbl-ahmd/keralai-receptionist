@@ -3,70 +3,63 @@
 @tailwind utilities;
 
 :root {
-  --background: 210 40% 98%;
-  --foreground: 222 47% 11%;
+  --background: 40 20% 98%;
+  --foreground: 222 24% 11%;
   --card: 0 0% 100%;
-  --card-foreground: 222 47% 11%;
+  --card-foreground: 222 24% 11%;
   --popover: 0 0% 100%;
-  --popover-foreground: 222 47% 11%;
-  --primary: 158 64% 45%;
+  --popover-foreground: 222 24% 11%;
+  --primary: 160 62% 35%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 215 25% 95%;
-  --secondary-foreground: 222 47% 11%;
-  --muted: 215 25% 92%;
-  --muted-foreground: 222 20% 35%;
-  --accent: 220 73% 56%;
+  --secondary: 220 16% 96%;
+  --secondary-foreground: 222 24% 11%;
+  --muted: 220 16% 94%;
+  --muted-foreground: 220 10% 42%;
+  --accent: 160 62% 35%;
   --accent-foreground: 0 0% 100%;
-  --destructive: 0 84% 60%;
+  --destructive: 0 72% 51%;
   --destructive-foreground: 0 0% 100%;
-  --border: 214 32% 91%;
-  --input: 214 32% 91%;
-  --ring: 158 64% 45%;
-  --radius: 18px;
+  --border: 220 16% 90%;
+  --input: 220 16% 88%;
+  --ring: 160 62% 35%;
+  --radius: 14px;
 }
 
 * {
   @apply border-border;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
-  background-image: radial-gradient(circle at 20% 20%, rgba(16, 185, 129, 0.1), transparent 30%),
-    radial-gradient(circle at 80% 0%, rgba(59, 130, 246, 0.12), transparent 28%);
+  @apply bg-[hsl(var(--background))] text-slate-900 antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Consistent, subtle elevation for cards and panels. */
+.shadow-card {
+  box-shadow: 0 1px 2px -1px rgba(15, 23, 42, 0.08), 0 12px 32px -24px rgba(15, 23, 42, 0.35);
 }
 
 .glass-panel {
-  @apply bg-white/70 backdrop-blur-xl border border-white/60 shadow-[0_20px_70px_-40px_rgba(15,23,42,0.4)] rounded-3xl;
+  @apply rounded-2xl border border-slate-200/80 bg-white;
+  box-shadow: 0 1px 2px -1px rgba(15, 23, 42, 0.08), 0 12px 32px -24px rgba(15, 23, 42, 0.28);
 }
 
-.gradient-border {
-  position: relative;
+/* Balance short headings so they don't leave orphan words. */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
 }
 
-.gradient-border::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(120deg, #22c55e, #0ea5e9, #8b5cf6);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
+::selection {
+  background: rgba(16, 185, 129, 0.22);
 }
 
-.shadow-card {
-  box-shadow: 0 20px 80px -30px rgba(15, 23, 42, 0.35);
-}
-
-.marquee {
-  display: flex;
-  gap: 1.5rem;
-  animation: marquee 22s linear infinite;
-}
-
-@keyframes marquee {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+/* Skeleton shimmer used by loading placeholders. */
+.skeleton {
+  @apply animate-pulse rounded-lg bg-slate-200/70;
 }

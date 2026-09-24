@@ -213,9 +213,7 @@ function clampInt(value, fallback, min, max) {
  * Resolves Gemini Live input-transcription and VAD settings.
  *
  * Environment variables:
- *   GEMINI_TRANSCRIPTION_LANGUAGES         e.g. "ml-IN,en-IN"
  *   GEMINI_TRANSCRIPTION_CUSTOM_VOCABULARY e.g. "Nabeel,KeralAI,Kerala"
- *   GEMINI_TRANSCRIPTION_MODE              VERBATIM | SMART (default VERBATIM)
  *   GEMINI_END_SILENCE_MS                  end-of-speech silence (default 400)
  *   GEMINI_PREFIX_PADDING_MS               prefix padding (default 80)
  *
@@ -224,22 +222,16 @@ function clampInt(value, fallback, min, max) {
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {{
- *   languageCodes: string[],
  *   customVocabulary: string[],
- *   transcriptionMode: 'VERBATIM'|'SMART',
  *   endOfSpeechSilenceMs: number,
  *   prefixPaddingMs: number,
  * }}
  */
 export function resolveLiveAudioSettings(env = process.env) {
-  const languages = parseCsvEnv(env.GEMINI_TRANSCRIPTION_LANGUAGES);
   const vocabulary = parseCsvEnv(env.GEMINI_TRANSCRIPTION_CUSTOM_VOCABULARY);
-  const requestedMode = String(env.GEMINI_TRANSCRIPTION_MODE ?? '').trim().toUpperCase();
 
   return {
-    languageCodes: languages.length ? languages : ['ml-IN', 'en-IN'],
     customVocabulary: vocabulary.length ? vocabulary : DEFAULT_TRANSCRIPTION_VOCABULARY,
-    transcriptionMode: requestedMode === 'SMART' ? 'SMART' : 'VERBATIM',
     endOfSpeechSilenceMs: clampInt(env.GEMINI_END_SILENCE_MS, 400, 50, 5000),
     prefixPaddingMs: clampInt(env.GEMINI_PREFIX_PADDING_MS, 80, 0, 2000),
   };

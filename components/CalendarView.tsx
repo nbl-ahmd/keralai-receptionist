@@ -96,7 +96,7 @@ const CalendarView: React.FC<CalendarViewProps> = ({ appointments }) => {
                     <Calendar className="w-10 h-10 text-slate-300" />
                  </div>
                  <h3 className="text-xl font-bold text-slate-900 mb-2">No Appointments Yet</h3>
-                 <p className="text-slate-500 max-w-sm mx-auto">When the AI receptionist books a client, they will appear here automatically.</p>
+                 <p className="text-slate-500 max-w-sm mx-auto">When your assistant arranges a booking, it will appear here automatically.</p>
             </div>
         )}
       </div>

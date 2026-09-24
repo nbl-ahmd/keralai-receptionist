@@ -11,7 +11,7 @@ import {
 export const metadata: Metadata = {
   title: "Privacy Policy — KeralAI",
   description:
-    "How KeralAI collects, uses, discloses, stores, and protects information across its AI receptionist, voice, WhatsApp automation, and integration services.",
+    "How KeralAI collects, uses, discloses, stores, and protects information across its personal AI assistant, voice, WhatsApp automation, and integration services.",
   alternates: { canonical: "/privacy" },
 };
 
@@ -48,13 +48,13 @@ function Blocks({ blocks }: { blocks: PrivacyBlock[] }) {
 
 export default function PrivacyPage() {
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="mx-auto flex max-w-3xl items-center justify-between px-4 pb-6 pt-8 lg:pt-10">
+    <div className="min-h-screen bg-[hsl(var(--background))]">
+      <header className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-4 pb-6 pt-6 sm:px-6 lg:pt-8">
         <Link
           href="/"
           className="flex items-center gap-2.5 text-sm font-semibold text-slate-600 transition hover:text-emerald-700"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-xs font-bold text-white">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-xs font-bold text-white">
             KA
           </span>
           KeralAI
@@ -67,10 +67,10 @@ export default function PrivacyPage() {
         </Link>
       </header>
 
-      <main className="mx-auto max-w-3xl px-4 pb-20">
-        <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_30px_90px_-40px_rgba(15,23,42,0.25)] sm:p-10">
-          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-emerald-700">Legal</p>
-          <h1 className="mt-2 text-3xl font-bold text-slate-900 sm:text-4xl">Privacy Policy</h1>
+      <main className="mx-auto max-w-3xl px-4 pb-20 sm:px-6">
+        <article className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-card sm:p-10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Legal</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">Privacy Policy</h1>
           <div className="mt-4 flex flex-col gap-1 text-sm text-slate-500 sm:flex-row sm:gap-6">
             <span>
               <strong className="font-semibold text-slate-700">Effective Date:</strong> {PRIVACY_EFFECTIVE_DATE}

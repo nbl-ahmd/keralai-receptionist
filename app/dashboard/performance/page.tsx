@@ -125,37 +125,39 @@ export default function PerformancePage() {
   const hasData = (summary?.samples ?? 0) > 0;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-8 sm:flex-row sm:items-center sm:justify-between lg:pt-10">
+    <div className="min-h-screen bg-[hsl(var(--background))]">
+      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-8">
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard"
-            className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
             title="Back to dashboard"
+            aria-label="Back to dashboard"
           >
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-emerald-700">Reception OS</p>
-            <h1 className="text-2xl font-bold text-slate-900">Performance</h1>
-            <p className="text-sm text-slate-500">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Performance</h1>
+            <p className="mt-0.5 text-sm text-slate-500">
               Per-call latency and throughput, saved at the end of every call.
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <span className="hidden text-xs text-slate-500 sm:block">
             {lastSynced
               ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
               : "Syncing…"}
           </span>
-          <Button variant="ghost" className="gap-2 text-slate-600" onClick={() => load()} disabled={isRefreshing}>
-            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} /> Refresh
+          <Button variant="ghost" size="sm" className="gap-1.5 text-slate-600" onClick={() => load()} disabled={isRefreshing}>
+            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+            <span className="hidden sm:inline">Refresh</span>
           </Button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-12">
+      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-14 sm:px-6">
         {error && (
           <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             <TriangleAlert className="h-4 w-4 shrink-0" />
@@ -248,7 +250,7 @@ export default function PerformancePage() {
                   <CardDescription>{calls.length} measured calls · newest first</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-[560px] pr-4">
+                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-4">
                     <div className="space-y-2">
                       {calls.map((call) => (
                         <button
@@ -301,7 +303,7 @@ export default function PerformancePage() {
                 </CardHeader>
                 <CardContent>
                   {!selectedCall ? (
-                    <div className="flex h-[520px] flex-col items-center justify-center text-center">
+                    <div className="flex h-[320px] flex-col items-center justify-center text-center lg:h-[520px]">
                       <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-slate-100">
                         <Activity className="h-7 w-7 text-slate-400" />
                       </div>
@@ -337,8 +339,8 @@ export default function PerformancePage() {
                             No tools were called during this call.
                           </p>
                         ) : (
-                          <div className="overflow-hidden rounded-2xl border border-slate-100">
-                            <table className="w-full text-sm">
+                          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                            <table className="w-full min-w-[420px] text-sm">
                               <thead className="bg-slate-50 text-left text-xs uppercase tracking-[0.12em] text-slate-500">
                                 <tr>
                                   <th className="px-3 py-2">Tool</th>

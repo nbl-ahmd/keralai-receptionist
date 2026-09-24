@@ -34,8 +34,8 @@ export interface DemoAgent {
 export const DEMO_AGENTS: DemoAgent[] = [
   {
     id: "reception",
-    name: "Receptionist",
-    blurb: "Answers questions about your business and books appointments.",
+    name: "Personal assistant",
+    blurb: "Answers questions and arranges time on your behalf.",
     icon: Headset,
     sampleQuestions: [
       "What services do you offer?",
@@ -76,6 +76,8 @@ interface AgentDemoProps {
   /** Profile used for grounding. Falls back to a neutral demo identity. */
   companyProfile?: CompanyProfile;
   onBuildAgent?: () => void;
+  /** Name shown for the assistant in the transcript panel. */
+  assistantName?: string;
 }
 
 const DEMO_PROFILE: CompanyProfile = {
@@ -99,6 +101,7 @@ export default function AgentDemo({
   className,
   companyProfile,
   onBuildAgent,
+  assistantName = "Assistant",
 }: AgentDemoProps) {
   const [activeAgentId, setActiveAgentId] = useState<DemoAgentId>(defaultAgentId);
   const [elapsed, setElapsed] = useState(0);
@@ -108,6 +111,8 @@ export default function AgentDemo({
     () => agents.find((agent) => agent.id === activeAgentId) ?? agents[0],
     [agents, activeAgentId],
   );
+
+  const showPicker = agents.length > 1;
 
   const profile = useMemo<CompanyProfile>(
     () => ({
@@ -160,13 +165,19 @@ export default function AgentDemo({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_30px_90px_-40px_rgba(15,23,42,0.45)]",
+        "overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card",
         className,
       )}
     >
-      <div className="grid lg:grid-cols-[260px_1fr_360px]">
+      <div
+        className={cn(
+          "grid lg:grid-cols-[1fr_360px]",
+          showPicker && "lg:grid-cols-[240px_1fr_360px]",
+        )}
+      >
         {/* Agent picker */}
-        <aside className="border-b border-slate-100 p-5 lg:border-b-0 lg:border-r">
+        {showPicker && (
+        <aside className="border-b border-slate-100 p-4 sm:p-5 lg:border-b-0 lg:border-r">
           <p className="text-sm font-semibold text-slate-900">Choose an agent</p>
           <div className="mt-4 space-y-2">
             {agents.map((agent) => {
@@ -181,7 +192,7 @@ export default function AgentDemo({
                     active ? "bg-emerald-50 ring-1 ring-emerald-200" : "hover:bg-slate-50",
                   )}
                 >
-                  <Icon className={cn("h-5 w-5", active ? "text-emerald-600" : "text-slate-400")} />
+                  <Icon className={cn("h-5 w-5", active ? "text-emerald-600" : "text-slate-500")} />
                   <span className={cn("flex-1 text-sm font-semibold", active ? "text-emerald-800" : "text-slate-600")}>
                     {agent.name}
                   </span>
@@ -196,7 +207,7 @@ export default function AgentDemo({
           </div>
 
           <div className="mt-6 rounded-2xl bg-slate-50 p-3">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Try asking</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Try asking</p>
             <ul className="mt-2 space-y-1.5">
               {activeAgent.sampleQuestions.map((question) => (
                 <li key={question} className="text-xs leading-relaxed text-slate-600">
@@ -206,22 +217,23 @@ export default function AgentDemo({
             </ul>
           </div>
         </aside>
+        )}
 
         {/* Orb */}
-        <div className="relative flex flex-col items-center justify-center gap-6 bg-slate-50/60 px-6 py-10">
+        <div className="relative flex flex-col items-center justify-center gap-5 bg-slate-50/60 px-4 py-8 sm:gap-6 sm:px-6 sm:py-10">
           <div className="text-center">
             <p className="text-lg font-bold text-slate-900">{activeAgent.name}</p>
             <p className="mx-auto mt-1 max-w-xs text-xs text-slate-500">{activeAgent.blurb}</p>
           </div>
 
-          <div className="relative flex h-56 w-56 items-center justify-center">
+          <div className="relative flex h-48 w-48 items-center justify-center sm:h-56 sm:w-56">
             <div
               className="absolute inset-0 rounded-full bg-gradient-to-br from-emerald-300 via-emerald-400 to-teal-500 blur-2xl transition-transform duration-300"
               style={{ transform: `scale(${isConnected ? orbScale : 0.9})`, opacity: isConnected ? 0.55 : 0.3 }}
             />
             <div
               className={cn(
-                "relative flex h-44 w-44 items-center justify-center rounded-full bg-gradient-to-br from-emerald-200 to-emerald-400 shadow-2xl transition-transform duration-300",
+                "relative flex h-36 w-36 items-center justify-center rounded-full bg-gradient-to-br from-emerald-200 to-emerald-400 shadow-2xl transition-transform duration-300 sm:h-44 sm:w-44",
                 isConnected && "animate-pulse",
               )}
               style={{ transform: `scale(${isConnected ? orbScale : 1})` }}
@@ -296,17 +308,17 @@ export default function AgentDemo({
         </div>
 
         {/* Transcript */}
-        <div className="flex flex-col border-t border-slate-100 p-5 lg:border-l lg:border-t-0">
+        <div className="flex flex-col border-t border-slate-100 p-4 sm:p-5 lg:border-l lg:border-t-0">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-slate-900">Live transcript</p>
             <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-              <Mic className="h-3.5 w-3.5" /> {isConnected ? "Maya" : "Offline"}
+              <Mic className="h-3.5 w-3.5" /> {isConnected ? assistantName : "Offline"}
             </span>
           </div>
 
           <div
             ref={transcriptContainerRef}
-            className="mt-4 h-[340px] flex-1 space-y-3 overflow-y-auto pr-1"
+            className="mt-4 h-[280px] flex-1 space-y-3 overflow-y-auto pr-1 sm:h-[340px]"
             aria-busy={isConnecting}
           >
             {transcript.length === 0 && (
@@ -314,9 +326,9 @@ export default function AgentDemo({
                 {isConnecting && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-600" />}
                 <span>
                   {isConnecting
-                    ? "Connecting to Maya…"
+                    ? "Connecting to the assistant…"
                     : isConnected
-                      ? `Maya is greeting you: “${openingLine}”`
+                      ? `${assistantName} is greeting you: “${openingLine}”`
                       : "Start the demo and speak naturally. The transcript appears here in real time."}
                 </span>
               </div>

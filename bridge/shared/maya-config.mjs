@@ -298,7 +298,7 @@ export function resolveLiveAudioSettings(env = process.env) {
     customVocabulary: vocabulary.length ? vocabulary : DEFAULT_TRANSCRIPTION_VOCABULARY,
     transcriptionMode: requestedMode === 'SMART' ? 'SMART' : 'VERBATIM',
     endOfSpeechSilenceMs: clampInt(env.GEMINI_END_SILENCE_MS, 400, 50, 5000),
-    prefixPaddingMs: clampInt(env.GEMINI_PREFIX_PADDING_MS, 80, 0, 2000),
+    prefixPaddingMs: clampInt(env.GEMINI_PREFIX_PADDING_MS, 200, 50, 2000),
   };
 }
 

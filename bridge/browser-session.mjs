@@ -10,6 +10,7 @@
 
 import { Modality } from '@google/genai';
 import {
+  loadActiveInstructions,
   logCrmSyncEvent,
   persistAppointment,
   persistCallbackRequest,
@@ -20,6 +21,7 @@ import {
   upsertCallRecord,
 } from './db.mjs';
 import { getCrmProvider, syncToCrm } from './crm.mjs';
+import { resolveLiveAudioSettings } from './shared/maya-config.mjs';
 import {
   CallMetrics,
   LATENCY_LOG_INTERVAL_MS,
@@ -106,26 +108,44 @@ export class BrowserSession {
     this.pitch = typeof options.pitch === 'string' ? options.pitch : 'Normal';
     this.speed = typeof options.speed === 'string' ? options.speed : 'Normal';
 
+    // Load active instructions fresh for every new session so dashboard
+    // activations/deactivations apply immediately to the next call.
+    let activeInstructions = [];
+    try {
+      activeInstructions = await loadActiveInstructions();
+    } catch {
+      activeInstructions = [];
+    }
+    const audioSettings = resolveLiveAudioSettings();
+
     const connectStartNs = hrNow();
     const sessionPromise = this.ai.live.connect({
       model: MODEL,
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voiceName } } },
-        systemInstruction: this.buildInstruction(this.companyProfile, {
-          pitch: this.pitch,
-          speed: this.speed,
-        }),
+        systemInstruction: this.buildInstruction(
+          this.companyProfile,
+          {
+            pitch: this.pitch,
+            speed: this.speed,
+          },
+          activeInstructions,
+        ),
         tools: this.buildTools(),
-        inputAudioTranscription: {},
+        inputAudioTranscription: {
+          languageCodes: audioSettings.languageCodes,
+          customVocabulary: audioSettings.customVocabulary,
+          mode: audioSettings.transcriptionMode,
+        },
         outputAudioTranscription: {},
         realtimeInputConfig: {
           automaticActivityDetection: {
             disabled: false,
             startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
             endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-            silenceDurationMs: 280,
-            prefixPaddingMs: 60,
+            silenceDurationMs: audioSettings.endOfSpeechSilenceMs,
+            prefixPaddingMs: audioSettings.prefixPaddingMs,
           },
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
           turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',

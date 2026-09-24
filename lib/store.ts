@@ -276,6 +276,7 @@ interface KnowledgeRow {
   content: string;
   file_name: string | null;
   date_added: unknown;
+  is_active: boolean;
 }
 
 function mapKnowledgeRow(row: KnowledgeRow): KnowledgeItem {
@@ -286,12 +287,13 @@ function mapKnowledgeRow(row: KnowledgeRow): KnowledgeItem {
     content: row.content,
     fileName: row.file_name ?? undefined,
     dateAdded: new Date(toIso(row.date_added)),
+    isActive: row.is_active,
   };
 }
 
 export async function getKnowledge(): Promise<KnowledgeItem[]> {
   const rows = await query<KnowledgeRow>(
-    `select id, type, title, content, file_name, date_added
+    `select id, type, title, content, file_name, date_added, is_active
        from knowledge_items order by date_added desc`,
   );
   return rows.map(mapKnowledgeRow);
@@ -300,7 +302,8 @@ export async function getKnowledge(): Promise<KnowledgeItem[]> {
 export async function getKnowledgeItem(id: string): Promise<KnowledgeItem | null> {
   if (!isUuid(id)) return null;
   const row = await queryOne<KnowledgeRow>(
-    `select id, type, title, content, file_name, date_added from knowledge_items where id = $1`,
+    `select id, type, title, content, file_name, date_added, is_active
+       from knowledge_items where id = $1`,
     [id],
   );
   return row ? mapKnowledgeRow(row) : null;
@@ -309,27 +312,41 @@ export async function getKnowledgeItem(id: string): Promise<KnowledgeItem | null
 /** Inserts or updates a knowledge item, returning its (possibly generated) id. */
 export async function upsertKnowledgeItem(item: KnowledgeItem): Promise<KnowledgeItem> {
   const id = isUuid(item.id) ? item.id : crypto.randomUUID();
+  // `is_active` only has behavioural meaning for instructions; normal knowledge
+  // always stores true. New instructions default to active.
+  const isActive = item.type === "instruction" ? item.isActive !== false : true;
   const rows = await query<KnowledgeRow>(
-    `insert into knowledge_items (id, type, title, content, file_name, date_added, updated_at)
-     values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), now())
+    `insert into knowledge_items (id, type, title, content, file_name, date_added, is_active, updated_at)
+     values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7, now())
      on conflict (id) do update set
        type = excluded.type,
        title = excluded.title,
        content = excluded.content,
        file_name = excluded.file_name,
+       is_active = excluded.is_active,
        updated_at = now()
-     returning id, type, title, content, file_name, date_added`,
-    [id, item.type, item.title, item.content, item.fileName ?? null, item.dateAdded ?? null],
+     returning id, type, title, content, file_name, date_added, is_active`,
+    [id, item.type, item.title, item.content, item.fileName ?? null, item.dateAdded ?? null, isActive],
   );
   return mapKnowledgeRow(rows[0]);
 }
 
-/** Replaces all embeddings for an item with freshly chunked vectors. */
+/**
+ * Replaces all embeddings for an item with freshly chunked vectors.
+ *
+ * Instructions are never embedded: the item's existing embeddings are removed
+ * first (defense-in-depth in case an item was previously stored as text), then
+ * indexing stops. Normal knowledge keeps the existing embedding pipeline.
+ */
 export async function reindexKnowledgeItem(item: KnowledgeItem): Promise<KnowledgeEmbedding[]> {
+  await query(`delete from knowledge_embeddings where item_id = $1`, [item.id]);
+
+  if (item.type === "instruction") {
+    return [];
+  }
+
   const chunks = chunkText(`--- ${item.title} ---\n${item.content}`);
   const fresh: KnowledgeEmbedding[] = [];
-
-  await query(`delete from knowledge_embeddings where item_id = $1`, [item.id]);
 
   for (const [chunkIndex, text] of chunks.entries()) {
     const values = await embedText(text);

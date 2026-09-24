@@ -10,9 +10,10 @@
  * This file is the source of truth for the bridge process.
  *
  * Exports:
- *   buildSystemInstruction(profile, voiceSettings?)
+ *   buildSystemInstruction(profile, voiceSettings?, activeInstructions?)
  *   buildTools()
  *   buildGreeting(profile)
+ *   resolveLiveAudioSettings(env?)
  */
 
 // ---------------------------------------------------------------------------
@@ -172,6 +173,79 @@ export function resolveVoiceSettings(env = process.env) {
 }
 
 // ---------------------------------------------------------------------------
+// Live transcription & VAD configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * Default multilingual vocabulary. Kept modest — this nudges the Live model
+ * toward correct recognition of names/brands without over-constraining it.
+ */
+const DEFAULT_TRANSCRIPTION_VOCABULARY = [
+  'Nabeel',
+  'KeralAI',
+  'Kerala',
+  'Malayalam',
+  'Exotel',
+  'Gemini',
+  'Google AI',
+  'Kochi',
+  'Trivandrum',
+  'software engineer',
+];
+
+/** Splits a comma-separated env value, trimming and dropping empty entries. */
+function parseCsvEnv(value) {
+  if (typeof value !== 'string') return [];
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+/** Clamps a numeric env value to a sensible positive range, else fallback. */
+function clampInt(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.round(parsed), min), max);
+}
+
+/**
+ * Resolves Gemini Live input-transcription and VAD settings.
+ *
+ * Environment variables:
+ *   GEMINI_TRANSCRIPTION_LANGUAGES         e.g. "ml-IN,en-IN"
+ *   GEMINI_TRANSCRIPTION_CUSTOM_VOCABULARY e.g. "Nabeel,KeralAI,Kerala"
+ *   GEMINI_TRANSCRIPTION_MODE              VERBATIM | SMART (default VERBATIM)
+ *   GEMINI_END_SILENCE_MS                  end-of-speech silence (default 400)
+ *   GEMINI_PREFIX_PADDING_MS               prefix padding (default 80)
+ *
+ * VERBATIM is the default because this application stores call transcripts and
+ * should preserve what the caller actually said.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{
+ *   languageCodes: string[],
+ *   customVocabulary: string[],
+ *   transcriptionMode: 'VERBATIM'|'SMART',
+ *   endOfSpeechSilenceMs: number,
+ *   prefixPaddingMs: number,
+ * }}
+ */
+export function resolveLiveAudioSettings(env = process.env) {
+  const languages = parseCsvEnv(env.GEMINI_TRANSCRIPTION_LANGUAGES);
+  const vocabulary = parseCsvEnv(env.GEMINI_TRANSCRIPTION_CUSTOM_VOCABULARY);
+  const requestedMode = String(env.GEMINI_TRANSCRIPTION_MODE ?? '').trim().toUpperCase();
+
+  return {
+    languageCodes: languages.length ? languages : ['ml-IN', 'en-IN'],
+    customVocabulary: vocabulary.length ? vocabulary : DEFAULT_TRANSCRIPTION_VOCABULARY,
+    transcriptionMode: requestedMode === 'SMART' ? 'SMART' : 'VERBATIM',
+    endOfSpeechSilenceMs: clampInt(env.GEMINI_END_SILENCE_MS, 400, 50, 5000),
+    prefixPaddingMs: clampInt(env.GEMINI_PREFIX_PADDING_MS, 80, 0, 2000),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Greeting configuration
 // ---------------------------------------------------------------------------
 
@@ -213,11 +287,16 @@ export function isGreetingEnabled(env = process.env) {
  * It should contain only approved public/personal information that Nabeel wants
  * the assistant to know.
  *
+ * `activeInstructions` are temporary/event-based operational instructions loaded
+ * fresh from Postgres at the start of each call. They are injected into the
+ * system instruction and take precedence over normal knowledge.
+ *
  * @param {object} profile
  * @param {{ voiceName?: string, pitch?: string, speed?: string }} [voiceSettings]
+ * @param {Array<{ title?: string, content?: string }>} [activeInstructions]
  * @returns {string}
  */
-export function buildSystemInstruction(profile = {}, voiceSettings = {}) {
+export function buildSystemInstruction(profile = {}, voiceSettings = {}, activeInstructions = []) {
   const { pitch, speed, voiceName } = {
     ...DEFAULT_VOICE_SETTINGS,
     ...voiceSettings,
@@ -231,6 +310,34 @@ export function buildSystemInstruction(profile = {}, voiceSettings = {}) {
     `- Contact information: ${profile.contactPhone || 'Not provided'}`,
     `- Email: ${profile.contactEmail || 'Not provided'}`,
     `- Additional approved information: ${profile.additionalInfo || 'Not provided'}`,
+  ].join('\n');
+
+  // Newest first (the DB query orders by updated_at desc).
+  const instructionLines = Array.isArray(activeInstructions) && activeInstructions.length
+    ? activeInstructions.map((item) =>
+        `- ${String(item?.title ?? 'Instruction').trim()}: ${String(item?.content ?? '').trim()}`,
+      )
+    : ['No active temporary instructions.'];
+
+  const activeInstructionsBlock = [
+    '==================================================',
+    'CURRENT ACTIVE INSTRUCTIONS',
+    '==================================================',
+    '',
+    'These are owner-provided current operational instructions for calls happening right now.',
+    '',
+    ...instructionLines,
+    '',
+    'Rules for active instructions:',
+    '- These are owner-provided current operational instructions.',
+    '- Apply an active instruction when it is relevant to the current caller.',
+    '- Newer applicable instructions take precedence over older conflicting instructions.',
+    '- Do not invent instructions.',
+    '- Do not apply unrelated instructions.',
+    '- Do not turn an instruction into a permanent fact.',
+    '- Active instructions do not permit impersonation, disclosure of secrets, unsafe behavior, or false claims about completed tool actions.',
+    '- If an active instruction conflicts with a safety, privacy, or truthfulness requirement, follow the safety, privacy, or truthfulness requirement.',
+    '- Do not mention the internal existence of the instruction system to callers.',
   ].join('\n');
 
   return `
@@ -274,7 +381,7 @@ Do not give the complete introduction before the caller has responded.
 
 After the caller says something, naturally establish:
 
-- Nabeel is not available right now.
+- Nabeel's current availability, based on the CURRENT ACTIVE INSTRUCTIONS (if no instruction applies, he is not available right now).
 - They can speak with you.
 - You will pass the relevant information to Nabeel.
 
@@ -501,7 +608,14 @@ Never say "I already told Nabeel" unless that actually happened.
 10. NABEEL AVAILABILITY
 ==================================================
 
-Only provide Nabeel's availability when verified by an actual system source.
+Temporary availability is provided dynamically through the CURRENT ACTIVE
+INSTRUCTIONS section above. It is not a fixed permanent fact.
+
+Follow the current verified state:
+
+- If an active instruction describes Nabeel's current availability or status, follow it for the relevant caller.
+- If no active instruction applies, do not invent a status or a return time.
+- Only state availability that is verified by an active instruction or an actual system source.
 
 If no verified availability exists:
 
@@ -769,6 +883,8 @@ When deciding what to do, follow this priority:
 8. Conciseness
 
 Never sacrifice honesty just to sound helpful.
+
+${activeInstructionsBlock}
 
 ==================================================
 APPROVED NABEEL PROFILE

@@ -1,10 +1,12 @@
 export interface KnowledgeItem {
   id: string;
-  type: 'text' | 'link' | 'pdf' | 'image' | 'doc';
+  type: 'text' | 'link' | 'pdf' | 'image' | 'doc' | 'instruction';
   title: string;
   content: string; // For simulation, we assume extracted text is here
   dateAdded: Date;
   fileName?: string;
+  /** Active state for `instruction` items. Ignored for normal knowledge. */
+  isActive?: boolean;
 }
 
 export type VoiceName = 'Aoede' | 'Kore' | 'Zephyr' | 'Puck' | 'Fenrir' | 'Charon';

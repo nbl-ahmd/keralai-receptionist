@@ -232,7 +232,7 @@ export default function HomePage() {
       {
         label: "Knowledge",
         value: knowledgeBase.length.toString().padStart(2, "0"),
-        helper: "indexed assets",
+        helper: "knowledge entries",
         icon: <Database className="h-4 w-4" />,
       },
       {
@@ -309,14 +309,21 @@ export default function HomePage() {
     throw new Error(data?.error || "Failed to save knowledge item");
   }
 
+  // Prefer the server-returned item so the UI reflects server-generated data,
+  // instruction classification, and active state.
+  const savedItem = (data?.item as KnowledgeItem | undefined) ?? item;
+  const normalized: KnowledgeItem = { ...savedItem, dateAdded: toDate(savedItem.dateAdded) };
+
   setKnowledgeBase((prev) => [
-    item,
-    ...prev.filter((existing) => existing.id !== item.id),
+    normalized,
+    ...prev.filter((existing) => existing.id !== normalized.id),
   ]);
 
   return data as {
     indexed?: number;
     warning?: string;
+    item?: KnowledgeItem;
+    activeInstruction?: boolean;
   };
 };
 
@@ -332,19 +339,34 @@ export default function HomePage() {
       type: newDocType,
       content: newDocContent.trim(),
       dateAdded: new Date(),
+      isActive: newDocType === "instruction",
     };
     try {
       const result = await persistKnowledgeItem(item);
       setNewDocContent("");
       setNewDocTitle("");
-      triggerBanner(
-        result.warning ? "Saved, but embeddings failed." : `Saved and indexed (${result.indexed ?? 0} chunks).`,
-        result.warning ? "warn" : "success",
-      );
+      if (item.type === "instruction") {
+        triggerBanner("Active instruction saved.", "success");
+      } else {
+        triggerBanner(
+          result.warning ? "Saved, but embeddings failed." : `Saved and indexed (${result.indexed ?? 0} chunks).`,
+          result.warning ? "warn" : "success",
+        );
+      }
     } catch {
       triggerBanner("Failed to save knowledge item.", "warn");
     } finally {
       setIsSavingDoc(false);
+    }
+  };
+
+  const toggleInstructionActive = async (item: KnowledgeItem) => {
+    const updated: KnowledgeItem = { ...item, isActive: !item.isActive };
+    try {
+      await persistKnowledgeItem(updated);
+      triggerBanner(updated.isActive ? "Instruction activated." : "Instruction deactivated.", "success");
+    } catch {
+      triggerBanner("Failed to update instruction.", "warn");
     }
   };
 
@@ -382,23 +404,33 @@ export default function HomePage() {
       });
       const data = (await response.json()) as {
         reply?: string;
-        draft?: { title: string; type: KnowledgeItem["type"]; content: string } | null;
+        shouldSave?: boolean;
+        draft?: {
+          title: string;
+          type: KnowledgeItem["type"];
+          content: string;
+          isActive: boolean;
+        } | null;
         error?: string;
       };
 
       if (data.error) throw new Error(data.error);
 
       let createdItemId: string | undefined;
-      if (data.draft?.content) {
+      if (data.shouldSave === true && data.draft?.content?.trim()) {
         const item: KnowledgeItem = {
           id: crypto.randomUUID(),
           title: data.draft.title || "Untitled entry",
           type: data.draft.type || "text",
           content: data.draft.content,
           dateAdded: new Date(),
+          isActive:
+            data.draft.type === "instruction"
+              ? data.draft.isActive !== false
+              : true,
         };
-        await persistKnowledgeItem(item);
-        createdItemId = item.id;
+        const saved = await persistKnowledgeItem(item);
+        createdItemId = saved.item?.id ?? item.id;
       }
 
       setChatMessages((prev) => [
@@ -1217,7 +1249,7 @@ export default function HomePage() {
                             sendChatMessage();
                           }
                         }}
-                        placeholder="Tell Maya about your business…"
+                        placeholder="Tell the assistant what it should know…"
                       />
                       <Button onClick={sendChatMessage} disabled={isChatting || !chatInput.trim()}>
                         <Send className="h-4 w-4" />
@@ -1251,6 +1283,7 @@ export default function HomePage() {
                           <SelectItem value="pdf">PDF</SelectItem>
                           <SelectItem value="image">Image</SelectItem>
                           <SelectItem value="doc">Doc</SelectItem>
+                          <SelectItem value="instruction">Active instruction</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1344,7 +1377,7 @@ export default function HomePage() {
                 <CardHeader className="flex items-center justify-between">
                   <div>
                     <CardTitle>Knowledge assets</CardTitle>
-                    <CardDescription>{knowledgeBase.length} indexed entries</CardDescription>
+                    <CardDescription>{knowledgeBase.length} knowledge entries</CardDescription>
                   </div>
                   <Badge variant="secondary">
                     <Database className="mr-1 h-3 w-3" /> RAG ready
@@ -1355,14 +1388,34 @@ export default function HomePage() {
                     <div className="divide-y divide-slate-100">
                       {knowledgeBase.map((item) => (
                         <div key={item.id} className="flex items-start gap-3 px-4 py-3">
-                          <Badge variant="secondary" className="capitalize">
-                            {item.type}
-                          </Badge>
+                          <div className="flex flex-col items-start gap-1">
+                            <Badge variant="secondary" className="capitalize">
+                              {item.type}
+                            </Badge>
+                            {item.type === "instruction" && (
+                              <Badge
+                                variant={item.isActive !== false ? "default" : "secondary"}
+                                className="text-[10px] tracking-wide"
+                              >
+                                {item.isActive !== false ? "ACTIVE" : "INACTIVE"}
+                              </Badge>
+                            )}
+                          </div>
                           <div className="flex-1">
                             <p className="text-sm font-semibold text-slate-900">{item.title}</p>
                             <p className="line-clamp-2 text-sm text-slate-600">{item.content}</p>
                             {item.fileName && <p className="mt-0.5 text-xs text-slate-400">File: {item.fileName}</p>}
                           </div>
+                          {item.type === "instruction" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 whitespace-nowrap text-xs"
+                              onClick={() => toggleInstructionActive(item)}
+                            >
+                              {item.isActive !== false ? "Deactivate" : "Activate"}
+                            </Button>
+                          )}
                           <span className="whitespace-nowrap text-xs text-slate-400">
                             {toDate(item.dateAdded).toLocaleDateString()}
                           </span>

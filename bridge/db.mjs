@@ -495,6 +495,31 @@ export async function persistCallLog({ callSid, callerNumber, startedAt, endedAt
 // ---------------------------------------------------------------------------
 
 /**
+ * Loads active assistant instructions for the start of a new call.
+ *
+ * Instructions are injected directly into the Live system instruction and are
+ * intentionally never embedded, so this is a plain row read (no vector search).
+ * Fails open to an empty list: a DB/migration problem must not block calls.
+ *
+ * @returns {Promise<Array<{ id: string, title: string, content: string, updated_at: unknown }>>}
+ */
+export async function loadActiveInstructions() {
+  try {
+    return await dbQuery(
+      `select id, title, content, updated_at
+         from knowledge_items
+        where type = 'instruction'
+          and is_active = true
+          and length(trim(content)) > 0
+        order by updated_at desc`,
+    );
+  } catch (error) {
+    console.error('[bridge][db] failed to load active instructions:', error.message);
+    return [];
+  }
+}
+
+/**
  * Vector search over the knowledge base using pgvector.
  * @param {string} queryVectorText  pgvector literal, e.g. "[0.1,0.2,...]"
  * @param {number} limit

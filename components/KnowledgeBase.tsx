@@ -23,7 +23,7 @@ const KnowledgeBase: React.FC<KnowledgeBaseProps> = ({
   const [activeTab, setActiveTab] = useState<'resources' | 'profile'>('resources');
   
   // Resource Form State
-  const [newType, setNewType] = useState<'text' | 'link' | 'pdf' | 'image' | 'doc'>('text');
+  const [newType, setNewType] = useState<KnowledgeItem['type']>('text');
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);

@@ -55,6 +55,7 @@ import { GoogleGenAI, Modality } from '@google/genai';
 import {
   closePool,
   getProfileVersion,
+  loadActiveInstructions,
   loadCompanyProfile,
   logCrmSyncEvent,
   persistAppointment,
@@ -85,6 +86,7 @@ import {
   buildSystemInstruction,
   buildTools,
   isGreetingEnabled,
+  resolveLiveAudioSettings,
   resolveVoiceSettings,
 } from './shared/maya-config.mjs';
 
@@ -510,7 +512,22 @@ class CallSession {
         : GREETING_ENABLED;
     const greetingText = this.companyProfile.greetingText || buildGreeting(this.companyProfile);
 
-    const systemInstruction = buildSystemInstruction(this.companyProfile, { pitch, speed });
+    // Load active instructions fresh for every new call so dashboard
+    // activations/deactivations apply immediately to the next call.
+    let activeInstructions = [];
+    try {
+      activeInstructions = await loadActiveInstructions();
+    } catch {
+      activeInstructions = [];
+    }
+
+    const audioSettings = resolveLiveAudioSettings();
+
+    const systemInstruction = buildSystemInstruction(
+      this.companyProfile,
+      { pitch, speed },
+      activeInstructions,
+    );
 
     this.log(`Connecting to Gemini Live (model: ${GEMINI_MODEL}, voice: ${voiceName})`);
 
@@ -523,15 +540,19 @@ class CallSession {
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
         systemInstruction,
         tools: buildTools(),
-        inputAudioTranscription: {},
+        inputAudioTranscription: {
+          languageCodes: audioSettings.languageCodes,
+          customVocabulary: audioSettings.customVocabulary,
+          mode: audioSettings.transcriptionMode,
+        },
         outputAudioTranscription: {},
         realtimeInputConfig: {
           automaticActivityDetection: {
             disabled: false,
             startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
             endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-            silenceDurationMs: 280,
-            prefixPaddingMs: 60,
+            silenceDurationMs: audioSettings.endOfSpeechSilenceMs,
+            prefixPaddingMs: audioSettings.prefixPaddingMs,
           },
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
           turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',

@@ -77,7 +77,7 @@ export function CallPreview({ className }: { className?: string }) {
         </div>
       </div>
 
-      <div className="absolute -bottom-4 -left-3 hidden max-w-[15rem] rounded-xl border border-slate-200/80 bg-white p-3 shadow-card sm:block">
+      <div className="absolute -bottom-4 -left-3 hidden max-w-[15rem] rounded-xl border border-slate-200/80 bg-white p-3 shadow-card lg:block">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Active instruction</p>
         <p className="mt-1 text-sm text-slate-700">Tell callers Nabeel is in a meeting until 5 PM.</p>
       </div>

@@ -530,16 +530,17 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-[hsl(var(--background))]">
       <header className="mx-auto max-w-7xl px-4 pt-6 sm:px-6 lg:pt-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-start gap-3">
             <Link
               href="/"
-              className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-600 text-sm font-bold text-white transition hover:bg-emerald-700 lg:hidden"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-sm font-bold text-white transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 lg:hidden"
               title="Back to site"
+              aria-label="Back to site"
             >
               KA
             </Link>
-            <div>
-              <div className="flex items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-xl font-semibold tracking-tight text-slate-900">{heading.title}</h1>
                 <span
                   className={cn(
@@ -558,7 +559,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="hidden text-xs text-slate-500 sm:block">
               {lastSynced
                 ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
@@ -570,12 +571,15 @@ export default function DashboardPage() {
               className="gap-1.5 text-slate-600"
               onClick={() => loadAll()}
               disabled={isRefreshing}
+              aria-label="Refresh data"
             >
               <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
               <span className="hidden sm:inline">Refresh</span>
             </Button>
             <Button size="sm" className="gap-1.5" onClick={() => startVoiceSession(true)}>
-              <PhoneCall className="h-4 w-4" /> Start live session
+              <PhoneCall className="h-4 w-4" />
+              <span className="hidden sm:inline">Start live session</span>
+              <span className="sm:hidden">Live session</span>
             </Button>
           </div>
         </div>
@@ -604,14 +608,14 @@ export default function DashboardPage() {
           ))}
           <Link
             href="/dashboard/crm"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
           >
             <Inbox className="h-4 w-4" />
             Inbox
           </Link>
           <Link
             href="/dashboard/settings"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
           >
             <Settings2 className="h-4 w-4" />
             Settings
@@ -775,7 +779,7 @@ export default function DashboardPage() {
               <X className="h-4 w-4" /> Close
             </Button>
           </div>
-          <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div className="h-[92dvh] max-h-[820px] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl">
             <LiveReceptionist
               companyProfile={profile}
               onBookAppointment={handleBookedFromCall}

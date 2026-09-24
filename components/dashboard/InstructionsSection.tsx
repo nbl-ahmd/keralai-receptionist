@@ -95,7 +95,7 @@ export function InstructionsSection({
                   className="mt-1 resize-none"
                 />
               </div>
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="flex items-center gap-1.5 text-xs text-slate-500">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
                   New instructions are activated for upcoming calls.
@@ -103,7 +103,7 @@ export function InstructionsSection({
                 <Button
                   onClick={submit}
                   disabled={isSaving || !title.trim() || !content.trim()}
-                  className="gap-1.5"
+                  className="w-full gap-1.5 sm:w-auto"
                 >
                   {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                   Add instruction

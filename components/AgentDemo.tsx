@@ -165,7 +165,7 @@ export default function AgentDemo({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_30px_90px_-40px_rgba(15,23,42,0.45)]",
+        "overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card",
         className,
       )}
     >
@@ -177,7 +177,7 @@ export default function AgentDemo({
       >
         {/* Agent picker */}
         {showPicker && (
-        <aside className="border-b border-slate-100 p-5 lg:border-b-0 lg:border-r">
+        <aside className="border-b border-slate-100 p-4 sm:p-5 lg:border-b-0 lg:border-r">
           <p className="text-sm font-semibold text-slate-900">Choose an agent</p>
           <div className="mt-4 space-y-2">
             {agents.map((agent) => {
@@ -220,20 +220,20 @@ export default function AgentDemo({
         )}
 
         {/* Orb */}
-        <div className="relative flex flex-col items-center justify-center gap-6 bg-slate-50/60 px-6 py-10">
+        <div className="relative flex flex-col items-center justify-center gap-5 bg-slate-50/60 px-4 py-8 sm:gap-6 sm:px-6 sm:py-10">
           <div className="text-center">
             <p className="text-lg font-bold text-slate-900">{activeAgent.name}</p>
             <p className="mx-auto mt-1 max-w-xs text-xs text-slate-500">{activeAgent.blurb}</p>
           </div>
 
-          <div className="relative flex h-56 w-56 items-center justify-center">
+          <div className="relative flex h-48 w-48 items-center justify-center sm:h-56 sm:w-56">
             <div
               className="absolute inset-0 rounded-full bg-gradient-to-br from-emerald-300 via-emerald-400 to-teal-500 blur-2xl transition-transform duration-300"
               style={{ transform: `scale(${isConnected ? orbScale : 0.9})`, opacity: isConnected ? 0.55 : 0.3 }}
             />
             <div
               className={cn(
-                "relative flex h-44 w-44 items-center justify-center rounded-full bg-gradient-to-br from-emerald-200 to-emerald-400 shadow-2xl transition-transform duration-300",
+                "relative flex h-36 w-36 items-center justify-center rounded-full bg-gradient-to-br from-emerald-200 to-emerald-400 shadow-2xl transition-transform duration-300 sm:h-44 sm:w-44",
                 isConnected && "animate-pulse",
               )}
               style={{ transform: `scale(${isConnected ? orbScale : 1})` }}
@@ -308,7 +308,7 @@ export default function AgentDemo({
         </div>
 
         {/* Transcript */}
-        <div className="flex flex-col border-t border-slate-100 p-5 lg:border-l lg:border-t-0">
+        <div className="flex flex-col border-t border-slate-100 p-4 sm:p-5 lg:border-l lg:border-t-0">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-slate-900">Live transcript</p>
             <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
@@ -318,7 +318,7 @@ export default function AgentDemo({
 
           <div
             ref={transcriptContainerRef}
-            className="mt-4 h-[340px] flex-1 space-y-3 overflow-y-auto pr-1"
+            className="mt-4 h-[280px] flex-1 space-y-3 overflow-y-auto pr-1 sm:h-[340px]"
             aria-busy={isConnecting}
           >
             {transcript.length === 0 && (

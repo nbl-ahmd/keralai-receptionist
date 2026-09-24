@@ -10,10 +10,12 @@ import {
   Headset,
   Languages,
   Lock,
+  Menu,
   MessageSquarePlus,
   PhoneCall,
   ShieldCheck,
   Sparkles,
+  X,
   Zap,
 } from "lucide-react";
 
@@ -111,6 +113,7 @@ const TRUST = [
 
 export default function LandingPage() {
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/company-profile")
@@ -154,10 +157,45 @@ export default function LandingPage() {
               <Link href="/dashboard">Dashboard</Link>
             </Button>
             <Button size="sm" className="gap-2" onClick={scrollToDemo}>
-              <PhoneCall className="h-4 w-4" /> Talk to it
+              <PhoneCall className="h-4 w-4" />
+              <span>Talk to it</span>
             </Button>
+            <button
+              type="button"
+              onClick={() => setMenuOpen((open) => !open)}
+              aria-expanded={menuOpen}
+              aria-controls="mobile-menu"
+              aria-label={menuOpen ? "Close menu" : "Open menu"}
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 md:hidden"
+            >
+              {menuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+            </button>
           </div>
         </div>
+
+        {menuOpen && (
+          <div id="mobile-menu" className="border-t border-slate-200/70 bg-white md:hidden">
+            <nav className="mx-auto flex max-w-6xl flex-col px-4 py-2 sm:px-6">
+              {NAV.map((item) => (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setMenuOpen(false)}
+                  className="rounded-lg px-2 py-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
+                >
+                  {item.label}
+                </a>
+              ))}
+              <Link
+                href="/dashboard"
+                onClick={() => setMenuOpen(false)}
+                className="rounded-lg px-2 py-3 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50"
+              >
+                Dashboard
+              </Link>
+            </nav>
+          </div>
+        )}
       </header>
 
       {/* Hero */}

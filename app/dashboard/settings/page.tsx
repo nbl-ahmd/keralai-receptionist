@@ -96,17 +96,18 @@ export default function SettingsPage() {
   const patch = (changes: Partial<CompanyProfile>) => setProfile((prev) => ({ ...prev, ...changes }));
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="mx-auto flex max-w-5xl flex-col gap-4 px-4 pb-6 pt-8 sm:flex-row sm:items-center sm:justify-between lg:pt-10">
+    <div className="min-h-screen bg-[hsl(var(--background))]">
+      <header className="mx-auto flex max-w-5xl flex-col gap-4 px-4 pb-6 pt-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-8">
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard"
-            className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
             title="Back to dashboard"
+            aria-label="Back to dashboard"
           >
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
             <h1 className="text-xl font-semibold tracking-tight text-slate-900">Assistant settings</h1>
             <p className="mt-0.5 text-sm text-slate-500">
@@ -120,14 +121,14 @@ export default function SettingsPage() {
               <Check className="h-3.5 w-3.5" /> Saved
             </span>
           )}
-          <Button className="gap-2" onClick={save} disabled={isSaving || !dirty}>
+          <Button className="w-full gap-2 sm:w-auto" onClick={save} disabled={isSaving || !dirty}>
             {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {isSaving ? "Saving…" : "Save changes"}
           </Button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-6 px-4 pb-12">
+      <main className="mx-auto max-w-5xl space-y-6 px-4 pb-14 sm:px-6">
         {error && (
           <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             <TriangleAlert className="h-4 w-4 shrink-0" />

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Brain, CalendarClock, Clock, PhoneCall, User } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +31,19 @@ export function CallsSection({
   loading,
   onSelectCall,
 }: CallsSectionProps) {
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  const previousSelectedRef = useRef<string | null>(null);
+
+  // On small screens the detail panel sits below the list, so bring it into
+  // view when the user picks a call instead of making them scroll to find it.
+  useEffect(() => {
+    if (!selectedCall) return;
+    if (previousSelectedRef.current === selectedCall.id) return;
+    previousSelectedRef.current = selectedCall.id;
+    if (typeof window === "undefined" || window.innerWidth >= 1024) return;
+    detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [selectedCall]);
+
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_1.1fr]">
       <Card>
@@ -67,7 +81,7 @@ export function CallsSection({
               description="Once someone calls your assistant, conversations will appear here."
             />
           ) : (
-            <ScrollArea className="h-[560px] pr-3">
+            <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-3">
               <div className="space-y-2.5">
                 {filteredCalls.map((call) => (
                   <button
@@ -112,7 +126,7 @@ export function CallsSection({
         </CardContent>
       </Card>
 
-      <Card className="lg:sticky lg:top-6 lg:h-fit">
+      <Card ref={detailRef} className="scroll-mt-4 lg:sticky lg:top-6 lg:h-fit">
         <CardHeader>
           <CardTitle>Call details</CardTitle>
           <CardDescription>
@@ -121,7 +135,7 @@ export function CallsSection({
         </CardHeader>
         <CardContent>
           {!selectedCall ? (
-            <div className="flex h-[520px] items-center justify-center">
+            <div className="flex h-[320px] items-center justify-center lg:h-[520px]">
               <EmptyState
                 icon={<PhoneCall className="h-5 w-5" />}
                 title="No call selected"
@@ -200,7 +214,7 @@ export function CallsSection({
 
               <div>
                 <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Transcript</p>
-                <ScrollArea className="h-[260px] rounded-xl border border-slate-100 p-4">
+                <ScrollArea className="h-[220px] rounded-xl border border-slate-100 p-4 sm:h-[260px]">
                   <div className="space-y-3">
                     {selectedCall.transcript.map((turn, idx) => (
                       <div

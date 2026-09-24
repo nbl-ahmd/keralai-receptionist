@@ -114,7 +114,7 @@ export function KnowledgeSection({
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <ScrollArea className="h-[300px] rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+            <ScrollArea className="h-[260px] rounded-xl border border-slate-100 bg-slate-50/40 p-4 sm:h-[300px]">
               <div className="space-y-3">
                 {chatMessages.length === 0 && (
                   <div className="rounded-xl border border-slate-100 bg-white p-3.5 text-sm text-slate-600">
@@ -322,7 +322,7 @@ export function KnowledgeSection({
                 description="Add information your assistant can use when answering questions."
               />
             ) : (
-              <ScrollArea className="h-[360px] pr-3">
+              <ScrollArea className="h-[300px] pr-3 sm:h-[360px]">
                 <ul className="divide-y divide-slate-100">
                   {knowledge.map((item) => (
                     <li key={item.id} className="flex items-start gap-3 py-3">

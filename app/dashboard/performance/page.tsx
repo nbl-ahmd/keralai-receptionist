@@ -136,9 +136,9 @@ export default function PerformancePage() {
             <ArrowLeft className="h-5 w-5" />
           </Link>
           <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-emerald-700">Reception OS</p>
-            <h1 className="text-2xl font-bold text-slate-900">Performance</h1>
-            <p className="text-sm text-slate-500">
+            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Performance</h1>
+            <p className="mt-0.5 text-sm text-slate-500">
               Per-call latency and throughput, saved at the end of every call.
             </p>
           </div>

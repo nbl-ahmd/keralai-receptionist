@@ -66,7 +66,7 @@ export default function SettingsPage() {
     [profile, initial],
   );
 
-  const defaultGreeting = `Thank you for calling ${profile.name || "our company"}. This is Maya, how can I help you today?`;
+  const defaultGreeting = `Thank you for calling ${profile.name || "me"}. This is my AI assistant, how can I help?`;
   const effectiveGreeting = profile.greetingText?.trim() || defaultGreeting;
 
   const save = async () => {
@@ -107,10 +107,10 @@ export default function SettingsPage() {
             <ArrowLeft className="h-5 w-5" />
           </Link>
           <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-emerald-700">Reception OS</p>
-            <h1 className="text-2xl font-bold text-slate-900">Agent settings</h1>
-            <p className="text-sm text-slate-500">
-              Voice, modulation, and greeting for Maya. Saved to your database and applied to new calls.
+            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Assistant settings</h1>
+            <p className="mt-0.5 text-sm text-slate-500">
+              Voice, pace, and greeting for your assistant. Saved and applied to new calls.
             </p>
           </div>
         </div>
@@ -147,7 +147,7 @@ export default function SettingsPage() {
                 <CardTitle className="flex items-center gap-2">
                   <Mic className="h-4 w-4 text-emerald-600" /> Voice
                 </CardTitle>
-                <CardDescription>Choose the Gemini Live voice Maya speaks with.</CardDescription>
+                <CardDescription>Choose the voice your assistant speaks with.</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -183,7 +183,7 @@ export default function SettingsPage() {
                 <CardTitle className="flex items-center gap-2">
                   <Settings2 className="h-4 w-4 text-emerald-600" /> Modulation
                 </CardTitle>
-                <CardDescription>Pitch and speed hints injected into Maya&apos;s persona.</CardDescription>
+                <CardDescription>Pitch and speed applied to your assistant&apos;s voice.</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-6 sm:grid-cols-2">
                 <div>
@@ -276,8 +276,8 @@ export default function SettingsPage() {
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Preview</p>
                   <p className="mt-1 text-sm text-slate-700">
                     {profile.greetingEnabled
-                      ? `Maya: “${effectiveGreeting}”`
-                      : "Greeting off — Maya waits for the caller to speak first."}
+                      ? `Assistant: “${effectiveGreeting}”`
+                      : "Greeting off — the assistant waits for the caller to speak first."}
                   </p>
                 </div>
               </CardContent>

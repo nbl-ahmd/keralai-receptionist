@@ -11,7 +11,7 @@ import {
 export const metadata: Metadata = {
   title: "Privacy Policy — KeralAI",
   description:
-    "How KeralAI collects, uses, discloses, stores, and protects information across its AI receptionist, voice, WhatsApp automation, and integration services.",
+    "How KeralAI collects, uses, discloses, stores, and protects information across its personal AI assistant, voice, WhatsApp automation, and integration services.",
   alternates: { canonical: "/privacy" },
 };
 

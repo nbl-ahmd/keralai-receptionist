@@ -12,14 +12,15 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://keralai-receptionis
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: "KeralAI Receptionist",
-  description: "Premium AI receptionist console built for modern hospitality teams.",
+  title: "KeralAI — Your personal AI phone assistant",
+  description:
+    "KeralAI answers your calls, understands Malayalam, English and Manglish, takes messages, and keeps you informed when you're unavailable.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${plus.variable} font-sans bg-slate-50`}>{children}</body>
+      <body className={`${plus.variable} font-sans text-slate-900`}>{children}</body>
     </html>
   );
 }

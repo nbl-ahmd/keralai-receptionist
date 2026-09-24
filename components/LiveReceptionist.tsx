@@ -13,6 +13,10 @@ interface LiveReceptionistProps {
   autoConnect?: boolean;
   /** Optional: callback to reset auto-connect flag after it fires. */
   onAutoConnectHandled?: () => void;
+  /** Initial voice preferences, usually sourced from the saved assistant profile. */
+  initialVoiceName?: string;
+  initialPitch?: string;
+  initialSpeed?: string;
 }
 
 const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
@@ -20,10 +24,13 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
   onBookAppointment,
   autoConnect,
   onAutoConnectHandled,
+  initialVoiceName,
+  initialPitch,
+  initialSpeed,
 }) => {
-  const [voiceName, setVoiceName] = useState("Aoede");
-  const [pitch, setPitch] = useState("Normal");
-  const [speed, setSpeed] = useState("Normal");
+  const [voiceName, setVoiceName] = useState(initialVoiceName || "Aoede");
+  const [pitch, setPitch] = useState(initialPitch || "Normal");
+  const [speed, setSpeed] = useState(initialSpeed || "Normal");
   const [showSettings, setShowSettings] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const autoConnectHandledRef = React.useRef(false);
@@ -71,7 +78,7 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
 
       <div className="flex-1 space-y-8 overflow-y-auto p-6">
         <div>
-          <label className="mb-4 block text-xs font-bold uppercase tracking-wider text-slate-400">
+          <label className="mb-4 block text-xs font-bold uppercase tracking-wider text-slate-500">
             Select Voice Persona
           </label>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -108,7 +115,7 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
         </div>
 
         <div>
-          <label className="mb-4 block text-xs font-bold uppercase tracking-wider text-slate-400">Pitch</label>
+          <label className="mb-4 block text-xs font-bold uppercase tracking-wider text-slate-500">Pitch</label>
           <div className="flex rounded-xl bg-slate-100 p-1.5">
             {["Low", "Normal", "High"].map((option) => (
               <button
@@ -126,7 +133,7 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
         </div>
 
         <div>
-          <label className="mb-4 block text-xs font-bold uppercase tracking-wider text-slate-400">
+          <label className="mb-4 block text-xs font-bold uppercase tracking-wider text-slate-500">
             Speaking Speed
           </label>
           <div className="flex rounded-xl bg-slate-100 p-1.5">
@@ -165,12 +172,12 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
             <div className="flex items-center gap-3">
               <div className={cn("h-2.5 w-2.5 rounded-full", isConnected ? "animate-pulse bg-emerald-500" : "bg-red-500")} />
               <span className="text-sm font-bold uppercase tracking-wide text-slate-700">
-                {isConnected ? "Live Session Active" : "Offline"}
+                {isConnected ? "In session" : "Ready"}
               </span>
             </div>
             <div className="flex items-center gap-4">
-              <div className="hidden text-xs font-bold tracking-widest text-slate-400 sm:block">
-                GEMINI 2.5 MULTIMODAL
+              <div className="hidden text-xs font-bold tracking-widest text-slate-500 sm:block">
+                KERALAI ASSISTANT
               </div>
               {!isConnected && (
                 <button
@@ -195,13 +202,11 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
                       <div className="absolute inset-0 rounded-full border border-emerald-200 opacity-50" />
                       <Phone className="h-12 w-12 text-emerald-600" />
                     </div>
-                    <h3 className="mb-3 text-2xl font-bold text-slate-900">Start Live Receptionist</h3>
-                    <p className="mx-auto mb-8 max-w-md text-lg text-slate-500">
-                      Connect to Maya to handle customer queries and bookings for{" "}
-                      <span className="font-semibold text-slate-800">
-                        {companyProfile.name || "your business"}
-                      </span>
-                      .
+                    <h3 className="mb-3 text-2xl font-bold text-slate-900">Start live session</h3>
+                    <p className="mx-auto mb-8 max-w-md text-base text-slate-500">
+                      Talk to your assistant the way a caller would
+                      {companyProfile.name ? ` for ${companyProfile.name}` : ""}. It answers, takes
+                      messages, and can book time.
                     </p>
                     <div className="flex flex-wrap justify-center gap-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
                       <span className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 shadow-sm">
@@ -223,16 +228,11 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
                   <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-all duration-300">
                     <div
                       className={cn(
-                        "rounded-full bg-white/30 p-2 backdrop-blur-sm transition-all duration-100",
+                        "flex h-32 w-32 items-center justify-center rounded-full border border-emerald-200 bg-white transition-all duration-100",
                         volume > 10 ? "scale-110 shadow-2xl shadow-emerald-400/40" : "scale-100 shadow-xl",
                       )}
                     >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={`https://api.dicebear.com/7.x/bottts/svg?seed=${voiceName}&backgroundColor=10b981`}
-                        alt="AI Avatar"
-                        className="h-32 w-32 rounded-full bg-white"
-                      />
+                      <Mic className="h-12 w-12 text-emerald-600" />
                     </div>
                   </div>
                 )}
@@ -243,10 +243,10 @@ const LiveReceptionist: React.FC<LiveReceptionistProps> = ({
           {/* Live transcript */}
           {isConnected && (
             <div className="border-t border-slate-100 bg-white px-6 py-4">
-              <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">Live transcript</p>
+              <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Live transcript</p>
               <div className="h-28 space-y-2 overflow-y-auto pr-1">
                 {transcript.length === 0 && (
-                  <p className="text-sm text-slate-400">Listening… the transcript will appear here.</p>
+                  <p className="text-sm text-slate-500">Listening… the transcript will appear here.</p>
                 )}
                 {transcript.map((turn, index) => (
                   <div

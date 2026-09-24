@@ -150,9 +150,9 @@ export default function CrmPage() {
             <ArrowLeft className="h-5 w-5" />
           </Link>
           <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-emerald-700">Reception OS</p>
-            <h1 className="text-2xl font-bold text-slate-900">Inbox (CRM)</h1>
-            <p className="text-sm text-slate-500">Everything the receptionist captured on calls.</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Inbox</h1>
+            <p className="mt-0.5 text-sm text-slate-500">Everything your assistant captured on calls.</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -199,7 +199,7 @@ export default function CrmPage() {
               <Card className="shadow-card">
                 <CardHeader>
                   <CardTitle>Appointments</CardTitle>
-                  <CardDescription>Bookings captured by Maya (newest first).</CardDescription>
+                  <CardDescription>Bookings arranged by your assistant (newest first).</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ScrollArea className="h-[560px] pr-2">

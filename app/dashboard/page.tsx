@@ -297,15 +297,28 @@ export default function HomePage() {
 
   // ── Knowledge actions ─────────────────────────────────────────────────────
   const persistKnowledgeItem = async (item: KnowledgeItem) => {
-    const response = await fetch("/api/knowledge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(item),
-    });
-    const data = await response.json().catch(() => ({}));
-    setKnowledgeBase((prev) => [item, ...prev.filter((existing) => existing.id !== item.id)]);
-    return data as { indexed?: number; warning?: string };
+  const response = await fetch("/api/knowledge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(item),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data?.error || "Failed to save knowledge item");
+  }
+
+  setKnowledgeBase((prev) => [
+    item,
+    ...prev.filter((existing) => existing.id !== item.id),
+  ]);
+
+  return data as {
+    indexed?: number;
+    warning?: string;
   };
+};
 
   const addKnowledgeItem = async () => {
     if (!newDocTitle.trim() || !newDocContent.trim()) {

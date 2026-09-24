@@ -134,7 +134,9 @@ export class BrowserSession {
         ),
         tools: this.buildTools(),
         inputAudioTranscription: {
-          customVocabulary: audioSettings.customVocabulary
+          languageCodes: audioSettings.languageCodes,
+          customVocabulary: audioSettings.customVocabulary,
+          mode: audioSettings.transcriptionMode,
         },
         outputAudioTranscription: {},
         realtimeInputConfig: {

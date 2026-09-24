@@ -541,7 +541,9 @@ class CallSession {
         systemInstruction,
         tools: buildTools(),
         inputAudioTranscription: {
-          customVocabulary: audioSettings.customVocabulary
+          languageCodes: audioSettings.languageCodes,
+          customVocabulary: audioSettings.customVocabulary,
+          mode: audioSettings.transcriptionMode,
         },
         outputAudioTranscription: {},
         realtimeInputConfig: {

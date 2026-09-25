@@ -91,7 +91,7 @@ export function InstructionsSection({
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
                   rows={3}
-                  placeholder="Tell callers Nabeel is in a meeting until 5 PM and will call back after."
+                  placeholder="e.g. We are closed today. Tell callers we will be back tomorrow."
                   className="mt-1 resize-none"
                 />
               </div>

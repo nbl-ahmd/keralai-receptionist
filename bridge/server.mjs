@@ -24,10 +24,11 @@
  *   EXOTEL_SAMPLE_RATE    — 8000 or 16000 (default 8000)
  *   GEMINI_MODEL          — Fallback Live model when a tenant has no override
  *   GEMINI_EMBEDDING_MODEL — Fallback embedding model
- *   MAYA_VOICE            — Gemini voice name (default Aoede)
- *   MAYA_PITCH            — Low | Normal | High (default Normal)
- *   MAYA_SPEED            — Slow | Normal | Fast (default Normal)
- *   MAYA_GREETING         — "0" disables the server greeting (use when an
+ *   ASSISTANT_VOICE       — Gemini voice name (default Aoede). MAYA_VOICE is a
+ *                           backwards-compatible fallback.
+ *   ASSISTANT_PITCH       — Low | Normal | High (default Normal)
+ *   ASSISTANT_SPEED       — Slow | Normal | Fast (default Normal)
+ *   ASSISTANT_GREETING    — "0" disables the server greeting (use when an
  *                           Exotel greeting/IVR applet greets the caller). Default on.
  *   PUBLIC_APP_ORIGIN     — Exact browser origin allowed for /ws/browser
  *   BROWSER_MAX_SESSIONS_PER_IP — Per-IP limit for /ws/browser (default 3)
@@ -108,7 +109,7 @@ import {
   resolveVoiceSettings,
 } from './shared/maya-config.mjs';
 
-// Server-side opening greeting. Disable with MAYA_GREETING=0 when an Exotel
+// Server-side opening greeting. Disable with ASSISTANT_GREETING=0 when an Exotel
 // greeting/IVR applet already greets the caller.
 const GREETING_ENABLED = isGreetingEnabled();
 
@@ -318,6 +319,10 @@ function exotelChunkBytes(rate) {
 // muting model audio after this long so the call can't go permanently silent.
 const BARGE_IN_MUTE_MS = Number(process.env.BARGE_IN_MUTE_MS ?? 2000);
 
+// When the assistant decides the call is over (endCall tool), wait briefly for
+// the goodbye audio to reach the caller before tearing the session down.
+const END_CALL_GRACE_MS = Number(process.env.END_CALL_GRACE_MS ?? 900);
+
 // ─── Audio resampling ─────────────────────────────────────────────────────────
 
 /**
@@ -414,6 +419,7 @@ class CallSession {
     this.interruptSent = false;
     this.outputMuted = false;
     this._unmuteTimer = null;
+    this._endCallTimer = null;
 
     // Per-call booking idempotency: booking key -> Promise<appointment entry>
     this.bookingPromises = new Map();
@@ -445,6 +451,12 @@ class CallSession {
 
   log(...args) { console.log(`[bridge][${this.callSid}]`, ...args); }
   err(...args) { console.error(`[bridge][${this.callSid}]`, ...args); }
+
+  /** Display name for the assistant in summaries/logs — never a hardcoded person. */
+  _assistantLabel() {
+    const name = String(this.companyProfile?.assistantName ?? '').trim();
+    return name || 'Assistant';
+  }
 
   /** sendToolResponse guarded against a closed/absent Gemini session. */
   _sendToolResponse(fc, response) {
@@ -533,7 +545,7 @@ class CallSession {
       outcome: this.outcome,
       intent: this.intent,
       summary: this.transcript.length
-        ? this.transcript.slice(0, 4).map((t) => `${t.role === 'caller' ? 'Caller' : 'Maya'}: ${t.text}`).join(' ')
+        ? this.transcript.slice(0, 4).map((t) => `${t.role === 'caller' ? 'Caller' : this._assistantLabel()}: ${t.text}`).join(' ')
         : null,
       sentiment: 'neutral',
       transcript: this.transcript,
@@ -576,11 +588,11 @@ class CallSession {
       this.err('Failed to load runtime mode:', e?.message ?? e);
     }
 
-    const audioSettings = resolveLiveAudioSettings();
+    const audioSettings = resolveLiveAudioSettings(process.env, this.companyProfile);
 
     const systemInstruction = buildSystemInstruction(
       this.companyProfile,
-      { pitch, speed },
+      { voiceName, pitch, speed },
       activeInstructions,
       runtimeInstruction,
     );
@@ -762,7 +774,7 @@ class CallSession {
     const inputTranscript = serverContent?.inputTranscription?.text;
     if (inputTranscript) this.addTranscript('caller', inputTranscript);
     const outputTranscript = serverContent?.outputTranscription?.text;
-    if (outputTranscript) this.addTranscript('maya', outputTranscript);
+    if (outputTranscript) this.addTranscript('assistant', outputTranscript);
 
     // Barge-in takes priority — never play stale audio for an interrupted turn.
     if (serverContent?.interrupted) {
@@ -861,6 +873,8 @@ class CallSession {
         await this._handleTakeMessage(fc);
       } else if (fc.name === 'searchKnowledgeBase') {
         await this._handleSearchKnowledge(fc);
+      } else if (fc.name === 'endCall') {
+        await this._handleEndCall(fc);
       } else {
         this.log(`Unknown tool call: ${fc.name}`);
         this._sendToolResponse(fc, { result: 'OK' });
@@ -928,7 +942,7 @@ class CallSession {
       };
     }
 
-    // Respond to Gemini FIRST so Maya can keep talking immediately.
+    // Respond to Gemini FIRST so the assistant can keep talking immediately.
     this._sendToolResponse(fc, result);
 
     // CRM sync + audit in the background — never blocks audio. Resolve the
@@ -1031,6 +1045,37 @@ class CallSession {
     this._sendToolResponse(fc, { result });
   }
 
+  /**
+   * Hang up because the caller clearly signalled they are finished. Gated by the
+   * tenant's `endCallEnabled` profile flag so a workspace can disable it.
+   * @param {{ id: string, name: string, args?: object }} fc
+   */
+  async _handleEndCall(fc) {
+    if (this.companyProfile?.endCallEnabled === false) {
+      this._sendToolResponse(fc, {
+        result:
+          'Ending calls is disabled for this workspace. Say a brief, warm goodbye and let the caller hang up.',
+      });
+      return;
+    }
+
+    if (!this.intent) this.intent = 'Call completed';
+    this._sendToolResponse(fc, { result: 'OK. The call will end now.' });
+    this.log('endCall requested — ending call');
+
+    // Idempotent: only schedule once even if Gemini retries the tool.
+    if (this._endCallTimer) return;
+    this._endCallTimer = setTimeout(() => {
+      this._endCallTimer = null;
+      if (this.closed) return;
+      try {
+        if (this.exotelWs.readyState === 1) this.exotelWs.close(1000, 'Assistant ended call');
+      } catch { /* ignore */ }
+      this.close().catch((e) => this.err('Error closing after endCall:', e));
+    }, END_CALL_GRACE_MS);
+    this._endCallTimer.unref?.();
+  }
+
   /** Flush accumulated Gemini output in valid Exotel chunk sizes (multiples of 320 bytes). */
   _flushOutputBuffer(force = false) {
     while (this.outputBuffer.length >= this.chunkBytes) {
@@ -1085,6 +1130,7 @@ class CallSession {
     this.geminiOpen = false;
     this.outputMuted = false;
     this._clearUnmuteTimer();
+    if (this._endCallTimer) { clearTimeout(this._endCallTimer); this._endCallTimer = null; }
     this.pendingInput = Buffer.alloc(0);
     this.log('Closing call session');
 

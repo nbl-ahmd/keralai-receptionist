@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import {
   buildExotelBasicAuthWsUrl,
-  buildExotelWsUrl,
   getExotelCredential,
   rotateExotelCredential,
 } from '@/lib/tenant/bridge-url';
@@ -10,9 +9,8 @@ import { getTenant, handleApiError, resolveTenantContext } from '@/lib/auth/cont
 export const dynamic = 'force-dynamic';
 
 /**
- * Exotel routing status for the active tenant. `wsUrl` is the recommended
- * Basic-auth URL (token in the userinfo, sent by Exotel as an Authorization
- * header); `wsUrlQuery` is the query-parameter alternative. Both use a
+ * Exotel routing status for the active tenant. `wsUrl` is the Basic-auth URL
+ * (token in the userinfo, sent by Exotel as an Authorization header). It uses a
  * `REPLACE_ME` placeholder — the real token is shown only once, on rotate.
  */
 export async function GET(request: Request) {
@@ -26,7 +24,6 @@ export async function GET(request: Request) {
       credential,
       slug: tenant?.slug ?? null,
       wsUrl: tenant ? buildExotelBasicAuthWsUrl(tenant.slug, 'REPLACE_ME') : null,
-      wsUrlQuery: tenant ? buildExotelWsUrl(tenant.slug, 'REPLACE_ME') : null,
     });
   } catch (error) {
     return handleApiError(error, 'Failed to load Exotel routing');
@@ -35,7 +32,7 @@ export async function GET(request: Request) {
 
 /**
  * Rotates the tenant's Exotel token and returns the plaintext token + full
- * URLs exactly once. Only a hash is stored server-side.
+ * URL exactly once. Only a hash is stored server-side.
  */
 export async function POST(request: Request) {
   try {
@@ -51,7 +48,6 @@ export async function POST(request: Request) {
       rotatedAt,
       slug: tenant.slug,
       wsUrl: buildExotelBasicAuthWsUrl(tenant.slug, token),
-      wsUrlQuery: buildExotelWsUrl(tenant.slug, token),
     });
   } catch (error) {
     return handleApiError(error, 'Failed to rotate Exotel token');

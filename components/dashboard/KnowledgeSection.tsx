@@ -119,7 +119,7 @@ export function KnowledgeSection({
                 {chatMessages.length === 0 && (
                   <div className="rounded-xl border border-slate-100 bg-white p-3.5 text-sm text-slate-600">
                     <p className="font-medium text-slate-700">Try something like:</p>
-                    <p className="mt-1">&ldquo;Nabeel works on AI and software projects.&rdquo;</p>
+                    <p className="mt-1">&ldquo;We&apos;re open Monday to Saturday, 9 AM to 6 PM.&rdquo;</p>
                     <p className="mt-1">&ldquo;Tell callers I&apos;m sleeping and will call back after waking up.&rdquo;</p>
                   </div>
                 )}
@@ -213,7 +213,7 @@ export function KnowledgeSection({
               rows={4}
               placeholder={
                 newDocType === "instruction"
-                  ? "Tell callers Nabeel is unavailable this afternoon and will call back tomorrow."
+                  ? "e.g. We're unavailable this afternoon and will call back tomorrow."
                   : "Paste details your assistant should be able to reference."
               }
               value={newDocContent}

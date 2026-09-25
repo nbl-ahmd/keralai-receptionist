@@ -8,7 +8,7 @@ Use two accounts: **A** and **B**. Record results as you go.
 ## Automated checks first
 
 ```bash
-npm run migrate:status   # confirm 006 and 007 are applied
+npm run migrate:status   # confirm 006–008 are applied
 npm run build            # production build
 npm run lint             # eslint
 ```

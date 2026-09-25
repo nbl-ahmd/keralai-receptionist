@@ -192,22 +192,38 @@ export async function loadCompanyProfile(tenantId) {
     voiceSpeed: row.voice_speed ?? undefined,
     greetingEnabled: row.greeting_enabled ?? undefined,
     greetingText: row.greeting_text ?? null,
+    assistantName: row.assistant_name ?? '',
+    assistantLanguage: row.assistant_language ?? '',
+    additionalInfo: row.additional_info ?? '',
+    endCallEnabled: row.end_call_enabled ?? true,
   });
 
-  const empty = { name: '', industry: '', description: '', contactEmail: '', contactPhone: '', address: '' };
+  const empty = {
+    name: '',
+    industry: '',
+    description: '',
+    contactEmail: '',
+    contactPhone: '',
+    address: '',
+    assistantName: '',
+    assistantLanguage: '',
+    additionalInfo: '',
+    endCallEnabled: true,
+  };
 
   try {
     const rows = await dbQuery(
       `select name, industry, description, address, contact_email, contact_phone,
-              voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text
+              voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text,
+              assistant_name, assistant_language, additional_info, end_call_enabled
          from company_profile where tenant_id = $1`,
       [tenantId],
     );
     return rows[0] ? map(rows[0]) : empty;
   } catch (error) {
-    // Pre-003 schema (voice setting columns absent): fall back to base columns.
+    // Pre-008 schema (assistant config columns absent): fall back to base columns.
     console.error(
-      '[bridge][db] voice setting columns missing — run migrations:',
+      '[bridge][db] assistant config columns missing — run migrations:',
       error.message,
     );
     const rows = await dbQuery(

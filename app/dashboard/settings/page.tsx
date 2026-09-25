@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Check, Loader2, Mic, Save, Settings2, Sparkles, TriangleAlert } from "lucide-react";
+import { ArrowLeft, Check, Loader2, Mic, Save, Settings2, Sparkles, TriangleAlert, User } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import ProviderSettings from "@/components/dashboard/ProviderSettings";
 import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
@@ -33,6 +34,10 @@ const EMPTY_PROFILE: CompanyProfile = {
   voiceSpeed: "Normal",
   greetingEnabled: true,
   greetingText: null,
+  assistantName: "",
+  assistantLanguage: "",
+  additionalInfo: "",
+  endCallEnabled: true,
 };
 
 export default function SettingsPage() {
@@ -68,7 +73,10 @@ export default function SettingsPage() {
     [profile, initial],
   );
 
-  const defaultGreeting = `Thank you for calling ${profile.name || "me"}. This is my AI assistant, how can I help?`;
+  const assistantName = profile.assistantName?.trim();
+  const defaultGreeting = assistantName
+    ? `Hi, this is ${assistantName} from ${profile.name || "the team"}. How can I help?`
+    : `Hi, you've reached ${profile.name || "the team"}. How can I help?`;
   const effectiveGreeting = profile.greetingText?.trim() || defaultGreeting;
 
   const save = async () => {
@@ -144,6 +152,160 @@ export default function SettingsPage() {
           </div>
         ) : (
           <>
+            {/* Assistant profile */}
+            <Card className="shadow-card">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <User className="h-4 w-4 text-emerald-600" /> Assistant profile
+                </CardTitle>
+                <CardDescription>
+                  Everything tenant-specific lives here. The assistant never invents details, so keep this accurate.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="setting-name" className="text-xs font-medium text-slate-600">
+                      Business / owner name
+                    </label>
+                    <Input
+                      id="setting-name"
+                      value={profile.name}
+                      onChange={(e) => patch({ name: e.target.value })}
+                      placeholder="e.g. Acme Clinic"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="setting-industry" className="text-xs font-medium text-slate-600">
+                      Industry / what you do
+                    </label>
+                    <Input
+                      id="setting-industry"
+                      value={profile.industry}
+                      onChange={(e) => patch({ industry: e.target.value })}
+                      placeholder="e.g. Dental clinic"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="setting-assistant-name" className="text-xs font-medium text-slate-600">
+                      Assistant name
+                    </label>
+                    <Input
+                      id="setting-assistant-name"
+                      value={profile.assistantName ?? ""}
+                      onChange={(e) => patch({ assistantName: e.target.value })}
+                      placeholder="e.g. Ava"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="setting-assistant-language" className="text-xs font-medium text-slate-600">
+                      Preferred language
+                    </label>
+                    <Input
+                      id="setting-assistant-language"
+                      value={profile.assistantLanguage ?? ""}
+                      onChange={(e) => patch({ assistantLanguage: e.target.value })}
+                      placeholder="e.g. Malayalam and English"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="setting-email" className="text-xs font-medium text-slate-600">
+                      Contact email
+                    </label>
+                    <Input
+                      id="setting-email"
+                      type="email"
+                      value={profile.contactEmail}
+                      onChange={(e) => patch({ contactEmail: e.target.value })}
+                      placeholder="hello@example.com"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="setting-phone" className="text-xs font-medium text-slate-600">
+                      Contact phone
+                    </label>
+                    <Input
+                      id="setting-phone"
+                      type="tel"
+                      value={profile.contactPhone}
+                      onChange={(e) => patch({ contactPhone: e.target.value })}
+                      placeholder="+91 …"
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="setting-location" className="text-xs font-medium text-slate-600">
+                    Location
+                  </label>
+                  <Input
+                    id="setting-location"
+                    value={profile.address}
+                    onChange={(e) => patch({ address: e.target.value })}
+                    placeholder="e.g. Kochi, Kerala"
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="setting-about" className="text-xs font-medium text-slate-600">
+                    About
+                  </label>
+                  <Textarea
+                    id="setting-about"
+                    rows={3}
+                    value={profile.description}
+                    onChange={(e) => patch({ description: e.target.value })}
+                    placeholder="What this business does, and how calls should be handled."
+                    className="mt-1 resize-none"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="setting-additional" className="text-xs font-medium text-slate-600">
+                    Additional approved information
+                  </label>
+                  <Textarea
+                    id="setting-additional"
+                    rows={3}
+                    value={profile.additionalInfo ?? ""}
+                    onChange={(e) => patch({ additionalInfo: e.target.value })}
+                    placeholder="Facts the assistant may share on calls: hours, services, policies, FAQs…"
+                    className="mt-1 resize-none"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">End the call automatically</p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Hang up after the caller clearly signals they are finished.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={profile.endCallEnabled !== false}
+                    aria-label="Toggle automatic call ending"
+                    onClick={() => patch({ endCallEnabled: !(profile.endCallEnabled !== false) })}
+                    className={cn(
+                      "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition",
+                      profile.endCallEnabled !== false ? "bg-emerald-500" : "bg-slate-300",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "inline-block h-5 w-5 transform rounded-full bg-white shadow transition",
+                        profile.endCallEnabled !== false ? "translate-x-6" : "translate-x-1",
+                      )}
+                    />
+                  </button>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Voice */}
             <Card className="shadow-card">
               <CardHeader>

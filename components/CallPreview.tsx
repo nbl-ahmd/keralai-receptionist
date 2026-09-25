@@ -7,11 +7,11 @@ interface PreviewTurn {
 }
 
 const TRANSCRIPT: PreviewTurn[] = [
-  { role: "assistant", text: "Namaskaram, Nabeel's assistant here. How can I help?" },
-  { role: "caller", text: "Is Nabeel free? I wanted to discuss the new project." },
-  { role: "assistant", text: "He's in a meeting right now. I can take a message or arrange a callback." },
-  { role: "caller", text: "Please ask him to call me back after 6." },
-  { role: "assistant", text: "Done — I've noted a callback for after 6 PM. Anything else?" },
+  { role: "assistant", text: "Namaskaram, you've reached Acme Clinic. How can I help?" },
+  { role: "caller", text: "I wanted to book an appointment for tomorrow." },
+  { role: "assistant", text: "Of course. What time works best for you?" },
+  { role: "caller", text: "Around 10 in the morning, please." },
+  { role: "assistant", text: "Booked for 10 AM tomorrow. Anything else I can help with?" },
 ];
 
 /**
@@ -79,7 +79,7 @@ export function CallPreview({ className }: { className?: string }) {
 
       <div className="absolute -bottom-4 -left-3 hidden max-w-[15rem] rounded-xl border border-slate-200/80 bg-white p-3 shadow-card lg:block">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Active instruction</p>
-        <p className="mt-1 text-sm text-slate-700">Tell callers Nabeel is in a meeting until 5 PM.</p>
+        <p className="mt-1 text-sm text-slate-700">Tell callers we are closed until 5 PM and will call back.</p>
       </div>
     </div>
   );

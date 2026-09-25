@@ -39,9 +39,9 @@ const ASSISTANT_AGENT: DemoAgent = {
   icon: Headset,
   greeting: "Namaskaram, this is the KeralAI assistant. How can I help you today?",
   sampleQuestions: [
-    "When is Nabeel available?",
+    "What are your opening hours?",
     "Can you pass on a message?",
-    "Please ask him to call me back.",
+    "Please ask someone to call me back.",
   ],
 };
 

@@ -50,6 +50,15 @@ export const EMPTY_PROFILE: CompanyProfile = {
   contactEmail: "",
   contactPhone: "",
   address: "",
+  voiceName: "Aoede",
+  voicePitch: "Normal",
+  voiceSpeed: "Normal",
+  greetingEnabled: true,
+  greetingText: null,
+  assistantName: "",
+  assistantLanguage: "",
+  additionalInfo: "",
+  endCallEnabled: true,
 };
 
 export interface KnowledgeEmbedding {
@@ -146,6 +155,10 @@ interface ProfileRow {
   voice_speed: string | null;
   greeting_enabled: boolean | null;
   greeting_text: string | null;
+  assistant_name: string | null;
+  assistant_language: string | null;
+  additional_info: string | null;
+  end_call_enabled: boolean | null;
 }
 
 const VOICE_IDS = new Set<string>(VOICE_OPTIONS.map((option) => option.id));
@@ -172,24 +185,29 @@ export function normalizeProfile(input: Record<string, unknown>): CompanyProfile
       ? null
       : String(input.greetingText).slice(0, 500);
   return {
-    name: String(input.name ?? ""),
-    industry: String(input.industry ?? ""),
-    description: String(input.description ?? ""),
-    address: String(input.address ?? input.location ?? ""),
-    contactEmail: String(input.contactEmail ?? input.email ?? ""),
-    contactPhone: String(input.contactPhone ?? input.phone ?? ""),
+    name: String(input.name ?? "").slice(0, 200),
+    industry: String(input.industry ?? "").slice(0, 200),
+    description: String(input.description ?? "").slice(0, 2000),
+    address: String(input.address ?? input.location ?? "").slice(0, 300),
+    contactEmail: String(input.contactEmail ?? input.email ?? "").slice(0, 200),
+    contactPhone: String(input.contactPhone ?? input.phone ?? "").slice(0, 50),
     voiceName: normalizeVoiceName(input.voiceName),
     voicePitch: normalizePitch(input.voicePitch),
     voiceSpeed: normalizeSpeed(input.voiceSpeed),
     // Default on unless explicitly disabled.
     greetingEnabled: input.greetingEnabled === undefined ? true : Boolean(input.greetingEnabled),
     greetingText: greetingText && greetingText.trim() ? greetingText : null,
+    assistantName: String(input.assistantName ?? "").slice(0, 80),
+    assistantLanguage: String(input.assistantLanguage ?? "").slice(0, 200),
+    additionalInfo: String(input.additionalInfo ?? "").slice(0, 4000),
+    endCallEnabled: input.endCallEnabled === undefined ? true : Boolean(input.endCallEnabled),
   };
 }
 
 const PROFILE_SELECT = `
   select name, industry, description, address, contact_email, contact_phone,
-         voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text
+         voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text,
+         assistant_name, assistant_language, additional_info, end_call_enabled
     from company_profile where tenant_id = $1`;
 
 function mapProfileRow(row: ProfileRow): CompanyProfile {
@@ -205,6 +223,10 @@ function mapProfileRow(row: ProfileRow): CompanyProfile {
     voiceSpeed: normalizeSpeed(row.voice_speed),
     greetingEnabled: row.greeting_enabled ?? true,
     greetingText: row.greeting_text ?? null,
+    assistantName: row.assistant_name ?? "",
+    assistantLanguage: row.assistant_language ?? "",
+    additionalInfo: row.additional_info ?? "",
+    endCallEnabled: row.end_call_enabled ?? true,
   };
 }
 
@@ -229,8 +251,9 @@ export async function saveProfile(tenantId: string, profile: CompanyProfile): Pr
   await query(
     `insert into company_profile (
        tenant_id, name, industry, description, address, contact_email, contact_phone,
-       voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+       voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text,
+       assistant_name, assistant_language, additional_info, end_call_enabled, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
      on conflict (tenant_id) do update set
        name = excluded.name,
        industry = excluded.industry,
@@ -243,6 +266,10 @@ export async function saveProfile(tenantId: string, profile: CompanyProfile): Pr
        voice_speed = excluded.voice_speed,
        greeting_enabled = excluded.greeting_enabled,
        greeting_text = excluded.greeting_text,
+       assistant_name = excluded.assistant_name,
+       assistant_language = excluded.assistant_language,
+       additional_info = excluded.additional_info,
+       end_call_enabled = excluded.end_call_enabled,
        updated_at = now()`,
     [
       tenantId,
@@ -257,6 +284,10 @@ export async function saveProfile(tenantId: string, profile: CompanyProfile): Pr
       normalised.voiceSpeed,
       normalised.greetingEnabled,
       normalised.greetingText,
+      normalised.assistantName,
+      normalised.assistantLanguage,
+      normalised.additionalInfo,
+      normalised.endCallEnabled,
     ],
   );
   return normalised;

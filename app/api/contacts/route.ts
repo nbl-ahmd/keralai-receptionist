@@ -2,18 +2,20 @@ import { NextResponse } from 'next/server';
 import { getContacts, upsertContact } from '@/lib/store';
 import { CrmSyncResult, syncToCrm } from '@/lib/crm';
 import { getProfile } from '@/lib/store';
+import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return NextResponse.json(await getContacts());
+    const { tenantId } = await resolveTenantContext(request);
+    return NextResponse.json(await getContacts(tenantId));
   } catch (error) {
-    console.error('[api/contacts] GET failed:', error);
-    return NextResponse.json({ error: 'Failed to read contacts' }, { status: 500 });
+    return handleApiError(error, 'Failed to read contacts');
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const body = (await request.json()) as {
       name?: string;
       phone?: string;
@@ -26,7 +28,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Provide a name, phone, or email' }, { status: 400 });
     }
 
-    const contact = await upsertContact({
+    const contact = await upsertContact(tenantId, {
       name: body.name ?? null,
       phone: body.phone ?? null,
       email: body.email ?? null,
@@ -36,12 +38,11 @@ export async function POST(request: Request) {
 
     let crm: CrmSyncResult = { ok: true, provider: 'none', skipped: true };
     if (body.syncCrm) {
-      crm = await syncToCrm({ contact, company: await getProfile() });
+      crm = await syncToCrm(tenantId, { contact, company: await getProfile(tenantId) });
     }
 
     return NextResponse.json({ success: true, contact, crm });
   } catch (error) {
-    console.error('[api/contacts] POST failed:', error);
-    return NextResponse.json({ error: 'Failed to save contact' }, { status: 500 });
+    return handleApiError(error, 'Failed to save contact');
   }
 }

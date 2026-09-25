@@ -1,8 +1,9 @@
 /**
  * crm/index.ts
  *
- * Pluggable CRM integration. Every provider implements the same adapter
- * contract, so swapping providers is an env change, not a code change.
+ * Pluggable CRM integration. Configuration is per-tenant: the provider and
+ * webhook URL come from `tenant_settings`, the optional signing secret from the
+ * encrypted `tenant_secrets` table. There is no process-wide CRM default.
  *
  * Supported:
  *   - webhook  (generic HTTP POST — HubSpot, Zoho, Zapier, n8n, Make, custom)
@@ -14,8 +15,17 @@
 
 import { Appointment, CallRecord, CompanyProfile } from "../../types";
 import { Contact, logCrmSyncEvent, updateContactCrmLink } from "../store";
+import { getTenantSetting, SETTING_KEYS } from "../tenant/settings";
+import { getTenantSecretValue } from "../tenant/secrets";
 
 export type CrmProvider = "none" | "webhook";
+
+export interface CrmConfig {
+  provider: CrmProvider;
+  webhookUrl: string | null;
+  webhookSecret: string | null;
+  configured: boolean;
+}
 
 export interface CrmSyncResult {
   ok: boolean;
@@ -32,24 +42,23 @@ export interface CrmContactPayload {
   company?: CompanyProfile;
 }
 
-export interface CrmAdapter {
-  readonly provider: CrmProvider;
-  /** Push a contact + optional call/booking context to the CRM. */
-  syncContact(payload: CrmContactPayload): Promise<CrmSyncResult>;
-}
+/** Loads the tenant's CRM configuration (never logs the secret). */
+export async function getCrmConfig(tenantId: string): Promise<CrmConfig> {
+  const [rawProvider, rawUrl, secret] = await Promise.all([
+    getTenantSetting<string>(tenantId, SETTING_KEYS.crmProvider, "none"),
+    getTenantSetting<string>(tenantId, SETTING_KEYS.crmWebhookUrl, ""),
+    getTenantSecretValue(tenantId, "crm", "webhook_secret"),
+  ]);
 
-/** Returns the configured provider. */
-export function getCrmProvider(): CrmProvider {
-  const raw = (process.env.CRM_PROVIDER ?? "none").toLowerCase();
-  return raw === "webhook" ? "webhook" : "none";
-}
+  const provider: CrmProvider = String(rawProvider).toLowerCase() === "webhook" ? "webhook" : "none";
+  const webhookUrl = rawUrl?.trim() ? rawUrl.trim() : null;
 
-function describeConfig(): string {
-  const provider = getCrmProvider();
-  if (provider === "webhook" && !process.env.CRM_WEBHOOK_URL) {
-    return "webhook (missing CRM_WEBHOOK_URL — sync disabled)";
-  }
-  return provider;
+  return {
+    provider,
+    webhookUrl,
+    webhookSecret: secret,
+    configured: provider !== "none" && Boolean(webhookUrl),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -58,111 +67,102 @@ function describeConfig(): string {
 
 const WEBHOOK_TIMEOUT_MS = 8000;
 
-class WebhookCrmAdapter implements CrmAdapter {
-  readonly provider: CrmProvider = "webhook";
+async function postToWebhook(
+  config: CrmConfig,
+  payload: CrmContactPayload,
+): Promise<CrmSyncResult> {
+  if (!config.webhookUrl) {
+    return { ok: false, provider: config.provider, skipped: true, error: "Webhook URL not configured" };
+  }
 
-  async syncContact(payload: CrmContactPayload): Promise<CrmSyncResult> {
-    const url = process.env.CRM_WEBHOOK_URL;
-    if (!url) {
-      return { ok: false, provider: this.provider, skipped: true, error: "CRM_WEBHOOK_URL not set" };
+  const body = {
+    event: payload.appointment ? "contact.appointment_booked" : "contact.call_completed",
+    contact: {
+      id: payload.contact.id,
+      name: payload.contact.name,
+      phone: payload.contact.phone,
+      email: payload.contact.email,
+      company: payload.contact.company,
+      source: payload.contact.source,
+      lastContactAt: payload.contact.lastContactAt,
+    },
+    call: payload.call ?? null,
+    appointment: payload.appointment ?? null,
+    company: payload.company
+      ? { name: payload.company.name, industry: payload.company.industry, phone: payload.company.contactPhone }
+      : null,
+    sentAt: new Date().toISOString(),
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (config.webhookSecret) {
+      headers["X-KeralAI-Signature"] = config.webhookSecret;
     }
 
-    const body = {
-      event: payload.appointment ? "contact.appointment_booked" : "contact.call_completed",
-      contact: {
-        id: payload.contact.id,
-        name: payload.contact.name,
-        phone: payload.contact.phone,
-        email: payload.contact.email,
-        company: payload.contact.company,
-        source: payload.contact.source,
-        lastContactAt: payload.contact.lastContactAt,
-      },
-      call: payload.call ?? null,
-      appointment: payload.appointment ?? null,
-      company: payload.company
-        ? { name: payload.company.name, industry: payload.company.industry, phone: payload.company.contactPhone }
-        : null,
-      sentAt: new Date().toISOString(),
-    };
+    const response = await fetch(config.webhookUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+    if (!response.ok) {
+      return { ok: false, provider: config.provider, error: `HTTP ${response.status}` };
+    }
 
+    // Accept an optional external id from the CRM for future updates.
+    let externalId: string | undefined;
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (process.env.CRM_WEBHOOK_SECRET) {
-        headers["X-KeralAI-Signature"] = process.env.CRM_WEBHOOK_SECRET;
-      }
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        return { ok: false, provider: this.provider, error: `HTTP ${response.status}` };
-      }
-
-      // Accept an optional external id from the CRM for future updates.
-      let externalId: string | undefined;
-      try {
-        const data = (await response.json()) as { id?: string; contactId?: string };
-        externalId = data.id ?? data.contactId;
-      } catch {
-        /* non-JSON response is fine */
-      }
-
-      return { ok: true, provider: this.provider, externalId };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, provider: this.provider, error: message };
-    } finally {
-      clearTimeout(timeout);
+      const data = (await response.json()) as { id?: string; contactId?: string };
+      externalId = data.id ?? data.contactId;
+    } catch {
+      /* non-JSON response is fine */
     }
+
+    return { ok: true, provider: config.provider, externalId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, provider: config.provider, error: message };
+  } finally {
+    clearTimeout(timeout);
   }
-}
-
-// ---------------------------------------------------------------------------
-// No-op adapter
-// ---------------------------------------------------------------------------
-
-class NoopCrmAdapter implements CrmAdapter {
-  readonly provider: CrmProvider = "none";
-
-  async syncContact(): Promise<CrmSyncResult> {
-    return { ok: true, provider: this.provider, skipped: true };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-export function getCrmAdapter(): CrmAdapter {
-  return getCrmProvider() === "webhook" ? new WebhookCrmAdapter() : new NoopCrmAdapter();
 }
 
 /**
- * Syncs a contact (and optional call/booking context) to the CRM, recording the
- * attempt in crm_sync_events. Never throws — a CRM outage must not break a call.
+ * Syncs a contact (and optional call/booking context) to the tenant's CRM,
+ * recording the attempt in crm_sync_events. Never throws — a CRM outage must
+ * not break a call.
  */
-export async function syncToCrm(payload: CrmContactPayload): Promise<CrmSyncResult> {
-  const adapter = getCrmAdapter();
-  const provider = adapter.provider;
-
-  if (provider === "none") {
-    return { ok: true, provider, skipped: true };
+export async function syncToCrm(
+  tenantId: string,
+  payload: CrmContactPayload,
+): Promise<CrmSyncResult> {
+  let config: CrmConfig;
+  try {
+    config = await getCrmConfig(tenantId);
+  } catch (error) {
+    return {
+      ok: false,
+      provider: "none",
+      skipped: true,
+      error: error instanceof Error ? error.message : "CRM configuration unavailable",
+    };
   }
 
-  const result = await adapter.syncContact(payload);
+  if (config.provider === "none") {
+    return { ok: true, provider: "none", skipped: true };
+  }
+
+  const result = await postToWebhook(config, payload);
 
   try {
-    await logCrmSyncEvent({
+    await logCrmSyncEvent(tenantId, {
       contactId: payload.contact.id,
-      provider,
+      provider: config.provider,
       direction: "push",
       status: result.ok ? (result.skipped ? "skipped" : "success") : "failed",
       payload: {
@@ -174,7 +174,7 @@ export async function syncToCrm(payload: CrmContactPayload): Promise<CrmSyncResu
     });
 
     if (result.ok && result.externalId) {
-      await updateContactCrmLink(payload.contact.id, provider, result.externalId);
+      await updateContactCrmLink(tenantId, payload.contact.id, config.provider, result.externalId);
     }
   } catch (error) {
     console.error("[crm] Failed to record sync event:", error);
@@ -183,12 +183,16 @@ export async function syncToCrm(payload: CrmContactPayload): Promise<CrmSyncResu
   return result;
 }
 
-/** Human-readable CRM status for the dashboard. */
-export function getCrmStatus(): { provider: CrmProvider; description: string; configured: boolean } {
-  const provider = getCrmProvider();
-  return {
-    provider,
-    description: describeConfig(),
-    configured: provider === "none" || Boolean(process.env.CRM_WEBHOOK_URL),
-  };
+/** Human-readable CRM status for the dashboard. Never exposes the secret. */
+export async function getCrmStatus(
+  tenantId: string,
+): Promise<{ provider: CrmProvider; description: string; configured: boolean }> {
+  const config = await getCrmConfig(tenantId);
+  const description =
+    config.provider === "none"
+      ? "none"
+      : config.webhookUrl
+        ? "webhook"
+        : "webhook (missing webhook URL — sync disabled)";
+  return { provider: config.provider, description, configured: config.configured };
 }

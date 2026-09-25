@@ -34,19 +34,35 @@ import {
   verboseAudio,
 } from './metrics.mjs';
 
-const MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
-
 /** Base64 length -> approximate decoded byte count (for throughput metrics). */
 const b64Bytes = (data) => Math.floor((data?.length ?? 0) * 0.75);
 
 export class BrowserSession {
-  constructor(ws, ai, companyProfile, buildInstruction, buildTools, buildGreeting) {
+  /**
+   * @param {import('ws').WebSocket} ws
+   * @param {{
+   *   tenantId: string,
+   *   ai: import('@google/genai').GoogleGenAI,
+   *   liveModel: string,
+   *   embeddingModel: string,
+   *   companyProfile: object,
+   *   runtimeInstruction?: string,
+   *   buildInstruction: Function,
+   *   buildTools: Function,
+   *   buildGreeting: Function,
+   * }} options
+   */
+  constructor(ws, options) {
     this.ws = ws;
-    this.ai = ai;
-    this.companyProfile = companyProfile;
-    this.buildInstruction = buildInstruction;
-    this.buildTools = buildTools;
-    this.buildGreeting = buildGreeting;
+    this.tenantId = options.tenantId;
+    this.ai = options.ai;
+    this.liveModel = options.liveModel;
+    this.embeddingModel = options.embeddingModel;
+    this.companyProfile = options.companyProfile;
+    this.runtimeInstruction = options.runtimeInstruction ?? '';
+    this.buildInstruction = options.buildInstruction;
+    this.buildTools = options.buildTools;
+    this.buildGreeting = options.buildGreeting;
     this.geminiSession = null;
     this._opening = false;
     this.closed = false;
@@ -112,7 +128,7 @@ export class BrowserSession {
     // activations/deactivations apply immediately to the next call.
     let activeInstructions = [];
     try {
-      activeInstructions = await loadActiveInstructions();
+      activeInstructions = await loadActiveInstructions(this.tenantId);
     } catch {
       activeInstructions = [];
     }
@@ -120,7 +136,7 @@ export class BrowserSession {
 
     const connectStartNs = hrNow();
     const sessionPromise = this.ai.live.connect({
-      model: MODEL,
+      model: this.liveModel,
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voiceName } } },
@@ -131,6 +147,7 @@ export class BrowserSession {
             speed: this.speed,
           },
           activeInstructions,
+          this.runtimeInstruction,
         ),
         tools: this.buildTools(),
         inputAudioTranscription: {
@@ -182,7 +199,7 @@ export class BrowserSession {
         call: this.callSid,
         channel: 'browser',
         connect_ms: connectMs.toFixed(0),
-        model: MODEL,
+        model: this.liveModel,
       });
     } finally {
       this._opening = false;
@@ -204,7 +221,7 @@ export class BrowserSession {
           let result;
           try {
             const appointment = this.report
-              ? await persistAppointment(this.callSid, args)
+              ? await persistAppointment(this.tenantId, this.callSid, args)
               : {
                   id: `demo-${Date.now()}`,
                   customerName: args.customerName,
@@ -230,13 +247,13 @@ export class BrowserSession {
           });
 
           // Fire-and-forget CRM sync (only for bookAppointment in report mode)
-          if (this.report && getCrmProvider() !== 'none' && result.result.includes('successfully')) {
-            syncToCrm({
+          if (this.report && (await getCrmProvider(this.tenantId)) !== 'none' && result.result.includes('successfully')) {
+            syncToCrm(this.tenantId, {
               contact: { name: 'Browser visitor', source: 'web' },
               call: { callSid: this.callSid, intent: this.intent, outcome: this.outcome },
               company: this.companyProfile,
             })
-              .then((sync) => logCrmSyncEvent({
+              .then((sync) => logCrmSyncEvent(this.tenantId, {
                 callSid: this.callSid,
                 provider: sync.provider,
                 status: sync.ok ? 'success' : 'failed',
@@ -251,11 +268,11 @@ export class BrowserSession {
           let results = [];
           try {
             const embedding = await this.ai.models.embedContent({
-              model: 'gemini-embedding-2',
+              model: this.embeddingModel,
               contents: query,
             });
             const values = embedding.embeddings?.[0]?.values;
-            if (values) results = await searchKnowledgeEmbeddings(`[${values.join(',')}]`, 3);
+            if (values) results = await searchKnowledgeEmbeddings(this.tenantId, `[${values.join(',')}]`, 3);
           } catch (error) {
             toolOk = false;
             console.error('[browser][relay] RAG failed:', error);
@@ -272,11 +289,11 @@ export class BrowserSession {
           try {
             if (this.report) {
               if (fc.name === 'requestCallback') {
-                await persistCallbackRequest(this.callSid, fc.args, null);
+                await persistCallbackRequest(this.tenantId, this.callSid, fc.args, null);
               } else if (fc.name === 'captureQuoteRequest') {
-                await persistQuoteRequest(this.callSid, fc.args, null);
+                await persistQuoteRequest(this.tenantId, this.callSid, fc.args, null);
               } else {
-                await persistMessage(this.callSid, fc.args, null);
+                await persistMessage(this.tenantId, this.callSid, fc.args, null);
               }
             }
             response = { result: 'Saved successfully.' };
@@ -354,7 +371,7 @@ export class BrowserSession {
     }
 
     try {
-      const callId = await upsertCallRecord({
+      const callId = await upsertCallRecord(this.tenantId, {
         id: this.callSid,
         callSid: this.callSid,
         caller: 'Browser visitor',
@@ -372,7 +389,7 @@ export class BrowserSession {
       });
 
       const m = this.metrics.snapshot();
-      await upsertCallMetrics(callId, {
+      await upsertCallMetrics(this.tenantId, callId, {
         callSid: this.callSid,
         channel: 'browser',
         outcome: this.outcome,
@@ -393,13 +410,13 @@ export class BrowserSession {
         tools: m.tools,
       });
 
-      if (getCrmProvider() !== 'none') {
-        syncToCrm({
+      if ((await getCrmProvider(this.tenantId)) !== 'none') {
+        syncToCrm(this.tenantId, {
           contact: { name: 'Browser visitor', source: 'web' },
           call: { callSid: this.callSid, intent: this.intent, outcome: this.outcome, durationSec, startedAt: this.startedAt },
           company: this.companyProfile,
         })
-          .then((sync) => logCrmSyncEvent({
+          .then((sync) => logCrmSyncEvent(this.tenantId, {
             callSid: this.callSid,
             provider: sync.provider,
             status: sync.ok ? 'success' : 'failed',

@@ -3,9 +3,9 @@
  *
  * Postgres (Neon) data layer for the receptionist platform.
  *
- * Replaces the earlier flat-file store. All dashboard data — profile, knowledge,
- * embeddings, contacts, calls, and appointments — lives in Neon, so the Next.js
- * API routes and the Exotel phone bridge share one durable source of truth.
+ * Every tenant-owned function takes an explicit `tenantId` first argument and
+ * constrains its SQL by `tenant_id`. There is no hidden/global tenant context:
+ * a caller must have a resolved, trusted tenant before touching data.
  *
  * Search uses pgvector cosine distance. Embeddings are 3072-dimensional, which
  * exceeds pgvector's 2000-dimension index limit, so similarity runs as an exact
@@ -13,7 +13,6 @@
  * halfvec index if you ever exceed that.
  */
 
-import { GoogleGenAI } from "@google/genai";
 import {
   Appointment,
   CallMetric,
@@ -35,7 +34,8 @@ import {
   VoicePitch,
   VoiceSpeed,
 } from "../types";
-import { query, queryOne } from "../db/client";
+import { query, queryOne } from "@/db/client";
+import { getTenantGeminiClient, getTenantEmbeddingModel } from "./gemini";
 
 // Re-export shared shapes so server-side callers can import them from one place.
 export type { Contact } from "../types";
@@ -96,10 +96,6 @@ function toIso(value: unknown): string {
   return new Date(String(value)).toISOString();
 }
 
-function getApiKey(): string | null {
-  return process.env.GEMINI_API_KEY ?? null;
-}
-
 export function chunkText(text: string, size = CHUNK_SIZE): string[] {
   const chunks: string[] = [];
   for (let index = 0; index < text.length; index += size) {
@@ -122,14 +118,13 @@ export function cosineSimilarity(vecA: number[], vecB: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-export async function embedText(text: string): Promise<number[]> {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error("Missing GEMINI_API_KEY");
-  const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.embedContent({
-    model: EMBEDDING_MODEL,
-    contents: text,
-  });
+/** Embeds text with the tenant's own Gemini credential/model. */
+export async function embedText(tenantId: string, text: string): Promise<number[]> {
+  const [ai, model] = await Promise.all([
+    getTenantGeminiClient(tenantId),
+    getTenantEmbeddingModel(tenantId),
+  ]);
+  const response = await ai.models.embedContent({ model, contents: text });
   const values = response.embeddings?.[0]?.values;
   if (!values) throw new Error("Embedding model returned no values");
   return values;
@@ -195,7 +190,7 @@ export function normalizeProfile(input: Record<string, unknown>): CompanyProfile
 const PROFILE_SELECT = `
   select name, industry, description, address, contact_email, contact_phone,
          voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text
-    from company_profile where id = 1`;
+    from company_profile where tenant_id = $1`;
 
 function mapProfileRow(row: ProfileRow): CompanyProfile {
   return {
@@ -213,29 +208,30 @@ function mapProfileRow(row: ProfileRow): CompanyProfile {
   };
 }
 
-export async function getProfile(): Promise<CompanyProfile> {
+export async function getProfile(tenantId: string): Promise<CompanyProfile> {
   try {
-    const row = await queryOne<ProfileRow>(PROFILE_SELECT);
+    const row = await queryOne<ProfileRow>(PROFILE_SELECT, [tenantId]);
     return row ? mapProfileRow(row) : { ...EMPTY_PROFILE };
   } catch (error) {
     // Pre-003 schema (voice setting columns absent): fall back to base columns.
     console.warn("[store] voice setting columns missing, run migrations:", error instanceof Error ? error.message : error);
     const row = await queryOne<ProfileRow>(
       `select name, industry, description, address, contact_email, contact_phone
-         from company_profile where id = 1`,
+         from company_profile where tenant_id = $1`,
+      [tenantId],
     );
     return row ? mapProfileRow(row) : { ...EMPTY_PROFILE };
   }
 }
 
-export async function saveProfile(profile: CompanyProfile): Promise<CompanyProfile> {
+export async function saveProfile(tenantId: string, profile: CompanyProfile): Promise<CompanyProfile> {
   const normalised = normalizeProfile(profile as unknown as Record<string, unknown>);
   await query(
     `insert into company_profile (
-       id, name, industry, description, address, contact_email, contact_phone,
+       tenant_id, name, industry, description, address, contact_email, contact_phone,
        voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text, updated_at)
-     values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
-     on conflict (id) do update set
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+     on conflict (tenant_id) do update set
        name = excluded.name,
        industry = excluded.industry,
        description = excluded.description,
@@ -249,6 +245,7 @@ export async function saveProfile(profile: CompanyProfile): Promise<CompanyProfi
        greeting_text = excluded.greeting_text,
        updated_at = now()`,
     [
+      tenantId,
       normalised.name,
       normalised.industry,
       normalised.description,
@@ -291,33 +288,47 @@ function mapKnowledgeRow(row: KnowledgeRow): KnowledgeItem {
   };
 }
 
-export async function getKnowledge(): Promise<KnowledgeItem[]> {
+/** All knowledge items for a tenant. Instruction rows are included; callers may filter. */
+export async function getKnowledge(tenantId: string): Promise<KnowledgeItem[]> {
   const rows = await query<KnowledgeRow>(
     `select id, type, title, content, file_name, date_added, is_active
-       from knowledge_items order by date_added desc`,
+       from knowledge_items where tenant_id = $1 order by date_added desc`,
+    [tenantId],
   );
   return rows.map(mapKnowledgeRow);
 }
 
-export async function getKnowledgeItem(id: string): Promise<KnowledgeItem | null> {
+/** Normal knowledge only (never instruction rows). Used by the voice RAG path. */
+export async function getKnowledgeForSearch(tenantId: string): Promise<KnowledgeItem[]> {
+  const rows = await query<KnowledgeRow>(
+    `select id, type, title, content, file_name, date_added, is_active
+       from knowledge_items
+      where tenant_id = $1 and type <> 'instruction'
+      order by date_added desc`,
+    [tenantId],
+  );
+  return rows.map(mapKnowledgeRow);
+}
+
+export async function getKnowledgeItem(tenantId: string, id: string): Promise<KnowledgeItem | null> {
   if (!isUuid(id)) return null;
   const row = await queryOne<KnowledgeRow>(
     `select id, type, title, content, file_name, date_added, is_active
-       from knowledge_items where id = $1`,
-    [id],
+       from knowledge_items where id = $1 and tenant_id = $2`,
+    [id, tenantId],
   );
   return row ? mapKnowledgeRow(row) : null;
 }
 
-/** Inserts or updates a knowledge item, returning its (possibly generated) id. */
-export async function upsertKnowledgeItem(item: KnowledgeItem): Promise<KnowledgeItem> {
+/** Inserts or updates a tenant knowledge item, returning its (possibly generated) id. */
+export async function upsertKnowledgeItem(tenantId: string, item: KnowledgeItem): Promise<KnowledgeItem> {
   const id = isUuid(item.id) ? item.id : crypto.randomUUID();
   // `is_active` only has behavioural meaning for instructions; normal knowledge
   // always stores true. New instructions default to active.
   const isActive = item.type === "instruction" ? item.isActive !== false : true;
   const rows = await query<KnowledgeRow>(
-    `insert into knowledge_items (id, type, title, content, file_name, date_added, is_active, updated_at)
-     values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7, now())
+    `insert into knowledge_items (id, tenant_id, type, title, content, file_name, date_added, is_active, updated_at)
+     values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), $8, now())
      on conflict (id) do update set
        type = excluded.type,
        title = excluded.title,
@@ -325,21 +336,24 @@ export async function upsertKnowledgeItem(item: KnowledgeItem): Promise<Knowledg
        file_name = excluded.file_name,
        is_active = excluded.is_active,
        updated_at = now()
+     where knowledge_items.tenant_id = excluded.tenant_id
      returning id, type, title, content, file_name, date_added, is_active`,
-    [id, item.type, item.title, item.content, item.fileName ?? null, item.dateAdded ?? null, isActive],
+    [id, tenantId, item.type, item.title, item.content, item.fileName ?? null, item.dateAdded ?? null, isActive],
   );
+  if (!rows[0]) throw new Error("Knowledge item not found for this workspace");
   return mapKnowledgeRow(rows[0]);
 }
 
 /**
- * Replaces all embeddings for an item with freshly chunked vectors.
+ * Replaces all embeddings for an item with freshly chunked vectors, using the
+ * tenant's Gemini credential.
  *
  * Instructions are never embedded: the item's existing embeddings are removed
  * first (defense-in-depth in case an item was previously stored as text), then
  * indexing stops. Normal knowledge keeps the existing embedding pipeline.
  */
-export async function reindexKnowledgeItem(item: KnowledgeItem): Promise<KnowledgeEmbedding[]> {
-  await query(`delete from knowledge_embeddings where item_id = $1`, [item.id]);
+export async function reindexKnowledgeItem(tenantId: string, item: KnowledgeItem): Promise<KnowledgeEmbedding[]> {
+  await query(`delete from knowledge_embeddings where item_id = $1 and tenant_id = $2`, [item.id, tenantId]);
 
   if (item.type === "instruction") {
     return [];
@@ -349,11 +363,11 @@ export async function reindexKnowledgeItem(item: KnowledgeItem): Promise<Knowled
   const fresh: KnowledgeEmbedding[] = [];
 
   for (const [chunkIndex, text] of chunks.entries()) {
-    const values = await embedText(text);
+    const values = await embedText(tenantId, text);
     await query(
-      `insert into knowledge_embeddings (item_id, chunk_index, chunk_text, embedding)
-       values ($1, $2, $3, $4::vector)`,
-      [item.id, chunkIndex, text, toVector(values)],
+      `insert into knowledge_embeddings (item_id, tenant_id, chunk_index, chunk_text, embedding)
+       values ($1, $2, $3, $4, $5::vector)`,
+      [item.id, tenantId, chunkIndex, text, toVector(values)],
     );
     fresh.push({ itemId: item.id, chunkIndex, text, values });
   }
@@ -361,13 +375,13 @@ export async function reindexKnowledgeItem(item: KnowledgeItem): Promise<Knowled
   return fresh;
 }
 
-export async function removeKnowledgeItem(id: string): Promise<void> {
+export async function removeKnowledgeItem(tenantId: string, id: string): Promise<void> {
   if (!isUuid(id)) return;
   // Embeddings cascade via the foreign key.
-  await query(`delete from knowledge_items where id = $1`, [id]);
+  await query(`delete from knowledge_items where id = $1 and tenant_id = $2`, [id, tenantId]);
 }
 
-export async function getEmbeddings(): Promise<KnowledgeEmbedding[]> {
+export async function getEmbeddings(tenantId: string): Promise<KnowledgeEmbedding[]> {
   const rows = await query<{
     item_id: string;
     chunk_index: number;
@@ -375,7 +389,8 @@ export async function getEmbeddings(): Promise<KnowledgeEmbedding[]> {
     embedding: string;
   }>(
     `select item_id, chunk_index, chunk_text, embedding::text as embedding
-       from knowledge_embeddings order by item_id, chunk_index`,
+       from knowledge_embeddings where tenant_id = $1 order by item_id, chunk_index`,
+    [tenantId],
   );
   return rows.map((row) => ({
     itemId: row.item_id,
@@ -389,18 +404,20 @@ export async function getEmbeddings(): Promise<KnowledgeEmbedding[]> {
 }
 
 export async function searchKnowledge(
+  tenantId: string,
   queryText: string,
   limit = 3,
 ): Promise<KnowledgeSearchResult[]> {
-  const vector = await embedText(queryText);
+  const vector = await embedText(tenantId, queryText);
   const rows = await query<{ chunk_text: string; item_id: string; score: number }>(
     `select e.chunk_text,
             e.item_id,
-            1 - (e.embedding <=> $1::vector) as score
+            1 - (e.embedding <=> $2::vector) as score
        from knowledge_embeddings e
-       order by e.embedding <=> $1::vector
-       limit $2`,
-    [toVector(vector), limit],
+       where e.tenant_id = $1
+       order by e.embedding <=> $2::vector
+       limit $3`,
+    [tenantId, toVector(vector), limit],
   );
   return rows.map((row) => ({
     text: row.chunk_text,
@@ -439,10 +456,11 @@ function mapContactRow(row: ContactRow): Contact {
   };
 }
 
-export async function getContacts(): Promise<Contact[]> {
+export async function getContacts(tenantId: string): Promise<Contact[]> {
   const rows = await query<ContactRow>(
     `select id, name, phone, email, company, source, crm_provider, crm_id, last_contact_at
-       from contacts order by coalesce(last_contact_at, created_at) desc`,
+       from contacts where tenant_id = $1 order by coalesce(last_contact_at, created_at) desc`,
+    [tenantId],
   );
   return rows.map(mapContactRow);
 }
@@ -451,13 +469,16 @@ export async function getContacts(): Promise<Contact[]> {
  * Finds a contact by phone/email or creates one, then stamps last_contact_at.
  * This is the identity anchor that calls and appointments hang off.
  */
-export async function upsertContact(input: {
-  name?: string | null;
-  phone?: string | null;
-  email?: string | null;
-  company?: string | null;
-  source?: string;
-}): Promise<Contact> {
+export async function upsertContact(
+  tenantId: string,
+  input: {
+    name?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    company?: string | null;
+    source?: string;
+  },
+): Promise<Contact> {
   const phone = input.phone?.trim() || null;
   const email = input.email?.trim() || null;
 
@@ -466,11 +487,12 @@ export async function upsertContact(input: {
     existing = await queryOne<ContactRow>(
       `select id, name, phone, email, company, source, crm_provider, crm_id, last_contact_at
          from contacts
-        where ($1::text is not null and phone = $1)
-           or ($2::text is not null and email = $2)
+        where tenant_id = $3
+          and (($1::text is not null and phone = $1)
+            or ($2::text is not null and email = $2))
         order by created_at
         limit 1`,
-      [phone, email],
+      [phone, email, tenantId],
     );
   }
 
@@ -483,47 +505,53 @@ export async function upsertContact(input: {
          company = coalesce($5, company),
          last_contact_at = now(),
          updated_at = now()
-       where id = $1
+       where id = $1 and tenant_id = $6
        returning id, name, phone, email, company, source, crm_provider, crm_id, last_contact_at`,
-      [existing.id, input.name ?? null, phone, email, input.company ?? null],
+      [existing.id, input.name ?? null, phone, email, input.company ?? null, tenantId],
     );
     return mapContactRow(rows[0]);
   }
 
   const rows = await query<ContactRow>(
-    `insert into contacts (name, phone, email, company, source, last_contact_at)
-     values ($1, $2, $3, $4, $5, now())
+    `insert into contacts (tenant_id, name, phone, email, company, source, last_contact_at)
+     values ($1, $2, $3, $4, $5, $6, now())
      returning id, name, phone, email, company, source, crm_provider, crm_id, last_contact_at`,
-    [input.name ?? null, phone, email, input.company ?? null, input.source ?? "call"],
+    [tenantId, input.name ?? null, phone, email, input.company ?? null, input.source ?? "call"],
   );
   return mapContactRow(rows[0]);
 }
 
 export async function updateContactCrmLink(
+  tenantId: string,
   contactId: string,
   provider: string,
   crmId: string,
 ): Promise<void> {
   if (!isUuid(contactId)) return;
   await query(
-    `update contacts set crm_provider = $2, crm_id = $3, updated_at = now() where id = $1`,
-    [contactId, provider, crmId],
+    `update contacts set crm_provider = $3, crm_id = $4, updated_at = now()
+      where id = $1 and tenant_id = $2`,
+    [contactId, tenantId, provider, crmId],
   );
 }
 
-export async function logCrmSyncEvent(event: {
-  contactId: string;
-  provider: string;
-  direction?: "push" | "pull";
-  status: "success" | "failed" | "skipped";
-  payload?: unknown;
-  error?: string;
-}): Promise<void> {
+export async function logCrmSyncEvent(
+  tenantId: string,
+  event: {
+    contactId: string;
+    provider: string;
+    direction?: "push" | "pull";
+    status: "success" | "failed" | "skipped";
+    payload?: unknown;
+    error?: string;
+  },
+): Promise<void> {
   if (!isUuid(event.contactId)) return;
   await query(
-    `insert into crm_sync_events (contact_id, provider, direction, status, payload, error)
-     values ($1, $2, $3, $4, $5::jsonb, $6)`,
+    `insert into crm_sync_events (tenant_id, contact_id, provider, direction, status, payload, error)
+     values ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
     [
+      tenantId,
       event.contactId,
       event.provider,
       event.direction ?? "push",
@@ -573,37 +601,41 @@ const APPOINTMENT_COLUMNS = `a.id, a.customer_name, a.customer_phone, a.customer
 const APPOINTMENT_SELECT = `
   select ${APPOINTMENT_COLUMNS}
     from appointments a
-    left join calls c on c.id = a.call_id`;
+    left join calls c on c.id = a.call_id and c.tenant_id = a.tenant_id`;
 
-export async function getAppointments(): Promise<Appointment[]> {
-  const rows = await query<AppointmentRow>(`${APPOINTMENT_SELECT} order by a.date asc, a.time asc`);
-  return rows.map(mapAppointmentRow);
-}
-
-export async function getAppointmentsForCall(callId: string): Promise<Appointment[]> {
-  if (!isUuid(callId)) return [];
+export async function getAppointments(tenantId: string): Promise<Appointment[]> {
   const rows = await query<AppointmentRow>(
-    `${APPOINTMENT_SELECT} where a.call_id = $1 order by a.date asc, a.time asc`,
-    [callId],
+    `${APPOINTMENT_SELECT} where a.tenant_id = $1 order by a.date asc, a.time asc`,
+    [tenantId],
   );
   return rows.map(mapAppointmentRow);
 }
 
-export async function addAppointment(appointment: Appointment): Promise<Appointment> {
+export async function getAppointmentsForCall(tenantId: string, callId: string): Promise<Appointment[]> {
+  if (!isUuid(callId)) return [];
+  const rows = await query<AppointmentRow>(
+    `${APPOINTMENT_SELECT} where a.tenant_id = $1 and a.call_id = $2 order by a.date asc, a.time asc`,
+    [tenantId, callId],
+  );
+  return rows.map(mapAppointmentRow);
+}
+
+export async function addAppointment(tenantId: string, appointment: Appointment): Promise<Appointment> {
   const id = isUuid(appointment.id) ? appointment.id : crypto.randomUUID();
 
   // Link to the originating call (and contact) when the call is known.
   let callId: string | null = null;
   if (appointment.callSid) {
-    const call = await queryOne<{ id: string }>(`select id from calls where call_sid = $1`, [
-      appointment.callSid,
-    ]);
+    const call = await queryOne<{ id: string }>(
+      `select id from calls where call_sid = $1 and tenant_id = $2`,
+      [appointment.callSid, tenantId],
+    );
     callId = call?.id ?? null;
   }
 
   const rows = await query<AppointmentRow>(
-    `insert into appointments (id, call_id, customer_name, customer_phone, customer_email, date, time, reason, status, created_at)
-     values ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, coalesce($10::timestamptz, now()))
+    `insert into appointments (id, tenant_id, call_id, customer_name, customer_phone, customer_email, date, time, reason, status, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, coalesce($11::timestamptz, now()))
      on conflict (id) do update set
        call_id = excluded.call_id,
        customer_name = excluded.customer_name,
@@ -614,11 +646,13 @@ export async function addAppointment(appointment: Appointment): Promise<Appointm
        reason = excluded.reason,
        status = excluded.status,
        updated_at = now()
+     where appointments.tenant_id = excluded.tenant_id
      returning id, customer_name, customer_phone, customer_email,
                to_char(date, 'YYYY-MM-DD') as date, time, reason, status, created_at,
-               (select call_sid from calls where calls.id = appointments.call_id) as call_sid`,
+               (select call_sid from calls where calls.id = appointments.call_id and calls.tenant_id = appointments.tenant_id) as call_sid`,
     [
       id,
+      tenantId,
       callId,
       appointment.customerName,
       appointment.customerPhone ?? null,
@@ -630,27 +664,30 @@ export async function addAppointment(appointment: Appointment): Promise<Appointm
       appointment.createdAt ?? null,
     ],
   );
+  if (!rows[0]) throw new Error("Appointment not found for this workspace");
   return mapAppointmentRow(rows[0]);
 }
 
 export async function updateAppointmentStatus(
+  tenantId: string,
   id: string,
   status: Appointment["status"],
 ): Promise<Appointment | null> {
   if (!isUuid(id)) return null;
   const rows = await query<AppointmentRow>(
-    `update appointments set status = $2, updated_at = now() where id = $1
+    `update appointments set status = $3, updated_at = now()
+      where id = $1 and tenant_id = $2
      returning id, customer_name, customer_phone, customer_email,
                to_char(date, 'YYYY-MM-DD') as date, time, reason, status, created_at,
-               (select call_sid from calls where calls.id = appointments.call_id) as call_sid`,
-    [id, status],
+               (select call_sid from calls where calls.id = appointments.call_id and calls.tenant_id = appointments.tenant_id) as call_sid`,
+    [id, tenantId, status],
   );
   return rows[0] ? mapAppointmentRow(rows[0]) : null;
 }
 
-export async function removeAppointment(id: string): Promise<void> {
+export async function removeAppointment(tenantId: string, id: string): Promise<void> {
   if (!isUuid(id)) return;
-  await query(`delete from appointments where id = $1`, [id]);
+  await query(`delete from appointments where id = $1 and tenant_id = $2`, [id, tenantId]);
 }
 
 // ---------------------------------------------------------------------------
@@ -704,42 +741,47 @@ const CALL_SELECT = `
     from calls c
     left join lateral (
       select json_agg(json_build_object('role', role, 'text', content, 'at', at) order by seq) as turns
-        from call_transcript_turns where call_id = c.id
+        from call_transcript_turns where call_id = c.id and tenant_id = c.tenant_id
     ) t on true
     left join lateral (
       select json_agg(query order by id) as queries
-        from call_knowledge_queries where call_id = c.id
+        from call_knowledge_queries where call_id = c.id and tenant_id = c.tenant_id
     ) k on true
     left join lateral (
-      select json_agg(id::text) as ids from appointments where call_id = c.id
+      select json_agg(id::text) as ids from appointments where call_id = c.id and tenant_id = c.tenant_id
     ) a on true`;
 
-export async function getCalls(): Promise<CallRecord[]> {
-  const rows = await query<CallRow>(`${CALL_SELECT} order by c.started_at desc`);
+export async function getCalls(tenantId: string): Promise<CallRecord[]> {
+  const rows = await query<CallRow>(`${CALL_SELECT} where c.tenant_id = $1 order by c.started_at desc`, [
+    tenantId,
+  ]);
   return rows.map(mapCallRow);
 }
 
-export async function getCallBySid(callSid: string): Promise<CallRecord | null> {
-  const rows = await query<CallRow>(`${CALL_SELECT} where c.call_sid = $1`, [callSid]);
+export async function getCallBySid(tenantId: string, callSid: string): Promise<CallRecord | null> {
+  const rows = await query<CallRow>(`${CALL_SELECT} where c.tenant_id = $1 and c.call_sid = $2`, [
+    tenantId,
+    callSid,
+  ]);
   return rows[0] ? mapCallRow(rows[0]) : null;
 }
 
 /**
- * Inserts or updates a call by call_sid, replacing its transcript and
- * knowledge-query rows. Contacts are upserted from the caller identity.
+ * Inserts or updates a call by (tenant_id, call_sid), replacing its transcript
+ * and knowledge-query rows. Contacts are upserted from the caller identity.
  */
-export async function upsertCall(call: CallRecord): Promise<CallRecord> {
-  const contact = await upsertContact({
+export async function upsertCall(tenantId: string, call: CallRecord): Promise<CallRecord> {
+  const contact = await upsertContact(tenantId, {
     name: call.caller && call.caller !== "Unknown caller" ? call.caller : null,
     phone: call.phone ?? null,
     source: call.channel === "phone" ? "phone" : "web",
   });
 
   const rows = await query<{ id: string }>(
-    `insert into calls (call_sid, contact_id, caller, phone, channel, started_at, ended_at,
+    `insert into calls (tenant_id, call_sid, contact_id, caller, phone, channel, started_at, ended_at,
                         duration_sec, outcome, intent, summary, sentiment)
-     values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7::timestamptz, $8, $9, $10, $11, $12)
-     on conflict (call_sid) do update set
+     values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), $8::timestamptz, $9, $10, $11, $12, $13)
+     on conflict (tenant_id, call_sid) do update set
        contact_id = excluded.contact_id,
        caller = excluded.caller,
        phone = excluded.phone,
@@ -752,6 +794,7 @@ export async function upsertCall(call: CallRecord): Promise<CallRecord> {
        sentiment = excluded.sentiment
      returning id`,
     [
+      tenantId,
       call.callSid,
       contact.id,
       call.caller || "Unknown caller",
@@ -769,56 +812,62 @@ export async function upsertCall(call: CallRecord): Promise<CallRecord> {
   const callId = rows[0].id;
 
   // Replace transcript turns
-  await query(`delete from call_transcript_turns where call_id = $1`, [callId]);
+  await query(`delete from call_transcript_turns where call_id = $1 and tenant_id = $2`, [
+    callId,
+    tenantId,
+  ]);
   const turns = call.transcript ?? [];
   if (turns.length > 0) {
     const values: unknown[] = [];
     const placeholders = turns
       .map((turn, index) => {
-        values.push(callId, index, turn.role, turn.text, turn.at);
-        const base = index * 5;
-        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}::timestamptz)`;
+        values.push(callId, tenantId, index, turn.role, turn.text, turn.at);
+        const base = index * 6;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}::timestamptz)`;
       })
       .join(", ");
     await query(
-      `insert into call_transcript_turns (call_id, seq, role, content, at) values ${placeholders}`,
+      `insert into call_transcript_turns (call_id, tenant_id, seq, role, content, at) values ${placeholders}`,
       values,
     );
   }
 
   // Replace knowledge queries
-  await query(`delete from call_knowledge_queries where call_id = $1`, [callId]);
+  await query(`delete from call_knowledge_queries where call_id = $1 and tenant_id = $2`, [
+    callId,
+    tenantId,
+  ]);
   const queries = call.knowledgeQueries ?? [];
   if (queries.length > 0) {
     const values: unknown[] = [];
     const placeholders = queries
       .map((q, index) => {
-        values.push(callId, q);
-        const base = index * 2;
-        return `($${base + 1}, $${base + 2})`;
+        values.push(callId, tenantId, q);
+        const base = index * 3;
+        return `($${base + 1}, $${base + 2}, $${base + 3})`;
       })
       .join(", ");
     await query(
-      `insert into call_knowledge_queries (call_id, query) values ${placeholders}`,
+      `insert into call_knowledge_queries (call_id, tenant_id, query) values ${placeholders}`,
       values,
     );
   }
 
-  const saved = await getCallBySid(call.callSid);
+  const saved = await getCallBySid(tenantId, call.callSid);
   if (!saved) throw new Error("Failed to load saved call");
   return saved;
 }
 
-export async function removeCall(id: string): Promise<void> {
+export async function removeCall(tenantId: string, id: string): Promise<void> {
   if (!isUuid(id)) return;
-  await query(`delete from calls where id = $1`, [id]);
+  await query(`delete from calls where id = $1 and tenant_id = $2`, [id, tenantId]);
 }
 
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
 
-export async function getMetrics(): Promise<DashboardMetrics> {
+export async function getMetrics(tenantId: string): Promise<DashboardMetrics> {
   const row = await queryOne<{
     total_calls: string;
     answered: string;
@@ -830,19 +879,22 @@ export async function getMetrics(): Promise<DashboardMetrics> {
     appointments: string;
     confirmed_appointments: string;
     knowledge_lookups: string;
-  }>(`
+  }>(
+    `
     select
-      (select count(*) from calls) as total_calls,
-      (select count(*) from calls where outcome not in ('missed','abandoned')) as answered,
-      (select count(*) from calls where outcome = 'booked') as booked,
-      (select count(*) from calls where outcome = 'escalated') as escalated,
-      (select count(*) from calls where outcome = 'missed') as missed,
-      (select avg(duration_sec) from calls) as avg_duration,
-      (select count(*) from knowledge_items) as knowledge_items,
-      (select count(*) from appointments) as appointments,
-      (select count(*) from appointments where status = 'confirmed') as confirmed_appointments,
-      (select count(*) from call_knowledge_queries) as knowledge_lookups
-  `);
+      (select count(*) from calls where tenant_id = $1) as total_calls,
+      (select count(*) from calls where tenant_id = $1 and outcome not in ('missed','abandoned')) as answered,
+      (select count(*) from calls where tenant_id = $1 and outcome = 'booked') as booked,
+      (select count(*) from calls where tenant_id = $1 and outcome = 'escalated') as escalated,
+      (select count(*) from calls where tenant_id = $1 and outcome = 'missed') as missed,
+      (select avg(duration_sec) from calls where tenant_id = $1) as avg_duration,
+      (select count(*) from knowledge_items where tenant_id = $1) as knowledge_items,
+      (select count(*) from appointments where tenant_id = $1) as appointments,
+      (select count(*) from appointments where tenant_id = $1 and status = 'confirmed') as confirmed_appointments,
+      (select count(*) from call_knowledge_queries where tenant_id = $1) as knowledge_lookups
+  `,
+    [tenantId],
+  );
 
   return {
     totalCalls: Number(row?.total_calls ?? 0),
@@ -936,23 +988,24 @@ function mapCallMetricRow(row: CallMetricRow): CallMetric {
 }
 
 /** Most recent per-call metrics, joined with the call for caller/start time. */
-export async function getCallMetrics(limit = 100): Promise<CallMetric[]> {
+export async function getCallMetrics(tenantId: string, limit = 100): Promise<CallMetric[]> {
   const rows = await query<CallMetricRow>(
     `select m.call_id, m.call_sid, c.caller, m.channel, m.outcome, c.started_at, m.created_at,
             m.duration_sec, m.gemini_connect_ms, m.in_chunks, m.in_bytes, m.out_frames, m.out_bytes,
             m.in_proc_avg_ms, m.in_proc_p95_ms, m.out_proc_avg_ms, m.out_proc_p95_ms,
             m.turn_count, m.turn_avg_ms, m.turn_p95_ms, m.interrupts, m.tools
        from call_metrics m
-       join calls c on c.id = m.call_id
+       join calls c on c.id = m.call_id and c.tenant_id = m.tenant_id
+      where m.tenant_id = $1
       order by m.created_at desc
-      limit $1`,
-    [Math.min(Math.max(limit, 1), 500)],
+      limit $2`,
+    [tenantId, Math.min(Math.max(limit, 1), 500)],
   );
   return rows.map(mapCallMetricRow);
 }
 
-/** Platform-wide rollup across all stored call metrics. */
-export async function getCallMetricsSummary(): Promise<CallMetricsSummary> {
+/** Tenant rollup across stored call metrics. */
+export async function getCallMetricsSummary(tenantId: string): Promise<CallMetricsSummary> {
   const row = await queryOne<{
     samples: string;
     avg_duration: number | null;
@@ -966,7 +1019,8 @@ export async function getCallMetricsSummary(): Promise<CallMetricsSummary> {
     total_interrupts: string | null;
     total_in_bytes: string | null;
     total_out_bytes: string | null;
-  }>(`
+  }>(
+    `
     select
       count(*) as samples,
       avg(duration_sec) as avg_duration,
@@ -981,7 +1035,10 @@ export async function getCallMetricsSummary(): Promise<CallMetricsSummary> {
       sum(in_bytes) as total_in_bytes,
       sum(out_bytes) as total_out_bytes
     from call_metrics
-  `);
+    where tenant_id = $1
+  `,
+    [tenantId],
+  );
 
   return {
     samples: Number(row?.samples ?? 0),
@@ -1005,7 +1062,7 @@ export async function getCallMetricsSummary(): Promise<CallMetricsSummary> {
 
 const clampLimit = (limit: number) => Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
 
-export async function getCallbackRequests(limit = 100): Promise<CallbackRequest[]> {
+export async function getCallbackRequests(tenantId: string, limit = 100): Promise<CallbackRequest[]> {
   const rows = await query<{
     id: string;
     call_sid: string | null;
@@ -1018,10 +1075,11 @@ export async function getCallbackRequests(limit = 100): Promise<CallbackRequest[
   }>(
     `select cr.id, c.call_sid, cr.customer_name, cr.phone, cr.preferred_time, cr.reason, cr.status, cr.created_at
        from callback_requests cr
-       left join calls c on c.id = cr.call_id
+       left join calls c on c.id = cr.call_id and c.tenant_id = cr.tenant_id
+      where cr.tenant_id = $1
       order by cr.created_at desc
-      limit $1`,
-    [clampLimit(limit)],
+      limit $2`,
+    [tenantId, clampLimit(limit)],
   );
   return rows.map((row) => ({
     id: row.id,
@@ -1035,12 +1093,15 @@ export async function getCallbackRequests(limit = 100): Promise<CallbackRequest[
   }));
 }
 
-export async function updateCallbackStatus(id: string, status: string): Promise<void> {
+export async function updateCallbackStatus(tenantId: string, id: string, status: string): Promise<void> {
   if (!isUuid(id)) return;
-  await query(`update callback_requests set status = $2, updated_at = now() where id = $1`, [id, status]);
+  await query(
+    `update callback_requests set status = $3, updated_at = now() where id = $1 and tenant_id = $2`,
+    [id, tenantId, status],
+  );
 }
 
-export async function getQuoteRequests(limit = 100): Promise<QuoteRequest[]> {
+export async function getQuoteRequests(tenantId: string, limit = 100): Promise<QuoteRequest[]> {
   const rows = await query<{
     id: string;
     call_sid: string | null;
@@ -1054,10 +1115,11 @@ export async function getQuoteRequests(limit = 100): Promise<QuoteRequest[]> {
   }>(
     `select qr.id, c.call_sid, qr.customer_name, qr.phone, qr.project_type, qr.details, qr.timeline, qr.status, qr.created_at
        from quote_requests qr
-       left join calls c on c.id = qr.call_id
+       left join calls c on c.id = qr.call_id and c.tenant_id = qr.tenant_id
+      where qr.tenant_id = $1
       order by qr.created_at desc
-      limit $1`,
-    [clampLimit(limit)],
+      limit $2`,
+    [tenantId, clampLimit(limit)],
   );
   return rows.map((row) => ({
     id: row.id,
@@ -1072,12 +1134,15 @@ export async function getQuoteRequests(limit = 100): Promise<QuoteRequest[]> {
   }));
 }
 
-export async function updateQuoteStatus(id: string, status: string): Promise<void> {
+export async function updateQuoteStatus(tenantId: string, id: string, status: string): Promise<void> {
   if (!isUuid(id)) return;
-  await query(`update quote_requests set status = $2, updated_at = now() where id = $1`, [id, status]);
+  await query(
+    `update quote_requests set status = $3, updated_at = now() where id = $1 and tenant_id = $2`,
+    [id, tenantId, status],
+  );
 }
 
-export async function getMessages(limit = 100): Promise<MessageRow[]> {
+export async function getMessages(tenantId: string, limit = 100): Promise<MessageRow[]> {
   const rows = await query<{
     id: string;
     call_sid: string | null;
@@ -1089,10 +1154,11 @@ export async function getMessages(limit = 100): Promise<MessageRow[]> {
   }>(
     `select m.id, c.call_sid, m.customer_name, m.phone, m.message, m.read, m.created_at
        from messages m
-       left join calls c on c.id = m.call_id
+       left join calls c on c.id = m.call_id and c.tenant_id = m.tenant_id
+      where m.tenant_id = $1
       order by m.created_at desc
-      limit $1`,
-    [clampLimit(limit)],
+      limit $2`,
+    [tenantId, clampLimit(limit)],
   );
   return rows.map((row) => ({
     id: row.id,
@@ -1105,12 +1171,12 @@ export async function getMessages(limit = 100): Promise<MessageRow[]> {
   }));
 }
 
-export async function markMessageRead(id: string, read = true): Promise<void> {
+export async function markMessageRead(tenantId: string, id: string, read = true): Promise<void> {
   if (!isUuid(id)) return;
-  await query(`update messages set read = $2 where id = $1`, [id, read]);
+  await query(`update messages set read = $3 where id = $1 and tenant_id = $2`, [id, tenantId, read]);
 }
 
-export async function getCallLog(limit = 100): Promise<CallLogRow[]> {
+export async function getCallLog(tenantId: string, limit = 100): Promise<CallLogRow[]> {
   const rows = await query<{
     id: string;
     call_sid: string;
@@ -1122,8 +1188,8 @@ export async function getCallLog(limit = 100): Promise<CallLogRow[]> {
     created_at: unknown;
   }>(
     `select id, call_sid, caller_number, started_at, ended_at, summary, transcript, created_at
-       from call_log order by created_at desc limit $1`,
-    [clampLimit(limit)],
+       from call_log where tenant_id = $1 order by created_at desc limit $2`,
+    [tenantId, clampLimit(limit)],
   );
   return rows.map((row) => ({
     id: row.id,

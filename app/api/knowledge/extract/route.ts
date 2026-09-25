@@ -1,25 +1,34 @@
 import { NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
+import {
+  getTenantGeminiApiKey,
+  getTenantGeminiClient,
+  getTenantTextModel,
+} from '@/lib/gemini';
+import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
 
 export const dynamic = 'force-dynamic';
 
-const MODEL = process.env.GENAI_MODEL || 'gemini-flash-lite-latest';
-
 export async function POST(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const { mimeType, data } = await request.json();
     if (!mimeType || !data || typeof data !== 'string') {
       return NextResponse.json({ error: 'mimeType and base64 data are required' }, { status: 400 });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    // Tenant-scoped credential: never a platform-wide Gemini key.
+    const apiKey = await getTenantGeminiApiKey(tenantId);
     if (!apiKey) {
-      return NextResponse.json({ error: 'Server Gemini key is not configured' }, { status: 503 });
+      return NextResponse.json(
+        { error: 'Add a Gemini API key in Settings → Providers before extracting files.' },
+        { status: 503 },
+      );
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = await getTenantGeminiClient(tenantId);
+    const model = await getTenantTextModel(tenantId);
     const response = await ai.models.generateContent({
-      model: MODEL,
+      model,
       contents: {
         parts: [
           { inlineData: { mimeType, data } },
@@ -45,7 +54,6 @@ Analyze the provided file. Return STRICT JSON only:
     const raw = (response.text || '{}').replace(/```json|```/g, '').trim();
     return NextResponse.json(JSON.parse(raw));
   } catch (error) {
-    console.error('[api/knowledge/extract] failed:', error);
-    return NextResponse.json({ error: 'Could not extract file content' }, { status: 500 });
+    return handleApiError(error, 'Could not extract file content');
   }
 }

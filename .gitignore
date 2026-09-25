@@ -33,3 +33,9 @@ bridge/.env.*.local
 *.njsproj
 *.sln
 *.sw?
+
+# Local agent harness / skill tooling
+.agents/
+.claude/
+.opencode/
+skills-lock.json

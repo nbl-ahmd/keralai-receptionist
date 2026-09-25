@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
 import { KnowledgeItem } from '@/types';
 import { getKnowledge, getProfile } from '@/lib/store';
-
-const MODEL =
-  process.env.GEMINI_FLASH_MODEL ||
-  process.env.GENAI_MODEL ||
-  'gemini-3.8-flash';
+import {
+  getTenantGeminiApiKey,
+  getTenantGeminiClient,
+  getTenantTextModel,
+} from '@/lib/gemini';
+import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
 
 const VALID_TYPES: KnowledgeItem['type'][] = ['text', 'link', 'pdf', 'image', 'doc', 'instruction'];
 
@@ -22,9 +22,9 @@ interface DraftItem {
   isActive: boolean;
 }
 
-const SYSTEM_PROMPT = `You are the knowledge-base editor for Nabeel's personal AI assistant.
+const SYSTEM_PROMPT = `You are the knowledge-base editor for a personal AI assistant.
 
-Your task is to help Nabeel maintain two kinds of entries:
+Your task is to help the workspace owner maintain two kinds of entries:
 
 1. Normal factual knowledge ("text", "link", "pdf", "image", "doc") that is embedded and retrieved later via RAG.
 2. Active instructions ("instruction") that are temporary, event-based, or current operational directions for calls. Active instructions are injected directly into the live voice assistant's system prompt and are NOT embedded.
@@ -42,15 +42,15 @@ Classify the entry as "instruction" when the user is describing:
 - phrases such as "today", "currently", "right now", "for the next few hours", "until I say otherwise", "tell callers...", "if someone calls...", "when someone asks..."
 
 Examples that MUST classify as "instruction":
-- "Nabeel is sleeping. Tell callers he is sleeping and will call after waking up."
-- "Nabeel is in a meeting. Tell callers he is in a meeting."
-- "For today, tell callers Nabeel is unavailable."
-- "If someone calls about the project, tell them Nabeel will respond later."
+- "I am sleeping. Tell callers I am sleeping and will call after waking up."
+- "I am in a meeting. Tell callers I am in a meeting."
+- "For today, tell callers I am unavailable."
+- "If someone calls about the project, tell them I will respond later."
 
 Classify the entry as "text" for permanent, stable facts:
-- "Nabeel is a software engineer."
-- "Nabeel works on AI and software projects."
-- "Nabeel is based in Kerala."
+- "I am a software engineer."
+- "I work on AI and software projects."
+- "I am based in Kerala."
 
 IMPORTANT:
 - Do NOT infer temporary status if the user only provided a permanent fact.
@@ -89,6 +89,7 @@ If the user's message does not contain anything useful to store, return:
 
 export async function POST(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const { message, history } = (await request.json()) as {
       message?: string;
       history?: ChatTurn[];
@@ -98,15 +99,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing message' }, { status: 400 });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    // Tenant-scoped credential: never a platform-wide Gemini key.
+    const apiKey = await getTenantGeminiApiKey(tenantId);
     if (!apiKey) {
-      return NextResponse.json({ error: 'Missing GEMINI_API_KEY' }, { status: 500 });
+      return NextResponse.json(
+        { error: 'Add a Gemini API key in Settings → Providers to use the knowledge assistant.' },
+        { status: 503 },
+      );
     }
 
-    const profile = await getProfile();
-    const existing = await getKnowledge();
+    const profile = await getProfile(tenantId);
+    const existing = await getKnowledge(tenantId);
     const context = [
-      `Assistant owner: ${profile.name || 'Nabeel'}`,
+      `Assistant owner: ${profile.name || 'the workspace owner'}`,
       `Existing knowledge titles: ${existing.map((item) => item.title).join(', ') || 'none'}`,
     ].join('\n');
 
@@ -115,9 +120,10 @@ export async function POST(request: Request) {
       .map((turn) => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.text}`)
       .join('\n');
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = await getTenantGeminiClient(tenantId);
+    const model = await getTenantTextModel(tenantId);
     const response = await ai.models.generateContent({
-      model: MODEL,
+      model,
       contents: {
         parts: [
           {
@@ -208,7 +214,6 @@ ${message}`,
       draft,
     });
   } catch (error) {
-    console.error('Knowledge chat failed:', error);
-    return NextResponse.json({ error: 'Chat failed' }, { status: 500 });
+    return handleApiError(error, 'Chat failed');
   }
 }

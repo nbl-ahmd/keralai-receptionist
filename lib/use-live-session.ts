@@ -74,6 +74,30 @@ function websocketUrl(): string {
   return `${protocol}//${window.location.host}/ws/browser`;
 }
 
+/**
+ * The bridge only accepts a short-lived signed token issued by
+ * `/api/voice/token`; a bare `?tenantId=` is never trusted. Uses the server's
+ * resolved bridge URL when provided, otherwise the same-origin relay.
+ */
+function withBridgeToken(serverWsUrl: string | null, token: string): string {
+  const base = serverWsUrl?.trim() ? serverWsUrl.trim() : websocketUrl();
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}token=${encodeURIComponent(token)}`;
+}
+
+/** Requests a short-lived browser bridge token for the authenticated tenant. */
+async function fetchBridgeToken(): Promise<{ token: string; wsUrl: string | null }> {
+  const response = await fetch("/api/voice/token", { method: "POST" });
+  if (!response.ok) {
+    throw new Error("Could not authorise the voice session. Please sign in again.");
+  }
+  const data = (await response.json()) as { token?: string; wsUrl?: string | null };
+  if (!data.token) {
+    throw new Error("Could not authorise the voice session. Please sign in again.");
+  }
+  return { token: data.token, wsUrl: data.wsUrl ?? null };
+}
+
 export function useLiveSession({
   companyProfile,
   onBookAppointment,
@@ -215,6 +239,10 @@ export function useLiveSession({
     connectedRef.current = false;
 
     try {
+      // Authorise against the dashboard first (session cookie), so we never
+      // prompt for the mic before we know the tenant is allowed to talk.
+      const bridgeAuth = await fetchBridgeToken();
+
       const inputContext = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: INPUT_SAMPLE_RATE,
       });
@@ -230,7 +258,7 @@ export function useLiveSession({
       analyser.fftSize = 256;
       analyserRef.current = analyser;
 
-      const url = websocketUrl();
+      const url = withBridgeToken(bridgeAuth.wsUrl, bridgeAuth.token);
       const socket = new WebSocket(url);
       socketRef.current = socket;
 

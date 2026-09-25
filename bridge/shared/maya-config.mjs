@@ -348,12 +348,17 @@ export function isGreetingEnabled(env = process.env) {
  * fresh from Postgres at the start of each call. They are injected into the
  * system instruction and take precedence over normal knowledge.
  *
+ * `runtimeInstruction` is the current assistant-mode block (available, meeting,
+ * driving, …) resolved from the tenant's runtime state at session start. It is
+ * empty for the default `available` mode.
+ *
  * @param {object} profile
  * @param {{ voiceName?: string, pitch?: string, speed?: string }} [voiceSettings]
  * @param {Array<{ title?: string, content?: string }>} [activeInstructions]
+ * @param {string} [runtimeInstruction]
  * @returns {string}
  */
-export function buildSystemInstruction(profile = {}, voiceSettings = {}, activeInstructions = []) {
+export function buildSystemInstruction(profile = {}, voiceSettings = {}, activeInstructions = [], runtimeInstruction = '') {
   const { pitch, speed, voiceName } = {
     ...DEFAULT_VOICE_SETTINGS,
     ...voiceSettings,
@@ -943,7 +948,7 @@ Never sacrifice honesty just to sound helpful.
 
 ${activeInstructionsBlock}
 
-==================================================
+${runtimeInstruction ? `${runtimeInstruction}\n\n` : ''}==================================================
 APPROVED NABEEL PROFILE
 ==================================================
 

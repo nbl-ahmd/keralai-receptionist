@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Check, Inbox, Loader2, PhoneCall, RefreshCw, Settings2, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Check, Inbox, Loader2, LogOut, PhoneCall, RefreshCw, Settings2, X } from "lucide-react";
 
 import CallsSection from "@/components/dashboard/CallsSection";
 import DashboardSidebar, { NAV_ITEMS, type DashboardTab } from "@/components/dashboard/DashboardSidebar";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
+import AssistantModeCard from "@/components/dashboard/AssistantModeCard";
 import InstructionsSection from "@/components/dashboard/InstructionsSection";
 import KnowledgeSection from "@/components/dashboard/KnowledgeSection";
 import OverviewSection from "@/components/dashboard/OverviewSection";
@@ -14,6 +17,8 @@ import { toDate } from "@/components/dashboard/shared";
 import LiveReceptionist from "@/components/LiveReceptionist";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useAssistantMode } from "@/lib/use-assistant-mode";
+import { signOut } from "@/lib/auth/client";
 import {
   Appointment,
   BookingSettings,
@@ -78,6 +83,25 @@ export default function DashboardPage() {
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
   const [callFilter, setCallFilter] = useState<"all" | CallRecord["outcome"]>("all");
 
+  // Tabs are deep-linkable via the URL hash so the shared mobile nav works from
+  // any dashboard page (e.g. /dashboard#calls).
+  const selectTab = useCallback((tab: DashboardTab) => {
+    setActiveTab(tab);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", `#${tab}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    const applyHash = () => {
+      const key = window.location.hash.replace(/^#/, "") as DashboardTab;
+      if (NAV_ITEMS.some((item) => item.key === key)) setActiveTab(key);
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
   const [showVoiceConsole, setShowVoiceConsole] = useState(false);
   const [voiceAutoConnect, setVoiceAutoConnect] = useState(false);
 
@@ -108,6 +132,21 @@ export default function DashboardPage() {
   // Avoid clobbering in-progress profile edits during background polling.
   const profileDirtyRef = useRef(false);
 
+  // Tenant-scoped assistant runtime mode (available, meeting, driving, …).
+  const assistantMode = useAssistantMode(30000);
+  const modeActive = Boolean(assistantMode.status && assistantMode.status.mode !== "available");
+
+  const router = useRouter();
+  const handleSignOut = useCallback(async () => {
+    try {
+      await signOut();
+    } catch {
+      // Even if the request fails, send the user to the login screen.
+    }
+    router.replace("/login");
+    router.refresh();
+  }, [router]);
+
   const triggerBanner = useCallback((message: string, tone: "info" | "success" | "warn" = "info") => {
     if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current as number);
     setBanner({ message, tone });
@@ -121,13 +160,13 @@ export default function DashboardPage() {
       try {
         const [profileRes, knowledgeRes, appointmentsRes, callsRes, metricsRes, contactsRes, inboxRes] =
           await Promise.all([
-            fetch("/api/company-profile").then((r) => r.json()),
-            fetch("/api/knowledge").then((r) => r.json()),
-            fetch("/api/appointments").then((r) => r.json()),
-            fetch("/api/calls").then((r) => r.json()),
-            fetch("/api/metrics").then((r) => r.json()),
-            fetch("/api/contacts").then((r) => r.json()),
-            fetch("/api/inbox").then((r) => r.json()),
+            fetch("/api/company-profile", { cache: "no-store" }).then((r) => r.json()),
+            fetch("/api/knowledge", { cache: "no-store" }).then((r) => r.json()),
+            fetch("/api/appointments", { cache: "no-store" }).then((r) => r.json()),
+            fetch("/api/calls", { cache: "no-store" }).then((r) => r.json()),
+            fetch("/api/metrics", { cache: "no-store" }).then((r) => r.json()),
+            fetch("/api/contacts", { cache: "no-store" }).then((r) => r.json()),
+            fetch("/api/inbox", { cache: "no-store" }).then((r) => r.json()),
           ]);
 
         if (profileRes && !profileRes.error && !profileDirtyRef.current) {
@@ -204,8 +243,8 @@ export default function DashboardPage() {
 
   const openCall = useCallback((id: string) => {
     setSelectedCallId(id);
-    setActiveTab("calls");
-  }, []);
+    selectTab("calls");
+  }, [selectTab]);
 
   // ── Knowledge actions ─────────────────────────────────────────────────────
   const persistKnowledgeItem = async (item: KnowledgeItem) => {
@@ -528,7 +567,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[hsl(var(--background))]">
-      <header className="mx-auto max-w-7xl px-4 pt-6 sm:px-6 lg:pt-8">
+      <header className="mx-auto max-w-7xl px-4 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:px-6 lg:pt-[calc(env(safe-area-inset-top)+2rem)]">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-start gap-3">
             <Link
@@ -553,6 +592,23 @@ export default function DashboardPage() {
                     aria-hidden
                   />
                   {configured ? "Assistant configured" : "Setup needed"}
+                </span>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
+                    modeActive ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-600",
+                  )}
+                  title={
+                    assistantMode.status?.expiresAt
+                      ? `Until ${new Date(assistantMode.status.expiresAt).toLocaleString()}`
+                      : undefined
+                  }
+                >
+                  <span
+                    className={cn("h-1.5 w-1.5 rounded-full", modeActive ? "bg-amber-500" : "bg-emerald-500")}
+                    aria-hidden
+                  />
+                  {assistantMode.status?.label ?? "Available"}
                 </span>
               </div>
               <p className="mt-0.5 max-w-2xl text-sm text-slate-500">{heading.description}</p>
@@ -581,6 +637,17 @@ export default function DashboardPage() {
               <span className="hidden sm:inline">Start live session</span>
               <span className="sm:hidden">Live session</span>
             </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-slate-600"
+              onClick={handleSignOut}
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="hidden sm:inline">Sign out</span>
+            </Button>
           </div>
         </div>
 
@@ -593,7 +660,7 @@ export default function DashboardPage() {
             <button
               key={item.key}
               type="button"
-              onClick={() => setActiveTab(item.key)}
+              onClick={() => selectTab(item.key)}
               aria-current={activeTab === item.key ? "page" : undefined}
               className={cn(
                 "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1",
@@ -650,28 +717,33 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <main className="mx-auto grid max-w-7xl gap-6 px-4 pb-14 pt-6 sm:px-6 lg:grid-cols-[240px_1fr]">
+      <main className="mx-auto grid max-w-7xl gap-6 px-4 pb-28 pt-6 sm:px-6 lg:grid-cols-[240px_1fr] lg:pb-14">
         <DashboardSidebar
           activeTab={activeTab}
-          onSelect={setActiveTab}
+          onSelect={selectTab}
           ownerName={profile.name}
           configured={configured}
         />
 
         <section className="min-w-0">
           {activeTab === "overview" && (
-            <OverviewSection
-              calls={calls}
-              callbacks={callbacks}
-              messages={messages}
-              knowledge={knowledgeItems}
-              instructions={instructionItems}
-              appointments={appointments}
-              loading={isLoading}
-              onOpenCall={openCall}
-              onGoTo={setActiveTab}
-              onToggleInstruction={toggleInstructionActive}
-            />
+            <>
+              <AssistantModeCard mode={assistantMode} />
+              <div className="mt-6">
+                <OverviewSection
+                  calls={calls}
+                  callbacks={callbacks}
+                  messages={messages}
+                  knowledge={knowledgeItems}
+                  instructions={instructionItems}
+                  appointments={appointments}
+                  loading={isLoading}
+                  onOpenCall={openCall}
+                  onGoTo={selectTab}
+                  onToggleInstruction={toggleInstructionActive}
+                />
+              </div>
+            </>
           )}
 
           {activeTab === "calls" && (
@@ -721,7 +793,7 @@ export default function DashboardPage() {
               onPreviewChange={setParsePreview}
               fileInputRef={fileInputRef}
               onDelete={deleteKnowledgeItem}
-              onGoToInstructions={() => setActiveTab("instructions")}
+              onGoToInstructions={() => selectTab("instructions")}
             />
           )}
 
@@ -792,6 +864,8 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+
+      <MobileBottomNav activeTab={activeTab} onSelect={selectTab} />
     </div>
   );
 }

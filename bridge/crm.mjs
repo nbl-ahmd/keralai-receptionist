@@ -1,36 +1,74 @@
 /**
  * bridge/crm.mjs
  *
- * CRM sync for the phone bridge. Mirrors lib/crm/index.ts so phone calls are
- * pushed to the CRM exactly like browser calls are.
+ * Tenant-scoped CRM sync for the phone bridge. Mirrors lib/crm/index.ts so phone
+ * calls are pushed to the CRM exactly like browser calls are.
+ *
+ * There is no process-wide CRM configuration: the provider, webhook URL and
+ * signing secret are resolved per tenant from `tenant_settings` / `tenant_secrets`
+ * before any request is made.
  *
  * Sync is intentionally best-effort: failures are logged but never thrown into
  * a live call path. Call syncToCrm() in a fire-and-forget chain after
- * sendToolResponse() so Maya is never blocked waiting for an external webhook.
+ * sendToolResponse() so the assistant is never blocked waiting for a webhook.
  */
 
 import { hrNow, logPerf, msSince, processMetrics } from './metrics.mjs';
+import { getTenantSetting } from './db.mjs';
+import { getTenantSecretValue } from './secrets.mjs';
 
 const TIMEOUT_MS = Number(process.env.CRM_TIMEOUT_MS ?? 8000);
 
-export function getCrmProvider() {
-  const raw = (process.env.CRM_PROVIDER ?? 'none').toLowerCase();
-  return raw === 'webhook' ? 'webhook' : 'none';
+export const CRM_PROVIDER_KEY = 'crm.provider';
+export const CRM_WEBHOOK_URL_KEY = 'crm.webhook_url';
+
+/**
+ * Resolves the tenant's CRM configuration. Returns `{ provider, url, secret }`.
+ * `provider` is `'none'` unless the tenant explicitly configured a webhook.
+ */
+export async function getCrmConfig(tenantId) {
+  let provider = 'none';
+  let url = null;
+  try {
+    const raw = await getTenantSetting(tenantId, CRM_PROVIDER_KEY, 'none');
+    provider = String(raw ?? 'none').toLowerCase() === 'webhook' ? 'webhook' : 'none';
+    url = await getTenantSetting(tenantId, CRM_WEBHOOK_URL_KEY, null);
+    url = typeof url === 'string' && url.trim() ? url.trim() : null;
+  } catch (error) {
+    console.error('[bridge][crm] Failed to load CRM settings:', error?.message ?? error);
+    return { provider: 'none', url: null, secret: null };
+  }
+  if (provider === 'none' || !url) return { provider: 'none', url: null, secret: null };
+
+  let secret = null;
+  try {
+    secret = await getTenantSecretValue(tenantId, 'crm', 'webhook_secret');
+  } catch (error) {
+    // A missing/broken encryption key must not block the call; sync unsigned.
+    console.error('[bridge][crm] Failed to load CRM secret:', error?.message ?? error);
+  }
+  return { provider, url, secret };
+}
+
+/** Convenience helper for call sites that only need the provider name. */
+export async function getCrmProvider(tenantId) {
+  return (await getCrmConfig(tenantId)).provider;
 }
 
 /**
- * Pushes a contact plus call/booking context to the configured CRM webhook.
+ * Pushes a contact plus call/booking context to the tenant's CRM webhook.
  * Never throws — CRM outages must not affect a live call.
  *
+ * @param {string} tenantId
  * @param {{ contact: object, call?: object, appointment?: object, company?: object }} payload
- * @returns {Promise<{ ok: boolean, provider: string, externalId?: string, error?: string }>}
+ * @returns {Promise<{ ok: boolean, provider: string, externalId?: string, error?: string, skipped?: boolean }>}
  */
-export async function syncToCrm(payload) {
-  const provider = getCrmProvider();
-  if (provider === 'none') return { ok: true, provider, skipped: true };
-
-  const url = process.env.CRM_WEBHOOK_URL;
-  if (!url) return { ok: false, provider, skipped: true, error: 'CRM_WEBHOOK_URL not set' };
+export async function syncToCrm(tenantId, payload) {
+  const config = await getCrmConfig(tenantId);
+  if (config.provider === 'none' || !config.url) {
+    return { ok: true, provider: 'none', skipped: true };
+  }
+  const { provider, url, secret } = config;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -39,9 +77,7 @@ export async function syncToCrm(payload) {
 
   try {
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
-    if (process.env.CRM_WEBHOOK_SECRET) {
-      headers['X-KeralAI-Signature'] = process.env.CRM_WEBHOOK_SECRET;
-    }
+    if (secret) headers['X-KeralAI-Signature'] = secret;
 
     const response = await fetch(url, {
       method: 'POST',

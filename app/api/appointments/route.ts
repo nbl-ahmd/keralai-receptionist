@@ -10,18 +10,20 @@ import { bookingSettings, buildIcs, getAvailability, validateBookingRequest } fr
 import { CrmSyncResult, syncToCrm } from '@/lib/crm';
 import { upsertContact } from '@/lib/store';
 import { getProfile } from '@/lib/store';
+import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
 
 export async function GET(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const url = new URL(request.url);
 
     // Calendar export for a single booking: /api/appointments?id=…&format=ics
     const id = url.searchParams.get('id');
     const format = url.searchParams.get('format');
     if (id && format === 'ics') {
-      const appointment = (await getAppointments()).find((item) => item.id === id);
+      const appointment = (await getAppointments(tenantId)).find((item) => item.id === id);
       if (!appointment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-      const profile = await getProfile();
+      const profile = await getProfile(tenantId);
       const ics = buildIcs(appointment, profile.name || 'Appointment');
       return new NextResponse(ics, {
         headers: {
@@ -34,18 +36,18 @@ export async function GET(request: Request) {
     // Availability for a date: /api/appointments?availability=YYYY-MM-DD
     const availabilityDate = url.searchParams.get('availability');
     if (availabilityDate) {
-      return NextResponse.json(await getAvailability(availabilityDate));
+      return NextResponse.json(await getAvailability(tenantId, availabilityDate));
     }
 
-    return NextResponse.json(await getAppointments());
+    return NextResponse.json(await getAppointments(tenantId));
   } catch (error) {
-    console.error('[api/appointments] GET failed:', error);
-    return NextResponse.json({ error: 'Failed to read appointments' }, { status: 500 });
+    return handleApiError(error, 'Failed to read appointments');
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const body = (await request.json()) as Appointment & { skipValidation?: boolean };
     if (!body?.customerName || !body?.date || !body?.time) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -59,22 +61,22 @@ export async function POST(request: Request) {
       }
     }
 
-    const saved = await addAppointment({
+    const saved = await addAppointment(tenantId, {
       ...body,
       id: body.id || crypto.randomUUID(),
       status: body.status || 'confirmed',
       createdAt: body.createdAt || new Date().toISOString(),
     });
 
-    // Mirror the booking into the CRM (best-effort).
-    const contact = await upsertContact({
+    // Mirror the booking into the tenant's CRM (best-effort).
+    const contact = await upsertContact(tenantId, {
       name: saved.customerName,
       phone: saved.customerPhone ?? null,
       email: saved.customerEmail ?? null,
       source: saved.callSid ? 'phone' : 'dashboard',
     });
-    const profile = await getProfile();
-    const crm: CrmSyncResult = await syncToCrm({
+    const profile = await getProfile(tenantId);
+    const crm: CrmSyncResult = await syncToCrm(tenantId, {
       contact,
       appointment: {
         date: saved.date,
@@ -87,34 +89,33 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true, appointment: saved, crm });
   } catch (error) {
-    console.error('[api/appointments] POST failed:', error);
-    return NextResponse.json({ error: 'Failed to save appointment' }, { status: 500 });
+    return handleApiError(error, 'Failed to save appointment');
   }
 }
 export async function PATCH(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const { id, status } = await request.json();
     if (!id || !status) {
       return NextResponse.json({ error: 'Missing id or status' }, { status: 400 });
     }
-    const updated = await updateAppointmentStatus(id, status);
+    const updated = await updateAppointmentStatus(tenantId, id, status);
     if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ success: true, appointment: updated });
   } catch (error) {
-    console.error('[api/appointments] PATCH failed:', error);
-    return NextResponse.json({ error: 'Failed to update appointment' }, { status: 500 });
+    return handleApiError(error, 'Failed to update appointment');
   }
 }
 
 export async function DELETE(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const id = new URL(request.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'Missing ID' }, { status: 400 });
-    await removeAppointment(id);
+    await removeAppointment(tenantId, id);
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('[api/appointments] DELETE failed:', error);
-    return NextResponse.json({ error: 'Failed to delete appointment' }, { status: 500 });
+    return handleApiError(error, 'Failed to delete appointment');
   }
 }
 

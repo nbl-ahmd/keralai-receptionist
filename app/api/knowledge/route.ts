@@ -6,13 +6,14 @@ import {
   removeKnowledgeItem,
   upsertKnowledgeItem,
 } from '@/lib/store';
+import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return NextResponse.json(await getKnowledge());
+    const { tenantId } = await resolveTenantContext(request);
+    return NextResponse.json(await getKnowledge(tenantId));
   } catch (error) {
-    console.error('[api/knowledge] GET failed:', error);
-    return NextResponse.json({ error: 'Failed to read knowledge base' }, { status: 500 });
+    return handleApiError(error, 'Failed to read knowledge base');
   }
 }
 
@@ -27,6 +28,7 @@ const VALID_TYPES = new Set<KnowledgeItem['type']>([
 
 export async function POST(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const item = (await request.json()) as KnowledgeItem;
     if (!item?.title || !item?.content) {
       return NextResponse.json({ error: 'Title and content are required' }, { status: 400 });
@@ -35,11 +37,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unsupported knowledge type' }, { status: 400 });
     }
 
-    const saved = await upsertKnowledgeItem(item);
+    const saved = await upsertKnowledgeItem(tenantId, item);
     const activeInstruction = saved.type === 'instruction' && saved.isActive !== false;
 
     try {
-      const embeddings = await reindexKnowledgeItem(saved);
+      const embeddings = await reindexKnowledgeItem(tenantId, saved);
       return NextResponse.json({
         success: true,
         item: saved,
@@ -64,19 +66,18 @@ export async function POST(request: Request) {
       );
     }
   } catch (error) {
-    console.error('[api/knowledge] POST failed:', error);
-    return NextResponse.json({ error: 'Failed to save item' }, { status: 500 });
+    return handleApiError(error, 'Failed to save item');
   }
 }
 
 export async function DELETE(request: Request) {
   try {
+    const { tenantId } = await resolveTenantContext(request);
     const id = new URL(request.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'Missing ID' }, { status: 400 });
-    await removeKnowledgeItem(id);
+    await removeKnowledgeItem(tenantId, id);
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('[api/knowledge] DELETE failed:', error);
-    return NextResponse.json({ error: 'Failed to delete item' }, { status: 500 });
+    return handleApiError(error, 'Failed to delete item');
   }
 }

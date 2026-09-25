@@ -9,7 +9,12 @@ The system runs as **two services**:
 
 Two values are **shared** between the services and must be byte-for-byte
 identical, or browser voice (`BRIDGE_AUTH_SECRET`) or credential decryption
-(`TENANT_SECRETS_ENCRYPTION_KEY`) fails.
+(`TENANT_SECRETS_ENCRYPTION_KEY`) fails. A `TENANT_SECRETS_ENCRYPTION_KEY`
+mismatch is the usual reason an Exotel call drops the moment it connects: the
+bridge starts, logs `startup db-check: … undecryptable=[…]`, and closes the call
+with a "Gemini credential unavailable" error. Fix it by copying the exact Vercel
+value to Render (never regenerate), then re-save affected credentials. See
+[deployment troubleshooting](./deployment.md#troubleshooting-calls-connect-then-drop-immediately).
 
 ## Shared secrets (set in both services)
 
@@ -30,6 +35,8 @@ identical, or browser voice (`BRIDGE_AUTH_SECRET`) or credential decryption
 | `NEXT_PUBLIC_APP_URL` | Optional | Client auth base URL and trusted origin. |
 | `NEXT_PUBLIC_BRIDGE_WS_URL` | Prod | Public WebSocket origin of the bridge, e.g. `wss://keralai-bridge.onrender.com`. Required when the dashboard and bridge are on different hosts. `PUBLIC_BRIDGE_WS_URL` is accepted as a server-side alias. |
 | `LEGACY_TENANT_CLAIM_EMAIL` | Optional | Email allowed to claim the migrated legacy workspace. Unset disables claiming. |
+| `LEGACY_TENANT_CLAIM_TOKEN` | Claim | Server-only secret the owner enters in Settings → Providers → Legacy data. Required whenever `LEGACY_TENANT_CLAIM_EMAIL` is set. Compared in constant time. |
+| `LEGACY_TENANT_CLAIM_REQUIRE_VERIFIED_EMAIL` | Optional | Set to `1` to refuse claiming from accounts whose email is not verified (V1 does not require verification). |
 | `NEXT_PUBLIC_SITE_URL` | Optional | Canonical site URL for metadata, sitemap, and robots. |
 | `GENAI_MODEL` | Optional | Default text model fallback (`gemini-flash-lite-latest`). |
 | `GEMINI_MODEL` | Optional | Default Gemini Live model fallback (`gemini-3.8-live`). |
@@ -42,6 +49,12 @@ identical, or browser voice (`BRIDGE_AUTH_SECRET`) or credential decryption
 > There is **no** `GEMINI_API_KEY` for tenant traffic. Each tenant stores its own
 > encrypted key in Dashboard → Settings → Providers.
 
+> There are **no** Exotel account credentials in the environment. Each tenant
+> stores its own Account SID, API key, API token and region in
+> Dashboard → Settings → Providers → Exotel account, encrypted per workspace.
+> `EXOTEL_SAMPLE_RATE` is only a fallback sample rate and is not an account
+> credential.
+
 ## Bridge variables
 
 | Variable | Required | Description |
@@ -49,6 +62,7 @@ identical, or browser voice (`BRIDGE_AUTH_SECRET`) or credential decryption
 | `DATABASE_URL` | Yes | Pooled Neon connection string. |
 | `BRIDGE_AUTH_SECRET` | Yes | Shared with the app (see above). |
 | `TENANT_SECRETS_ENCRYPTION_KEY` | Yes | Shared with the app (see above). |
+| `LEGACY_GEMINI_API_KEY` | Optional | One-time import of the pre-multitenancy Gemini key into the legacy tenant (encrypted at rest) so a single-tenant deployment keeps working after upgrading. Ordinary tenant traffic never reads this variable. |
 | `PUBLIC_APP_ORIGIN` | Optional | Comma-separated allow-list of dashboard origins for `/ws/browser`. If unset, any origin is accepted; a mismatch returns `403`. |
 | `BROWSER_MAX_SESSIONS_PER_IP` | Optional | Concurrent browser sessions per IP (default `3`). |
 | `BROWSER_SESSION_TTL_MS` | Optional | Max browser session lifetime (default `900000`, 15 min). |

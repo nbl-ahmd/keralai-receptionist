@@ -63,6 +63,23 @@ function getEncryptionKey(): Buffer {
   return cachedKey;
 }
 
+/**
+ * Non-secret fingerprint of the derived master key.
+ *
+ * Safe to expose/log: it lets an operator confirm the dashboard and the bridge
+ * derived the SAME key without revealing the key. A mismatch against the
+ * bridge's `secretsKeyFingerprint` is the usual cause of "Unsupported state or
+ * unable to authenticate data" during decryption. Mirrors
+ * getSecretsKeyFingerprint() in bridge/secrets.mjs.
+ */
+export function getEncryptionKeyFingerprint(): string | null {
+  try {
+    return crypto.createHash("sha256").update(getEncryptionKey()).digest("hex").slice(0, 8);
+  } catch {
+    return null;
+  }
+}
+
 export interface EncryptedSecret {
   ciphertext: string;
   iv: string;

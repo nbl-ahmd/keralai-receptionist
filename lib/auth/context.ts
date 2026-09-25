@@ -33,6 +33,7 @@ export interface SessionUser {
   id: string;
   email?: string | null;
   name?: string | null;
+  emailVerified?: boolean;
 }
 
 /** Returns the authenticated Better Auth session, or null. */
@@ -48,6 +49,7 @@ export async function getSession(request: Request): Promise<{
         id: result.user.id,
         email: result.user.email ?? null,
         name: result.user.name ?? null,
+        emailVerified: Boolean((result.user as { emailVerified?: boolean }).emailVerified),
       },
       session: {
         id: result.session.id,

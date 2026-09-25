@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { checkDatabase } from '@/db/client';
+import { getEncryptionKeyFingerprint } from '@/lib/tenant/secrets';
 
 // Health must reflect live dependency state, never a cached response.
 export const dynamic = 'force-dynamic';
@@ -9,7 +10,10 @@ export const dynamic = 'force-dynamic';
  * Returns 503 when a dependency is unavailable so orchestrators can act on it.
  *
  * Deliberately unauthenticated, so it reports only coarse configuration
- * presence — never values, hosts, or provider credentials.
+ * presence — never values, hosts, or provider credentials. The secrets key
+ * fingerprint is a non-reversible hash prefix (see getEncryptionKeyFingerprint)
+ * and exists solely so an operator can compare this process against the
+ * bridge's /health.
  */
 export async function GET() {
   const startedAt = Date.now();
@@ -23,6 +27,9 @@ export async function GET() {
       auth: process.env.BETTER_AUTH_SECRET ? 'configured' : 'missing',
       bridgeAuth: process.env.BRIDGE_AUTH_SECRET ? 'configured' : 'missing',
       secretsEncryption: process.env.TENANT_SECRETS_ENCRYPTION_KEY ? 'configured' : 'missing',
+      // Non-secret: compare with the bridge's /health to confirm both processes
+      // derived the same TENANT_SECRETS_ENCRYPTION_KEY.
+      secretsKeyFingerprint: getEncryptionKeyFingerprint(),
     },
     latencyMs: Date.now() - startedAt,
     // Never expose the raw database error outside development.

@@ -55,6 +55,7 @@ import { Modality } from '@google/genai';
 
 import {
   closePool,
+  getLegacyTenant,
   getProfileVersion,
   getTenantBridgeCredential,
   getTenantById,
@@ -77,10 +78,13 @@ import {
   DEFAULT_EMBEDDING_MODEL,
   DEFAULT_LIVE_MODEL,
   getTenantEmbeddingModel,
+  getTenantGeminiApiKey,
   getTenantGeminiClient,
   getTenantLiveModel,
+  importLegacyGeminiKeyIfNeeded,
 } from './gemini.mjs';
 import { verifyBridgeToken, verifyExotelToken } from './bridge-token.mjs';
+import { auditTenantGeminiKeys, getSecretsKeyFingerprint } from './secrets.mjs';
 import { BrowserSession } from './browser-session.mjs';
 import { buildRuntimeInstruction } from './shared/runtime-modes.mjs';
 import {
@@ -1169,6 +1173,72 @@ class CallSession {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Logs a concise, secret-free snapshot of the running configuration so a
+ * misconfigured deploy is obvious in the Render logs: the DB target (host only,
+ * never a URL with credentials), presence of the required secrets, and whether
+ * the legacy tenant has a bridge token and a Gemini key. Never logs a secret.
+ */
+async function logStartupSelfCheck() {
+  let dbHost = '(unset)';
+  let pooled = false;
+  try {
+    const parsed = new URL(process.env.DATABASE_URL ?? '');
+    dbHost = parsed.hostname;
+    pooled = parsed.hostname.includes('-pooler');
+  } catch {
+    /* leave defaults */
+  }
+
+  console.log(
+    '[bridge] startup config:',
+    JSON.stringify({
+      dbHost,
+      pooled,
+      bridgeAuthSecret: Boolean(process.env.BRIDGE_AUTH_SECRET),
+      tenantSecretsKey: Boolean(process.env.TENANT_SECRETS_ENCRYPTION_KEY),
+      publicAppOrigin: process.env.PUBLIC_APP_ORIGIN ? 'set' : 'unset',
+      metricsEnabled: process.env.METRICS_ENABLED !== '0',
+      commit: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? 'local',
+    }),
+  );
+
+  try {
+    const legacy = await getLegacyTenant();
+    if (legacy) {
+      let geminiStatus = 'MISSING';
+      try {
+        const key = await getTenantGeminiApiKey(legacy.id);
+        geminiStatus = key ? 'configured' : 'MISSING';
+      } catch (error) {
+        geminiStatus =
+          error?.name === 'SecretDecryptError'
+            ? 'UNDECRYPTABLE (TENANT_SECRETS_ENCRYPTION_KEY mismatch?)'
+            : `ERROR: ${error?.message ?? error}`;
+      }
+      const tokenHash = await getTenantBridgeCredential(legacy.id);
+      console.log(
+        `[bridge] startup db-check: legacy tenant slug=${legacy.slug} ` +
+          `bridgeToken=${tokenHash ? 'configured' : 'MISSING'} geminiKey=${geminiStatus}`,
+      );
+    } else {
+      console.log('[bridge] startup db-check: no legacy tenant present');
+    }
+
+    // Decrypt every tenant's Gemini key so a dashboard/bridge master-key
+    // mismatch is obvious immediately (it silently breaks calls otherwise).
+    const audit = await auditTenantGeminiKeys();
+    console.log(
+      `[bridge] startup db-check: geminiKeys configured=${audit.configured}` +
+        (audit.undecryptable.length
+          ? ` undecryptable=[${audit.undecryptable.join(', ')}] — align TENANT_SECRETS_ENCRYPTION_KEY on Vercel and Render`
+          : ''),
+    );
+  } catch (error) {
+    console.error('[bridge] startup db-check failed:', error?.message ?? error);
+  }
+}
+
 async function main() {
   // Validate required env vars. Tenant Gemini credentials are resolved per
   // call/session, so there is deliberately no global GEMINI_API_KEY here.
@@ -1193,6 +1263,26 @@ async function main() {
     }
   }
 
+  // Secret-free diagnostics so a failed deploy is visible in Render logs.
+  await logStartupSelfCheck();
+
+  // One-time migration: if the pre-multitenancy Gemini key is still in the
+  // environment, move it into the legacy tenant (encrypted) so phone calls keep
+  // working after the multitenancy merge. Ordinary tenant traffic still uses
+  // per-tenant credentials only. Never logs the key.
+  if (process.env.LEGACY_GEMINI_API_KEY || process.env.GEMINI_API_KEY) {
+    try {
+      const result = await importLegacyGeminiKeyIfNeeded();
+      if (result?.imported) {
+        console.log(
+          `[bridge] imported legacy Gemini key into tenant "${result.slug}" (one-time migration)`,
+        );
+      }
+    } catch (error) {
+      console.error('[bridge] legacy Gemini key import failed:', error?.message ?? error);
+    }
+  }
+
   const port = parseInt(process.env.PORT ?? '3000', 10);
 
   // ── HTTP server ────────────────────────────────────────────────────────────
@@ -1210,8 +1300,16 @@ async function main() {
     }
 
     if (req.method === 'GET' && url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, service: 'keralai-bridge' }));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          service: 'keralai-bridge',
+          // Non-secret: compare with the dashboard's /api/health to confirm both
+          // processes derived the same TENANT_SECRETS_ENCRYPTION_KEY.
+          secretsKeyFingerprint: getSecretsKeyFingerprint(),
+        }),
+      );
       return;
     }
 
@@ -1270,17 +1368,21 @@ async function main() {
 
   // ── Tenant resolution helpers ──────────────────────────────────────────────
   /**
-   * Resolves a tenant from `/ws/exotel/:slug?token=`. Returns the tenant row
-   * only when the slug exists AND the presented token matches the stored hash.
-   * The hash is compared in constant time; the plaintext token is never logged.
+   * Resolves a tenant from `/ws/exotel/:slug?token=`. Returns a structured
+   * result so a failed upgrade can be logged precisely without ever logging the
+   * token or any secret. Only `{ ok: true }` means the slug exists AND the
+   * presented token matches the stored hash (constant-time compare).
    */
   async function resolveExotelTenant(slug, token) {
-    if (!slug || !token) return null;
+    if (!slug || !token) return { ok: false, reason: 'missing_slug_or_token' };
     const tenant = await getTenantBySlug(slug);
-    if (!tenant) return null;
+    if (!tenant) return { ok: false, reason: 'unknown_slug' };
     const storedHash = await getTenantBridgeCredential(tenant.id);
-    if (!verifyExotelToken(token, storedHash)) return null;
-    return tenant;
+    if (!storedHash) return { ok: false, reason: 'no_credential_configured', slug: tenant.slug };
+    if (!verifyExotelToken(token, storedHash)) {
+      return { ok: false, reason: 'token_mismatch', slug: tenant.slug };
+    }
+    return { ok: true, tenant };
   }
 
   server.on('upgrade', async (req, socket, head) => {
@@ -1291,25 +1393,49 @@ async function main() {
       if (exotelMatch) {
         const slug = decodeURIComponent(exotelMatch[1]);
         const token = url.searchParams.get('token') ?? '';
-        let tenant = null;
+
+        // Diagnostics BEFORE authentication. Never log the token itself.
+        console.log(
+          `[bridge][exotel-auth] upgrade path=${url.pathname} slug=${slug || '(none)'} ` +
+            `tokenPresent=${token ? 'yes' : 'no'} tokenLength=${token.length}`,
+        );
+
+        let resolution;
         try {
-          tenant = await resolveExotelTenant(slug, token);
+          resolution = await resolveExotelTenant(slug, token);
         } catch (error) {
-          console.error('[bridge] Exotel tenant resolution failed:', error?.message ?? error);
+          console.error(
+            '[bridge][exotel-auth] tenant resolution failed (database error):',
+            error?.message ?? error,
+          );
+          resolution = { ok: false, reason: 'resolution_error' };
         }
-        if (!tenant) {
+
+        if (!resolution.ok) {
+          console.warn(
+            `[bridge][exotel-auth] rejected slug=${slug || '(none)'} reason=${resolution.reason}` +
+              (resolution.slug ? ` tenant=${resolution.slug}` : ''),
+          );
           // 404 for both unknown slug and bad token — avoids enumeration.
           socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
           socket.destroy();
           return;
         }
-        req._tenant = tenant;
+
+        console.log(
+          `[bridge][exotel-auth] accepted slug=${slug} tenant=${resolution.tenant.slug}`,
+        );
+        req._tenant = resolution.tenant;
         wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
         return;
       }
 
       if (url.pathname === '/ws/exotel') {
         // Bare path is rejected: every Exotel call must carry a tenant slug+token.
+        console.warn(
+          '[bridge][exotel-auth] rejected bare /ws/exotel — the Exotel applet must use ' +
+            '/ws/exotel/<tenant-slug>?token=<token> (see dashboard → Settings → Providers)',
+        );
         socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
         socket.destroy();
         return;
@@ -1319,6 +1445,10 @@ async function main() {
         const token = url.searchParams.get('token') ?? '';
         const verified = verifyBridgeToken(token, 'browser');
         if (!verified.ok) {
+          console.warn(
+            `[bridge][browser-auth] rejected path=${url.pathname} reason=${verified.reason} ` +
+              `tokenPresent=${token ? 'yes' : 'no'}`,
+          );
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;
@@ -1353,6 +1483,7 @@ async function main() {
         return;
       }
 
+      console.warn(`[bridge] rejected WebSocket upgrade for unknown path=${url.pathname}`);
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
     } catch (error) {
@@ -1525,6 +1656,7 @@ async function main() {
 
           // Resolve this tenant's own Gemini credential, models and profile
           // before connecting. Dashboard changes apply to the very next call.
+          let setupError = null;
           try {
             const [ai, liveModel, embeddingModel, profile] = await Promise.all([
               getTenantGeminiClient(tenantId),
@@ -1537,6 +1669,7 @@ async function main() {
             created.embeddingModel = embeddingModel || created.embeddingModel;
             created.companyProfile = profile ?? created.companyProfile;
           } catch (e) {
+            setupError = e;
             console.error(`[bridge][${callSid}] Tenant setup failed:`, e?.message ?? e);
           }
 
@@ -1549,7 +1682,11 @@ async function main() {
 
           // A tenant without a usable Gemini credential cannot run a call.
           if (!created.ai) {
-            console.error(`[bridge][${callSid}] No Gemini credential for tenant ${tenant.slug} — ending call`);
+            console.error(
+              `[bridge][${callSid}] No usable Gemini credential for tenant ${tenant.slug}` +
+                (setupError ? ` (${setupError.message})` : '') +
+                ' — ending call',
+            );
             if (session === created) session = null;
             try { await created.close(); } catch { /* logged inside close() */ }
             if (ws.readyState === 1) ws.close(1011, 'Tenant Gemini credential unavailable');

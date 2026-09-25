@@ -117,6 +117,14 @@ export async function getTenantById(tenantId) {
   return rows[0] ?? null;
 }
 
+/** The single pre-multitenancy "legacy" tenant, if one exists. */
+export async function getLegacyTenant() {
+  const rows = await dbQuery(
+    `select id, name, slug, is_legacy from tenants where is_legacy = true order by created_at asc limit 1`,
+  );
+  return rows[0] ?? null;
+}
+
 /** Loads a tenant's stored Exotel token hash (server-only). */
 export async function getTenantBridgeCredential(tenantId) {
   const rows = await dbQuery(

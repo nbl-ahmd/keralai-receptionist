@@ -59,4 +59,6 @@ export const SETTING_KEYS = {
   geminiEmbeddingModel: "gemini.embedding_model",
   crmProvider: "crm.provider",
   crmWebhookUrl: "crm.webhook_url",
+  exotelSubdomain: "exotel.subdomain",
+  exotelPhoneNumber: "exotel.phone_number",
 } as const;

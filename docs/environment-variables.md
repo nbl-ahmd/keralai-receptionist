@@ -42,6 +42,12 @@ identical, or browser voice (`BRIDGE_AUTH_SECRET`) or credential decryption
 > There is **no** `GEMINI_API_KEY` for tenant traffic. Each tenant stores its own
 > encrypted key in Dashboard → Settings → Providers.
 
+> There are **no** Exotel account credentials in the environment. Each tenant
+> stores its own Account SID, API key, API token and region in
+> Dashboard → Settings → Providers → Exotel account, encrypted per workspace.
+> `EXOTEL_SAMPLE_RATE` is only a fallback sample rate and is not an account
+> credential.
+
 ## Bridge variables
 
 | Variable | Required | Description |

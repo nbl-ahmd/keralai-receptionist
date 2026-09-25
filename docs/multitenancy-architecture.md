@@ -103,7 +103,11 @@ base64). Each row stores `ciphertext`, `iv`, `auth_tag`, and a `key_version`.
 - Secrets are **never** logged. Error paths redact key material.
 
 Supported provider surface is intentionally extensible (`provider` + `key_name`),
-so future provider types need no schema change.
+so future provider types need no schema change. Today it holds:
+
+- `gemini` / `api_key`
+- `exotel` / `account_sid`, `api_key`, `api_token`, `app_id`
+- `crm` or `webhook` / `webhook_secret`
 
 ## Per-tenant Gemini
 
@@ -154,6 +158,27 @@ The bridge is tenant-aware on both transports.
 - Unknown slug and bad token both return HTTP `404` to avoid enumeration.
 - The dashboard exposes the exact URL and a rotate action in Settings →
   Providers. Tokens are shown in plaintext exactly once, at rotation.
+
+#### Per-tenant Exotel account (bring your own number)
+
+Each tenant brings its **own** Exotel account, number and trial quota. There is
+no platform Exotel account and no `EXOTEL_*` credential in the environment.
+
+- The tenant enters Account SID, API key, API token and optional App ID in
+  Settings → Providers → **Exotel account**. They are stored encrypted in
+  `tenant_secrets` under provider `exotel` (`account_sid`, `api_key`,
+  `api_token`, `app_id`) and are never returned to the browser.
+- Region (`exotel.subdomain`, `api.exotel.com` or `api.in.exotel.com`) and the
+  tenant's ExoPhone number (`exotel.phone_number`) are non-secret and live in
+  `tenant_settings`.
+- `lib/tenant/exotel-credentials.ts` decrypts them server-side per request.
+- `POST /api/tenant/exotel/verify` uses the **tenant's** credentials to list
+  that account's ExoPhones, so a tester can confirm their own account and
+  number work. Credentials are never echoed back.
+- The **inbound call path does not need these credentials**: Exotel dials the
+  tenant's WebSocket URL and the bridge authenticates with the per-tenant
+  routing token. The REST credentials exist so the platform can act on the
+  tenant's own account (today: verification/phone listing; later: outbound).
 
 ### Browser voice
 

@@ -9,6 +9,7 @@ import {
   Globe,
   KeyRound,
   Loader2,
+  Phone,
   PhoneOutgoing,
   RefreshCw,
   Save,
@@ -60,7 +61,14 @@ const SETTING = {
   embeddingModel: "gemini.embedding_model",
   crmProvider: "crm.provider",
   crmWebhookUrl: "crm.webhook_url",
+  exotelSubdomain: "exotel.subdomain",
+  exotelPhoneNumber: "exotel.phone_number",
 } as const;
+
+const EXOTEL_SUBDOMAIN_OPTIONS = [
+  { value: "api.exotel.com", label: "Singapore — api.exotel.com" },
+  { value: "api.in.exotel.com", label: "Mumbai — api.in.exotel.com" },
+] as const;
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -108,6 +116,58 @@ function Notice({ tone, children }: { tone: "ok" | "warn"; children: React.React
   );
 }
 
+function SecretField({
+  label,
+  placeholder,
+  value,
+  onChange,
+  configured,
+  disabled,
+  onRemove,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+  configured?: SecretMeta;
+  disabled?: boolean;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-600">
+        {label}
+        {configured && (
+          <span className="font-normal text-emerald-600">
+            configured{configured.maskedSuffix ? ` ${configured.maskedSuffix}` : ""}
+          </span>
+        )}
+      </label>
+      <div className="flex gap-2">
+        <Input
+          type="password"
+          value={value}
+          placeholder={configured ? "Replace…" : placeholder}
+          autoComplete="off"
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled}
+        />
+        {configured && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onRemove}
+            disabled={disabled}
+            aria-label={`Remove ${label}`}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ProviderSettings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -135,6 +195,18 @@ export function ProviderSettings() {
   const [exotel, setExotel] = useState<ExotelState | null>(null);
   const [rotating, setRotating] = useState(false);
   const [freshExotel, setFreshExotel] = useState<{ token: string; wsUrl: string } | null>(null);
+
+  const [exotelForm, setExotelForm] = useState({
+    accountSid: "",
+    apiKey: "",
+    apiToken: "",
+    appId: "",
+  });
+  const [exotelSubdomain, setExotelSubdomain] = useState<string>("api.exotel.com");
+  const [exotelPhone, setExotelPhone] = useState("");
+  const [savingExotelAccount, setSavingExotelAccount] = useState(false);
+  const [verifyingExotel, setVerifyingExotel] = useState(false);
+  const [exotelVerify, setExotelVerify] = useState<{ ok: boolean; message: string } | null>(null);
 
   const [claiming, setClaiming] = useState(false);
   const [claimMessage, setClaimMessage] = useState<string | null>(null);
@@ -165,6 +237,12 @@ export function ProviderSettings() {
         });
         setCrmProvider(value[SETTING.crmProvider] === "webhook" ? "webhook" : "none");
         setCrmWebhookUrl(asString(value[SETTING.crmWebhookUrl]));
+        setExotelSubdomain(
+          value[SETTING.exotelSubdomain] === "api.in.exotel.com"
+            ? "api.in.exotel.com"
+            : "api.exotel.com",
+        );
+        setExotelPhone(asString(value[SETTING.exotelPhoneNumber]));
       }
       setSecrets(Array.isArray(secretsRes?.secrets) ? secretsRes.secrets : []);
       setExotel(exotelRes?.error ? null : exotelRes);
@@ -332,6 +410,77 @@ export function ProviderSettings() {
     }
   };
 
+  const saveSetting = async (key: string, value: unknown) => {
+    const response = await fetch("/api/tenant/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    const data = (await response.json()) as { error?: string };
+    if (!response.ok || data.error) throw new Error(data.error || "Failed to save setting");
+  };
+
+  const saveExotelAccount = async () => {
+    setSavingExotelAccount(true);
+    setError(null);
+    try {
+      // Only overwrite fields the user actually filled in, so partial edits are safe.
+      if (exotelForm.accountSid.trim()) {
+        await saveSecret("exotel", "account_sid", exotelForm.accountSid.trim());
+      }
+      if (exotelForm.apiKey.trim()) {
+        await saveSecret("exotel", "api_key", exotelForm.apiKey.trim());
+      }
+      if (exotelForm.apiToken.trim()) {
+        await saveSecret("exotel", "api_token", exotelForm.apiToken.trim());
+      }
+      if (exotelForm.appId.trim()) {
+        await saveSecret("exotel", "app_id", exotelForm.appId.trim());
+      }
+      await saveSetting(SETTING.exotelSubdomain, exotelSubdomain);
+      await saveSetting(SETTING.exotelPhoneNumber, exotelPhone.trim() || null);
+      setExotelForm({ accountSid: "", apiKey: "", apiToken: "", appId: "" });
+      await load();
+      flash("Exotel account saved.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save Exotel account");
+    } finally {
+      setSavingExotelAccount(false);
+    }
+  };
+
+  const verifyExotelAccount = async () => {
+    setVerifyingExotel(true);
+    setExotelVerify(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/tenant/exotel/verify", { method: "POST" });
+      const data = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        phoneCount?: number;
+        phoneNumbers?: { number: string | null }[];
+      };
+      if (data.ok) {
+        const numbers = (data.phoneNumbers ?? [])
+          .map((phone) => phone.number)
+          .filter((value): value is string => Boolean(value));
+        setExotelVerify({
+          ok: true,
+          message:
+            `Connected — ${data.phoneCount ?? numbers.length} ExoPhone(s) on this account` +
+            (numbers.length ? `: ${numbers.slice(0, 5).join(", ")}` : "."),
+        });
+      } else {
+        setExotelVerify({ ok: false, message: data.error || "Verification failed." });
+      }
+    } catch {
+      setExotelVerify({ ok: false, message: "Verification failed." });
+    } finally {
+      setVerifyingExotel(false);
+    }
+  };
+
   const copy = async (value: string) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -362,6 +511,15 @@ export function ProviderSettings() {
 
   const geminiSecret = secrets.find((item) => item.provider === "gemini" && item.keyName === "api_key");
   const crmSecret = secrets.find((item) => item.provider === "crm" && item.keyName === "webhook_secret");
+  const exotelSecret = (keyName: string) =>
+    secrets.find((item) => item.provider === "exotel" && item.keyName === keyName);
+  const exotelAccountSecret = exotelSecret("account_sid");
+  const exotelApiKeySecret = exotelSecret("api_key");
+  const exotelApiTokenSecret = exotelSecret("api_token");
+  const exotelAppIdSecret = exotelSecret("app_id");
+  const exotelAccountReady = Boolean(
+    exotelAccountSecret && exotelApiKeySecret && exotelApiTokenSecret,
+  );
   const hasLegacyMembership = tenants.some((item) => item.isLegacy);
 
   if (loading) {
@@ -556,11 +714,125 @@ export function ProviderSettings() {
         </Button>
       </Section>
 
-      {/* Exotel */}
+      {/* Exotel account */}
+      <Section
+        icon={Phone}
+        title="Exotel account (bring your own number)"
+        description="Add your own Exotel API credentials. They are encrypted per workspace and used only for your account — never a shared platform account or server environment variable."
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          {exotelAccountReady ? (
+            <Badge variant="default">Account configured</Badge>
+          ) : (
+            <Badge variant="secondary">Not configured</Badge>
+          )}
+          <span className="text-xs text-slate-500">
+            Region:{" "}
+            {exotelSubdomain === "api.in.exotel.com"
+              ? "Mumbai (api.in.exotel.com)"
+              : "Singapore (api.exotel.com)"}
+          </span>
+        </div>
+
+        <p className="text-xs text-slate-500">
+          In the Exotel dashboard go to <span className="font-medium">Settings → API Settings</span> and copy
+          your Account SID, API key and API token. Every tester can create their own Exotel account, which
+          gives them their own trial number isolated from every other workspace.
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <SecretField
+            label="Account SID"
+            placeholder="Your Exotel Account SID"
+            value={exotelForm.accountSid}
+            onChange={(value) => setExotelForm((prev) => ({ ...prev, accountSid: value }))}
+            configured={exotelAccountSecret}
+            disabled={!canManage}
+            onRemove={() => removeSecret("exotel", "account_sid")}
+          />
+          <SecretField
+            label="API key"
+            placeholder="Your Exotel API key"
+            value={exotelForm.apiKey}
+            onChange={(value) => setExotelForm((prev) => ({ ...prev, apiKey: value }))}
+            configured={exotelApiKeySecret}
+            disabled={!canManage}
+            onRemove={() => removeSecret("exotel", "api_key")}
+          />
+          <SecretField
+            label="API token"
+            placeholder="Your Exotel API token"
+            value={exotelForm.apiToken}
+            onChange={(value) => setExotelForm((prev) => ({ ...prev, apiToken: value }))}
+            configured={exotelApiTokenSecret}
+            disabled={!canManage}
+            onRemove={() => removeSecret("exotel", "api_token")}
+          />
+          <SecretField
+            label="App ID (optional)"
+            placeholder="Exotel Voicebot app id"
+            value={exotelForm.appId}
+            onChange={(value) => setExotelForm((prev) => ({ ...prev, appId: value }))}
+            configured={exotelAppIdSecret}
+            disabled={!canManage}
+            onRemove={() => removeSecret("exotel", "app_id")}
+          />
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-slate-600">Region</label>
+            <select
+              value={exotelSubdomain}
+              onChange={(event) => setExotelSubdomain(event.target.value)}
+              disabled={!canManage}
+              className="h-11 w-full rounded-xl border border-input bg-white px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {EXOTEL_SUBDOMAIN_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-slate-600">Your ExoPhone number (optional)</label>
+            <Input
+              value={exotelPhone}
+              onChange={(event) => setExotelPhone(event.target.value)}
+              placeholder="+91…"
+              disabled={!canManage}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            onClick={saveExotelAccount}
+            disabled={!canManage || savingExotelAccount}
+            className="gap-2"
+          >
+            {savingExotelAccount ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save Exotel account
+          </Button>
+          <Button
+            variant="outline"
+            onClick={verifyExotelAccount}
+            disabled={!canManage || verifyingExotel || !exotelAccountReady}
+            className="gap-2"
+          >
+            {verifyingExotel ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+            Test connection
+          </Button>
+        </div>
+        {exotelVerify && <Notice tone={exotelVerify.ok ? "ok" : "warn"}>{exotelVerify.message}</Notice>}
+      </Section>
+
+      {/* Exotel routing */}
       <Section
         icon={PhoneOutgoing}
         title="Phone number routing (Exotel)"
-        description="Point your Exotel Voicebot applet at this workspace's WebSocket URL. The token is shown only once, when rotated."
+        description="Point your Exotel Voicebot applet at this workspace's WebSocket URL so calls to your number reach your assistant. The token is shown only once, when rotated."
       >
         <div className="space-y-2 text-sm">
           <div className="flex flex-wrap items-center gap-2 text-slate-600">
@@ -639,7 +911,8 @@ export function ProviderSettings() {
 }
 
 /**
- * Provider settings: workspace, Gemini models/key, CRM webhook, Exotel routing,
- * and the one-time legacy-data claim. All tenant resolution happens server-side.
+ * Provider settings: workspace, Gemini models/key, CRM webhook, Exotel account
+ * credentials, Exotel routing, and the one-time legacy-data claim. All tenant
+ * resolution happens server-side.
  */
 export default ProviderSettings;

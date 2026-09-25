@@ -111,19 +111,28 @@ per session.
 
 ## 4. Connect Exotel (per tenant)
 
-Each tenant has its own routing URL. There is no shared/default tenant.
+Every tenant uses its **own** Exotel account and number. There is no shared
+platform account and no Exotel credential in the environment.
 
-1. In the dashboard: **Settings → Providers → Exotel routing**.
-2. Click **Rotate** to generate a token. The full URL is shown once:
+1. Have the tester sign in and open **Settings → Providers → Exotel account**.
+2. Enter the Account SID, API key, API token and region from their Exotel
+   dashboard (**Settings → API Settings**), plus their ExoPhone number.
+   Click **Save Exotel account**, then **Test connection** to confirm Exotel
+   accepts the credentials and to list the numbers on their account.
+3. In the same page under **Exotel routing**, click **Rotate** to generate a
+   token. The full URL is shown once:
    ```
    wss://<service-name>.onrender.com/ws/exotel/<tenant-slug>?token=<token>
    ```
-3. Paste that URL into the Exotel Voicebot applet.
-4. Only a SHA-256 hash of the token is stored. Rotating invalidates the old URL
+4. Paste that URL into the tester's Exotel Voicebot applet. Calls to *their*
+   number now reach *their* workspace.
+5. Only a SHA-256 hash of the token is stored. Rotating invalidates the old URL
    immediately — update Exotel at the same time.
 
-The bare path `/ws/exotel` is rejected with `404`. Unknown slug and an invalid
-token also return `404` (no enumeration).
+A tester with no Exotel account creates a new one (their own trial number) and
+repeats steps 1–4; nothing is shared with other tenants. The bare path
+`/ws/exotel` is rejected with `404`. Unknown slug and an invalid token also
+return `404` (no enumeration).
 
 ## 5. Browser voice
 

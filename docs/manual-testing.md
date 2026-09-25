@@ -85,30 +85,35 @@ The bridge files can be syntax-checked with `node --check bridge/server.mjs`.
 25. **Exotel hardening.** Call `/ws/exotel` with no slug (expect `404`), an
     unknown slug (expect `404`), and a wrong token (expect `404`). Rotate A's
     token and confirm the old URL stops working.
+26. **Exotel account credentials.** In Settings → Providers → Exotel account, save
+    A's Account SID / API key / API token and click **Test connection** (expect a
+    connection result using A's own account). Confirm B cannot see or read A's
+    Exotel credentials through any settings or API response, and that A's and B's
+    credentials are stored independently.
 
 ## Authorization and data ownership
 
-26. **Role checks.** With an `owner` account, exercise owner-only actions. If you
+27. **Role checks.** With an `owner` account, exercise owner-only actions. If you
     can create an `admin`/`member` membership manually, confirm those roles are
     restricted appropriately (expect `403` where not permitted).
-27. **Call data stays tenant-scoped.** Complete or seed calls for A and B;
+28. **Call data stays tenant-scoped.** Complete or seed calls for A and B;
     confirm every transcript turn, metric, log, booking, and CRM event is only
     reachable from its own tenant.
 
 ## Mobile and PWA
 
-28. **Small widths.** Check the dashboard, settings, calls, and knowledge pages
+29. **Small widths.** Check the dashboard, settings, calls, and knowledge pages
     at **320, 360, 375, 390, and 414 px**, plus tablet and desktop. No horizontal
     overflow; all interactive targets ~44px or larger.
-29. **Bottom navigation.** On a phone width, the fixed bottom nav appears and
+30. **Bottom navigation.** On a phone width, the fixed bottom nav appears and
     switches tabs; it is hidden at `lg`. Content is not hidden behind it.
-30. **Active mode visibility.** Confirm the current mode and expiration are
+31. **Active mode visibility.** Confirm the current mode and expiration are
     visible on the dashboard and the one-tap controls (Available, Meeting,
     Driving, Sleep, Focus, DND) work.
-31. **Installability.** In production, the manifest loads and the app is
+32. **Installability.** In production, the manifest loads and the app is
     installable. The service worker registers and caches only
     `/_next/static/` and icons.
-32. **No cached auth data.** Confirm `/api/*` responses and WebSocket traffic are
+33. **No cached auth data.** Confirm `/api/*` responses and WebSocket traffic are
     never served from cache, and signing out does not leave stale authenticated
     pages.
 

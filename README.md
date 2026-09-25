@@ -82,7 +82,7 @@ npm run start:bridge       # production start
 
 The bridge is configured via `render.yaml` for Render Web Service deployment (Root Directory `bridge`, Start Command `node server.mjs`):
 - Health check probe: `GET /ping` (alias `GET /health`)
-- WebSocket endpoints: `wss://<bridge-host>/ws/exotel` and `wss://<bridge-host>/ws/browser`
+- WebSocket endpoints: `wss://<bridge-host>/ws/exotel/<tenant-slug>` (tenant-scoped; see below) and `wss://<bridge-host>/ws/browser`
 - Resamples Exotel PCM (8 kHz) ↔ Gemini Live (16 kHz in / 24 kHz out) with precomputed ratios;
 - In-memory profile caching with TTL + version-check query;
 - Fire-and-forget background CRM sync;
@@ -92,8 +92,11 @@ The bridge is configured via `render.yaml` for Render Web Service deployment (Ro
 - Audio sample rate auto-detected per call from Exotel (`start.media_format.sample_rate` / `?sample-rate=`);
 - Shuts down gracefully on `SIGTERM`/`SIGINT`.
 
-Point your Exotel Voicebot applet's WebSocket URL at:
-`wss://<render-service-name>.onrender.com/ws/exotel`
+Point your Exotel Voicebot applet's WebSocket URL at the tenant URL shown in
+Dashboard → Settings → Providers → Exotel routing, e.g.
+`wss://<render-service-name>.onrender.com/ws/exotel/<tenant-slug>` with the
+tenant token supplied via Basic auth or `?token=`. The bare path `/ws/exotel`
+is rejected; there is no default tenant.
 
 ### Observability / latency
 

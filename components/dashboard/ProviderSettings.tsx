@@ -53,6 +53,7 @@ interface ExotelState {
   credential: { configured: boolean; tokenLast4: string | null; rotatedAt: string | null };
   slug: string | null;
   wsUrl: string | null;
+  wsUrlQuery: string | null;
 }
 
 const SETTING = {
@@ -194,7 +195,11 @@ export function ProviderSettings() {
 
   const [exotel, setExotel] = useState<ExotelState | null>(null);
   const [rotating, setRotating] = useState(false);
-  const [freshExotel, setFreshExotel] = useState<{ token: string; wsUrl: string } | null>(null);
+  const [freshExotel, setFreshExotel] = useState<{
+    token: string;
+    wsUrl: string;
+    wsUrlQuery: string;
+  } | null>(null);
 
   const [exotelForm, setExotelForm] = useState({
     accountSid: "",
@@ -397,11 +402,16 @@ export function ProviderSettings() {
         error?: string;
         token?: string;
         wsUrl?: string;
+        wsUrlQuery?: string;
       };
       if (!response.ok || data.error || !data.token) {
         throw new Error(data.error || "Failed to rotate Exotel token");
       }
-      setFreshExotel({ token: data.token, wsUrl: data.wsUrl ?? "" });
+      setFreshExotel({
+        token: data.token,
+        wsUrl: data.wsUrl ?? "",
+        wsUrlQuery: data.wsUrlQuery ?? "",
+      });
       await load();
       flash("Exotel token rotated. Copy the URL now — it is shown once.");
     } catch (err) {
@@ -855,9 +865,20 @@ export function ProviderSettings() {
               </span>
             )}
           </div>
-          <p className="break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600">
-            {exotel?.wsUrl ?? "wss://your-bridge-host/ws/exotel/<slug>?token=REPLACE_ME"}
-          </p>
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-slate-500">
+              Recommended URL (Basic auth — survives Exotel query handling)
+            </p>
+            <p className="break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600">
+              {exotel?.wsUrl ?? "wss://tenant:REPLACE_ME@your-bridge-host/ws/exotel/<slug>"}
+            </p>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-slate-500">Alternative (query token)</p>
+            <p className="break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-xs text-slate-500">
+              {exotel?.wsUrlQuery ?? "wss://your-bridge-host/ws/exotel/<slug>?token=REPLACE_ME"}
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -875,9 +896,19 @@ export function ProviderSettings() {
         {freshExotel?.wsUrl && (
           <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
             <p className="text-sm font-semibold text-emerald-800">
-              Copy this URL into your Exotel applet now. It won&apos;t be shown again.
+              Copy the recommended URL into your Exotel applet now. It won&apos;t be shown again.
             </p>
             <p className="break-all font-mono text-xs text-emerald-900">{freshExotel.wsUrl}</p>
+            {freshExotel.wsUrlQuery && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-emerald-700">
+                  If your Exotel applet rejects Basic auth, use this query-token URL instead:
+                </p>
+                <p className="break-all font-mono text-xs text-emerald-800">
+                  {freshExotel.wsUrlQuery}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </Section>

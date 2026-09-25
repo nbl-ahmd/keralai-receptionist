@@ -17,6 +17,7 @@ import { Appointment, CallRecord, CompanyProfile } from "../../types";
 import { Contact, logCrmSyncEvent, updateContactCrmLink } from "../store";
 import { getTenantSetting, SETTING_KEYS } from "../tenant/settings";
 import { getTenantSecretValue } from "../tenant/secrets";
+import { assertSafeWebhookUrl } from "../net/safe-webhook-url";
 
 export type CrmProvider = "none" | "webhook";
 
@@ -75,6 +76,17 @@ async function postToWebhook(
     return { ok: false, provider: config.provider, skipped: true, error: "Webhook URL not configured" };
   }
 
+  // Reject SSRF targets (metadata, private/loopback/link-local) before fetching.
+  const safeUrl = await assertSafeWebhookUrl(config.webhookUrl);
+  if (!safeUrl.ok) {
+    return {
+      ok: false,
+      provider: config.provider,
+      skipped: true,
+      error: `Webhook URL blocked (${safeUrl.reason})`,
+    };
+  }
+
   const body = {
     event: payload.appointment ? "contact.appointment_booked" : "contact.call_completed",
     contact: {
@@ -108,6 +120,8 @@ async function postToWebhook(
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
+      // Block redirect-based SSRF: validation above only covers this URL.
+      redirect: "error",
     });
 
     if (!response.ok) {

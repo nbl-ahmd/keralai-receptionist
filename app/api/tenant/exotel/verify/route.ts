@@ -59,6 +59,8 @@ export async function POST(request: Request) {
       },
       cache: 'no-store',
       signal: controller.signal,
+      // Defense-in-depth: the host is allow-listed, but never follow redirects.
+      redirect: 'error',
     });
 
     if (!response.ok) {

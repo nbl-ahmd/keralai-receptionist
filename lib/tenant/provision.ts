@@ -93,6 +93,13 @@ export async function claimLegacyTenant(userId: string): Promise<ProvisionResult
 /**
  * Idempotently provisions tenant access for a user. Safe to call repeatedly:
  * if the user already has a membership, that membership is returned.
+ *
+ * A new user ALWAYS receives a fresh tenant, even when their email matches
+ * LEGACY_TENANT_CLAIM_EMAIL. The legacy workspace is never claimed implicitly
+ * from the signup hook — it can only be claimed through the explicit,
+ * token-gated /api/tenant/claim-legacy endpoint. This prevents an attacker who
+ * merely registers with the owner's (possibly unverified) email address from
+ * inheriting the migrated single-tenant data.
  */
 export async function provisionTenantForUser(user: {
   id: string;
@@ -110,13 +117,6 @@ export async function provisionTenantForUser(user: {
       role: existing.role as TenantRole,
       claimedLegacy: false,
     };
-  }
-
-  const email = (user.email ?? "").trim().toLowerCase();
-  const claimEmail = (process.env.LEGACY_TENANT_CLAIM_EMAIL ?? "").trim().toLowerCase();
-  if (claimEmail && email && email === claimEmail) {
-    const claimed = await claimLegacyTenant(user.id);
-    if (claimed) return claimed;
   }
 
   const slug = await uniqueTenantSlug(displayName(user));

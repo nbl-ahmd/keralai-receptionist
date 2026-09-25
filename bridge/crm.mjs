@@ -16,6 +16,7 @@
 import { hrNow, logPerf, msSince, processMetrics } from './metrics.mjs';
 import { getTenantSetting } from './db.mjs';
 import { getTenantSecretValue } from './secrets.mjs';
+import { assertSafeWebhookUrl } from './safe-webhook-url.mjs';
 
 const TIMEOUT_MS = Number(process.env.CRM_TIMEOUT_MS ?? 8000);
 
@@ -70,6 +71,12 @@ export async function syncToCrm(tenantId, payload) {
   }
   const { provider, url, secret } = config;
 
+  // Reject SSRF targets (metadata, private/loopback/link-local) before fetching.
+  const safeUrl = await assertSafeWebhookUrl(url);
+  if (!safeUrl.ok) {
+    return { ok: false, provider, skipped: true, error: `Webhook URL blocked (${safeUrl.reason})` };
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   const startedNs = hrNow();
@@ -91,6 +98,8 @@ export async function syncToCrm(tenantId, payload) {
         sentAt: new Date().toISOString(),
       }),
       signal: controller.signal,
+      // Block redirect-based SSRF: validation above only covers this URL.
+      redirect: 'error',
     });
 
     if (!response.ok) return { ok: false, provider, error: `HTTP ${response.status}` };

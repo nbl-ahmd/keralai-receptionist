@@ -60,8 +60,10 @@ and `TENANT_SECRETS_ENCRYPTION_KEY`. The latter two must be identical in
 - Existing single-tenant rows are backfilled into a generated legacy tenant. No
   data is deleted.
 - To claim the legacy data, set `LEGACY_TENANT_CLAIM_EMAIL` to the intended owner
-  email and use Settings → Providers → "Claim legacy workspace" after signing in
-  with that email.
+  email and `LEGACY_TENANT_CLAIM_TOKEN` to a random server-only secret. After
+  signing in with that email, open Settings → Providers → Legacy data, paste the
+  token, and claim. Users are never granted the legacy workspace implicitly at
+  signup.
 
 ## 2. Deploy the Next.js app (Vercel)
 
@@ -76,6 +78,7 @@ and `TENANT_SECRETS_ENCRYPTION_KEY`. The latter two must be identical in
    - `NEXT_PUBLIC_BRIDGE_WS_URL` = `wss://<bridge-host>`
    - `PUBLIC_APP_ORIGIN` = your production URL (and preview URLs, comma-separated)
    - `LEGACY_TENANT_CLAIM_EMAIL` (optional)
+   - `LEGACY_TENANT_CLAIM_TOKEN` (required to enable legacy claiming)
 4. Deploy.
 5. Run migrations against the production `DATABASE_URL` **before** or right after
    the first deploy:
@@ -109,6 +112,19 @@ lazily so the build does not require `DATABASE_URL`.
 No Gemini key is set on Render. Each tenant's key is decrypted from the database
 per session.
 
+> **Critical:** `TENANT_SECRETS_ENCRYPTION_KEY` must be **byte-for-byte
+> identical** on Vercel and Render. The dashboard encrypts tenant credentials;
+> the bridge decrypts them. If the two differ, every phone call ends the moment
+> it connects ("Tenant Gemini credential unavailable"). The bridge logs a
+> `startup db-check` line listing any undecryptable workspaces, e.g.
+> `geminiKeys configured=9 undecryptable=[legacy, muhammed-ajmal] — align
+> TENANT_SECRETS_ENCRYPTION_KEY on Vercel and Render`. Fix the Render value to
+> match Vercel (do **not** regenerate), then re-save the affected credentials.
+>
+> If `LEGACY_GEMINI_API_KEY` is set on the bridge, the pre-multitenancy Gemini
+> key is imported into the legacy tenant exactly once, encrypted at rest, so
+> deployments upgrading from the single-tenant version keep working.
+
 ## 4. Connect Exotel (per tenant)
 
 Every tenant uses its **own** Exotel account and number. There is no shared
@@ -133,6 +149,24 @@ A tester with no Exotel account creates a new one (their own trial number) and
 repeats steps 1–4; nothing is shared with other tenants. The bare path
 `/ws/exotel` is rejected with `404`. Unknown slug and an invalid token also
 return `404` (no enumeration).
+
+### Troubleshooting: calls connect then drop immediately
+
+The bridge logs a precise reason for every upgrade **before** authentication —
+never the token itself. Watch the Render logs and match the line:
+
+| Log line | Meaning | Fix |
+| --- | --- | --- |
+| `[exotel-auth] rejected bare /ws/exotel …` | The Exotel applet still points at the old pre-multitenancy path. | Paste the tenant URL from Settings → Providers → Exotel routing into the applet. |
+| `[exotel-auth] rejected slug=… reason=unknown_slug` | The slug in the URL is wrong. | Re-copy the URL; do not rename the workspace. |
+| `[exotel-auth] rejected … reason=no_credential_configured` | No token has been generated for this workspace. | Click **Rotate** to generate one. |
+| `[exotel-auth] rejected … reason=token_mismatch tenant=…` | The token was rotated after it was pasted into Exotel. | Update the applet with the current URL. |
+| `[exotel-auth] accepted …` then `No usable Gemini credential for tenant …` | The tenant's encrypted credentials cannot be decrypted. | The dashboard and bridge use different `TENANT_SECRETS_ENCRYPTION_KEY` values. Set Render to the exact Vercel value, redeploy, then re-save the Gemini key / rotate the Exotel token. |
+| `startup db-check: … undecryptable=[…]` | Same master-key mismatch, detected at boot. | As above. |
+
+A call dropping immediately after `[exotel-auth] accepted` is almost always the
+**undecryptable-credential** case, not the URL: the tenant's Gemini key was
+saved by the dashboard with a different encryption key than the bridge holds.
 
 ## 5. Browser voice
 

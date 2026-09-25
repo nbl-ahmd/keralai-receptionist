@@ -210,6 +210,7 @@ export function ProviderSettings() {
 
   const [claiming, setClaiming] = useState(false);
   const [claimMessage, setClaimMessage] = useState<string | null>(null);
+  const [claimToken, setClaimToken] = useState("");
 
   const canManage = role === "owner" || role === "admin";
 
@@ -494,7 +495,11 @@ export function ProviderSettings() {
     setClaiming(true);
     setClaimMessage(null);
     try {
-      const response = await fetch("/api/tenant/claim-legacy", { method: "POST" });
+      const response = await fetch("/api/tenant/claim-legacy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: claimToken }),
+      });
       const data = (await response.json()) as { error?: string; success?: boolean };
       if (!response.ok || data.error) {
         setClaimMessage(data.error || "Legacy data could not be claimed.");
@@ -887,14 +892,28 @@ export function ProviderSettings() {
           {hasLegacyMembership ? (
             <Notice tone="ok">This account already has access to the legacy workspace.</Notice>
           ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              <Button variant="outline" className="gap-2" onClick={claimLegacy} disabled={claiming}>
-                {claiming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-                Claim legacy data
-              </Button>
-              <span className="text-xs text-slate-500">
-                Only available to the email configured on the server.
-              </span>
+            <div className="space-y-3">
+              <Input
+                type="password"
+                value={claimToken}
+                placeholder="Claim token"
+                autoComplete="off"
+                onChange={(event) => setClaimToken(event.target.value)}
+              />
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  variant="outline"
+                  className="gap-2"
+                  onClick={claimLegacy}
+                  disabled={claiming || !claimToken.trim()}
+                >
+                  {claiming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                  Claim legacy data
+                </Button>
+                <span className="text-xs text-slate-500">
+                  Requires the owner email and the server claim token.
+                </span>
+              </div>
             </div>
           )}
           {claimMessage && (

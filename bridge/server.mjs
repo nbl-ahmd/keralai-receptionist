@@ -84,8 +84,7 @@ import {
   importLegacyGeminiKeyIfNeeded,
 } from './gemini.mjs';
 import { verifyBridgeToken, verifyExotelToken } from './bridge-token.mjs';
-import { getSecretsKeyFingerprint } from './secrets.mjs';
-import { auditTenantGeminiKeys } from './secrets.mjs';
+import { auditTenantGeminiKeys, getSecretsKeyFingerprint } from './secrets.mjs';
 import { BrowserSession } from './browser-session.mjs';
 import { buildRuntimeInstruction } from './shared/runtime-modes.mjs';
 import {

@@ -80,7 +80,10 @@ The bridge files can be syntax-checked with `node --check bridge/server.mjs`.
     tenant (e.g. add `?tenantId=<A>`); the bridge must use the token's tenant and
     reject the mismatch attempt. Expired or malformed tokens must return **401**.
 23. **Exotel A URL.** Request A's Exotel URL from Settings → Providers. Connect
-    with A's slug + token; confirm the call resolves to A.
+    with A's slug + token; confirm the call resolves to A. Test all accepted
+    token channels: `?token=`, the malformed `?token:<token>=` key, an
+    `Authorization: Basic` header (`tenant:<token>`), and a trailing
+    `/ws/exotel/<slug>/<token>` path segment.
 24. **Exotel B URL.** Repeat for B; confirm B's call resolves to B and never to A.
 25. **Exotel hardening.** Call `/ws/exotel` with no slug (expect `404`), an
     unknown slug (expect `404`), and a wrong token (expect `404`). Rotate A's

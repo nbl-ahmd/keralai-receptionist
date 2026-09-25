@@ -142,14 +142,29 @@ platform account and no Exotel credential in the environment.
    Click **Save Exotel account**, then **Test connection** to confirm Exotel
    accepts the credentials and to list the numbers on their account.
 3. In the same page under **Exotel routing**, click **Rotate** to generate a
-   token. The full URL is shown once:
-   ```
-   wss://<service-name>.onrender.com/ws/exotel/<tenant-slug>?token=<token>
-   ```
-4. Paste that URL into the tester's Exotel Voicebot applet. Calls to *their*
+   token. Two URLs are shown once:
+   - **Recommended (Basic auth)** — put this in the Voicebot applet's URL
+     field:
+     ```
+     wss://tenant:<token>@<service-name>.onrender.com/ws/exotel/<tenant-slug>
+     ```
+     Exotel moves the credentials out of the URL and sends them as an
+     `Authorization: Basic` header, which it reliably forwards.
+   - **Alternative (query token)** — if the applet rejects Basic auth:
+     ```
+     wss://<service-name>.onrender.com/ws/exotel/<tenant-slug>?token=<token>
+     ```
+4. Paste the URL into the tester's Exotel Voicebot applet. Calls to *their*
    number now reach *their* workspace.
 5. Only a SHA-256 hash of the token is stored. Rotating invalidates the old URL
    immediately — update Exotel at the same time.
+
+> Exotel has been observed stripping or mangling arbitrary query parameters
+> (its own docs note `token=abc` sometimes arriving as `token:abc=`). That is
+> why the dashboard now shows the Basic-auth URL first. The bridge accepts the
+> token from `?token=`, a malformed `?token:<token>=` key, an `Authorization:
+> Basic` header, or a trailing `/ws/exotel/<slug>/<token>` path segment — so any
+> of these forms authenticates.
 
 A tester with no Exotel account creates a new one (their own trial number) and
 repeats steps 1–4; nothing is shared with other tenants. The bare path
@@ -164,11 +179,17 @@ never the token itself. Watch the Render logs and match the line:
 | Log line | Meaning | Fix |
 | --- | --- | --- |
 | `[exotel-auth] rejected bare /ws/exotel …` | The Exotel applet still points at the old pre-multitenancy path. | Paste the tenant URL from Settings → Providers → Exotel routing into the applet. |
+| `[exotel-auth] upgrade … tokenPresent=no tokenSource=none` then `reason=missing_slug_or_token` | The applet URL carries the slug but no token. | Re-copy the **recommended Basic-auth URL** (or the query-token alternative) from Settings → Providers → Exotel routing; do not hand-type it. `queryParams=0` in the same line usually means Exotel stripped the query string entirely — use the Basic-auth URL. |
 | `[exotel-auth] rejected slug=… reason=unknown_slug` | The slug in the URL is wrong. | Re-copy the URL; do not rename the workspace. |
 | `[exotel-auth] rejected … reason=no_credential_configured` | No token has been generated for this workspace. | Click **Rotate** to generate one. |
 | `[exotel-auth] rejected … reason=token_mismatch tenant=…` | The token was rotated after it was pasted into Exotel. | Update the applet with the current URL. |
 | `[exotel-auth] accepted …` then `No usable Gemini credential for tenant …` | The tenant's encrypted credentials cannot be decrypted. | The dashboard and bridge use different `TENANT_SECRETS_ENCRYPTION_KEY` values. Set Render to the exact Vercel value, redeploy, then re-save the Gemini key / rotate the Exotel token. |
 | `startup db-check: … undecryptable=[…]` | Same master-key mismatch, detected at boot. | As above. |
+
+The `[exotel-auth] upgrade` line reports only non-secret facts: the slug, whether
+a token is present and its length, which channel supplied it (`tokenSource=`),
+how many query parameters arrived (`queryParams=`), and whether an
+`Authorization` header was present. It never logs the token itself.
 
 A call dropping immediately after `[exotel-auth] accepted` is almost always the
 **undecryptable-credential** case, not the URL: the tenant's Gemini key was

@@ -3,7 +3,9 @@
  *
  * Per-tenant Exotel WebSocket routing helpers.
  *
- * The Exotel applet connects to `/ws/exotel/:tenantSlug?token=...`. Only a
+ * The Exotel applet connects to `/ws/exotel/:tenantSlug`. Prefer the Basic-auth
+ * form `wss://tenant:<token>@host/ws/exotel/:tenantSlug`, which Exotel forwards
+ * as an `Authorization: Basic` header; `?token=...` is also accepted. Only a
  * SHA-256 hash of the token is stored (tenant_bridge_credentials); the plaintext
  * token is shown to the owner exactly once, when it is generated or rotated.
  *
@@ -70,24 +72,51 @@ export async function rotateExotelCredential(tenantId: string): Promise<{
   return { token, tokenLast4, rotatedAt: row?.rotated_at ?? new Date().toISOString() };
 }
 
+/** Resolves the public bridge origin as a `ws(s)://` URL without a trailing slash. */
+function getBridgeRoot(): string {
+  const base =
+    process.env.PUBLIC_BRIDGE_WS_URL ||
+    process.env.NEXT_PUBLIC_BRIDGE_WS_URL ||
+    "wss://your-bridge-host.onrender.com";
+  return base.replace(/\/+$/, "").replace(/^http/, "ws").replace(/^https/, "wss");
+}
+
 /**
- * Builds the public WebSocket URL for a tenant's Exotel applet.
- * Without a token, returns the URL with a placeholder (never a real secret).
+ * Builds the public WebSocket URL for a tenant's Exotel applet using a `token`
+ * query parameter. Without a token, returns the URL with a placeholder (never a
+ * real secret).
+ *
+ * Prefer `buildExotelBasicAuthWsUrl` for the Exotel applet: Exotel has been
+ * observed stripping or mangling arbitrary query parameters, whereas it always
+ * preserves the path and reliably forwards Basic credentials as a header.
  */
 export function buildExotelWsUrl(
   tenantSlug: string,
   token?: string,
   query: Record<string, string> = {},
 ): string {
-  const base =
-    process.env.PUBLIC_BRIDGE_WS_URL ||
-    process.env.NEXT_PUBLIC_BRIDGE_WS_URL ||
-    "wss://your-bridge-host.onrender.com";
-  const root = base.replace(/\/+$/, "").replace(/^http/, "ws").replace(/^https/, "wss");
+  const root = getBridgeRoot();
   const params = new URLSearchParams({ ...query });
   if (token) params.set("token", token);
   const qs = params.toString();
   return `${root}/ws/exotel/${tenantSlug}${qs ? `?${qs}` : ""}`;
+}
+
+/**
+ * Builds the Exotel applet URL using HTTP Basic credentials, Exotel's
+ * recommended authentication channel: Exotel transmits
+ * `Authorization: Basic base64(tenant:<token>)` as a header instead of putting
+ * the token in a query parameter. This survives Exotel's query-parameter
+ * stripping/mangling. The bridge accepts the token from this header.
+ *
+ * Without a token, emits a `REPLACE_ME` password placeholder (never a secret).
+ */
+export function buildExotelBasicAuthWsUrl(tenantSlug: string, token?: string): string {
+  const root = getBridgeRoot();
+  const url = new URL(`${root}/ws/exotel/${encodeURIComponent(tenantSlug)}`);
+  url.username = "tenant";
+  url.password = token || "REPLACE_ME";
+  return url.toString();
 }
 
 /** Verifies a presented Exotel token for a tenant slug, server-side. */

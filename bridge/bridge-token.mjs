@@ -30,6 +30,63 @@ export function verifyExotelToken(token, storedHash) {
   return crypto.timingSafeEqual(computed, stored);
 }
 
+/**
+ * Extracts the tenant routing token from an Exotel WebSocket upgrade request.
+ *
+ * Exotel does not reliably preserve arbitrary query parameters: its own docs
+ * note that some parameter names arrive concatenated into a single malformed
+ * key (`token=abc` coming back as `token:abc=`), and recommend Basic
+ * Authentication because credentials are transmitted as a header rather than in
+ * the URL. So we accept the token from, in order:
+ *
+ *   1. `?token=<token>` — the canonical shape.
+ *   2. a malformed `?token:<token>=` key (Exotel concatenation quirk).
+ *   3. `Authorization: Basic base64(<user>:<token>)` — Exotel's recommended
+ *      channel, configured as `wss://tenant:<token>@host/ws/exotel/<slug>`.
+ *   4. `/ws/exotel/<slug>/<token>` — a trailing path segment, since Exotel
+ *      always preserves the path.
+ *
+ * Returns `{ token, source }`; `source` is safe to log (never the token).
+ *
+ * @param {URL} url
+ * @param {Record<string, string | string[] | undefined>} [headers]
+ * @returns {{ token: string, source: 'query' | 'query_malformed' | 'basic_auth' | 'path' | 'none' }}
+ */
+export function extractExotelToken(url, headers = {}) {
+  const direct = url.searchParams.get('token');
+  if (direct) return { token: direct, source: 'query' };
+
+  for (const [key] of url.searchParams) {
+    if (key.startsWith('token:')) {
+      const embedded = key.slice('token:'.length).replace(/=+$/, '');
+      if (embedded) return { token: embedded, source: 'query_malformed' };
+    }
+  }
+
+  const auth = headers.authorization ?? headers.Authorization;
+  if (typeof auth === 'string' && /^basic\s+/i.test(auth)) {
+    try {
+      const decoded = Buffer.from(auth.replace(/^basic\s+/i, '').trim(), 'base64').toString('utf8');
+      const separator = decoded.indexOf(':');
+      const username = separator >= 0 ? decoded.slice(0, separator) : decoded;
+      const password = separator >= 0 ? decoded.slice(separator + 1) : '';
+      // Prefer the password (our documented shape); fall back to the username
+      // so a URL like wss://<token>@host/... also works.
+      const token = password || username;
+      if (token) return { token, source: 'basic_auth' };
+    } catch {
+      /* malformed header — treat as no token */
+    }
+  }
+
+  const segments = url.pathname.split('/').filter(Boolean);
+  if (segments[0] === 'ws' && segments[1] === 'exotel' && segments[3]) {
+    return { token: decodeURIComponent(segments[3]), source: 'path' };
+  }
+
+  return { token: '', source: 'none' };
+}
+
 function getSecret() {
   const secret = process.env.BRIDGE_AUTH_SECRET;
   if (!secret) {

@@ -83,7 +83,7 @@ import {
   getTenantLiveModel,
   importLegacyGeminiKeyIfNeeded,
 } from './gemini.mjs';
-import { verifyBridgeToken, verifyExotelToken } from './bridge-token.mjs';
+import { extractExotelToken, verifyBridgeToken, verifyExotelToken } from './bridge-token.mjs';
 import { auditTenantGeminiKeys, getSecretsKeyFingerprint } from './secrets.mjs';
 import { BrowserSession } from './browser-session.mjs';
 import { buildRuntimeInstruction } from './shared/runtime-modes.mjs';
@@ -1388,16 +1388,21 @@ async function main() {
   server.on('upgrade', async (req, socket, head) => {
     try {
       const url = new URL(req.url, 'http://localhost');
-      const exotelMatch = url.pathname.match(/^\/ws\/exotel\/([^/]+)\/?$/);
+      const exotelMatch = url.pathname.match(/^\/ws\/exotel\/([^/]+)(?:\/([^/]+))?\/?$/);
 
       if (exotelMatch) {
         const slug = decodeURIComponent(exotelMatch[1]);
-        const token = url.searchParams.get('token') ?? '';
+        const { token, source } = extractExotelToken(url, req.headers);
 
-        // Diagnostics BEFORE authentication. Never log the token itself.
+        // Diagnostics BEFORE authentication. Never log the token itself — a
+        // path-based token would otherwise appear in the raw pathname, so log a
+        // redacted path built from the (non-secret) slug only.
         console.log(
-          `[bridge][exotel-auth] upgrade path=${url.pathname} slug=${slug || '(none)'} ` +
-            `tokenPresent=${token ? 'yes' : 'no'} tokenLength=${token.length}`,
+          `[bridge][exotel-auth] upgrade path=/ws/exotel/${encodeURIComponent(slug || '(none)')} ` +
+            `slug=${slug || '(none)'} ` +
+            `tokenPresent=${token ? 'yes' : 'no'} tokenLength=${token.length} ` +
+            `tokenSource=${source} queryParams=${[...url.searchParams].length} ` +
+            `authHeader=${req.headers.authorization ? 'yes' : 'no'}`,
         );
 
         let resolution;
@@ -1434,7 +1439,8 @@ async function main() {
         // Bare path is rejected: every Exotel call must carry a tenant slug+token.
         console.warn(
           '[bridge][exotel-auth] rejected bare /ws/exotel — the Exotel applet must use ' +
-            '/ws/exotel/<tenant-slug>?token=<token> (see dashboard → Settings → Providers)',
+            'the tenant URL from the dashboard → Settings → Providers ' +
+            '(/ws/exotel/<tenant-slug> with the token via Basic auth or ?token=)',
         );
         socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
         socket.destroy();

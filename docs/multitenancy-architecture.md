@@ -150,7 +150,12 @@ The bridge is tenant-aware on both transports.
 
 ### Exotel
 
-- URL shape: `/ws/exotel/:tenantSlug?token=...`
+- URL shape: `/ws/exotel/:tenantSlug?token=...`, or the Basic-auth form
+  `wss://tenant:<token>@host/ws/exotel/:tenantSlug` that Exotel forwards as an
+  `Authorization: Basic` header. The bridge also accepts a trailing
+  `/ws/exotel/:tenantSlug/<token>` path segment. Exotel has been observed
+  stripping or mangling query parameters, so the dashboard shows the Basic-auth
+  URL first.
 - The bare path `/ws/exotel` is rejected — there is no default tenant.
 - Only a SHA-256 **hash** of the token is stored, in
   `tenant_bridge_credentials`. The bridge verifies with

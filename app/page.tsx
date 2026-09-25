@@ -223,7 +223,7 @@ export default function LandingPage() {
               </Button>
             </div>
             <p className="mt-4 text-sm text-slate-500">
-              No signup for the demo — just allow microphone access and speak.
+              Sign in to try it live, then allow microphone access and speak.
             </p>
           </div>
 

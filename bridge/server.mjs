@@ -11,18 +11,19 @@
  *   GET  /health          — Render health check, returns 200 {"ok":true}
  *   GET  /ping            — Lightweight keep-alive endpoint (no DB, HEAD/GET supported)
  *   GET  /metrics         — Aggregate latency/throughput snapshot (JSON, no PII)
- *   WS   /ws/exotel       — Exotel phone bridge (PCM audio ↔ Gemini Live)
+ *   WS   /ws/exotel/:slug — Exotel phone bridge (PCM audio ↔ Gemini Live)
  *   WS   /ws/browser      — Browser voice relay (audio ↔ Gemini Live)
  *
  * Required env vars:
  *   DATABASE_URL          — Neon POOLED (PgBouncer) connection string
- *   GEMINI_API_KEY        — Server-side Gemini key (NOT NEXT_PUBLIC_)
+ *   BRIDGE_AUTH_SECRET    — Shared with the dashboard; verifies browser tokens
+ *   TENANT_SECRETS_ENCRYPTION_KEY — Same master key as the dashboard
  *
  * Optional env vars:
  *   PORT                  — HTTP port (Render injects this automatically)
  *   EXOTEL_SAMPLE_RATE    — 8000 or 16000 (default 8000)
- *   GEMINI_MODEL          — Gemini Live model (default gemini-3.8-live)
- *   GEMINI_EMBEDDING_MODEL — Embedding model (default gemini-embedding-2)
+ *   GEMINI_MODEL          — Fallback Live model when a tenant has no override
+ *   GEMINI_EMBEDDING_MODEL — Fallback embedding model
  *   MAYA_VOICE            — Gemini voice name (default Aoede)
  *   MAYA_PITCH            — Low | Normal | High (default Normal)
  *   MAYA_SPEED            — Slow | Normal | Fast (default Normal)
@@ -50,11 +51,15 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 
 import { WebSocketServer } from 'ws';
-import { GoogleGenAI, Modality } from '@google/genai';
+import { Modality } from '@google/genai';
 
 import {
   closePool,
   getProfileVersion,
+  getTenantBridgeCredential,
+  getTenantById,
+  getTenantBySlug,
+  getTenantRuntimeState,
   loadActiveInstructions,
   loadCompanyProfile,
   logCrmSyncEvent,
@@ -68,7 +73,16 @@ import {
   upsertCallRecord,
 } from './db.mjs';
 import { getCrmProvider, syncToCrm } from './crm.mjs';
+import {
+  DEFAULT_EMBEDDING_MODEL,
+  DEFAULT_LIVE_MODEL,
+  getTenantEmbeddingModel,
+  getTenantGeminiClient,
+  getTenantLiveModel,
+} from './gemini.mjs';
+import { verifyBridgeToken, verifyExotelToken } from './bridge-token.mjs';
 import { BrowserSession } from './browser-session.mjs';
+import { buildRuntimeInstruction } from './shared/runtime-modes.mjs';
 import {
   CallMetrics,
   LATENCY_LOG_INTERVAL_MS,
@@ -169,85 +183,108 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
 }
 
-// ─── Company profile cache (process-level, TTL + version-check) ───────────────
-let _cachedProfile = null;
-let _profileUpdatedAt = null;
-let _lastProfileCheck = 0;
-let _profileRefreshing = false;
+// ─── Company profile cache (per tenant, TTL + version-check) ──────────────────
+//
+// Each tenant has its own cached profile so a change to one workspace never
+// affects another. `updated_at` is checked cheaply before a full reload.
 const PROFILE_TTL_MS = Number(process.env.PROFILE_CACHE_TTL_MS ?? 5 * 60 * 1000); // 5 min default
 
 /**
- * Loads/refreshes the profile from the DB. Only awaits when the DB's updated_at
- * has changed. Used for the very first (cold) load and background refreshes.
+ * @typedef {{
+ *   profile: object,
+ *   updatedAt: string | null,
+ *   lastCheck: number,
+ *   refreshing: boolean,
+ * }} TenantProfileCacheEntry
  */
-async function refreshCompanyProfile() {
+
+/** @type {Map<string, TenantProfileCacheEntry>} */
+const _profileCache = new Map();
+
+function getProfileCacheEntry(tenantId) {
+  let entry = _profileCache.get(tenantId);
+  if (!entry) {
+    entry = { profile: null, updatedAt: null, lastCheck: 0, refreshing: false };
+    _profileCache.set(tenantId, entry);
+  }
+  return entry;
+}
+
+/** Loads/refreshes one tenant's profile from the DB. */
+async function refreshCompanyProfile(tenantId) {
+  const entry = getProfileCacheEntry(tenantId);
+
   const doneVersion = timer('profile-version-check');
-  const version = await getProfileVersion();
+  const version = await getProfileVersion(tenantId);
   doneVersion();
 
   const versionStr = version ? new Date(version).toISOString() : null;
-  if (_cachedProfile && versionStr === _profileUpdatedAt) {
-    return _cachedProfile; // unchanged — skip the full load
+  if (entry.profile && versionStr === entry.updatedAt) {
+    return entry.profile; // unchanged — skip the full load
   }
 
   const doneLoad = timer('profile-full-load');
-  const profile = await loadCompanyProfile();
+  const profile = await loadCompanyProfile(tenantId);
   doneLoad();
-  _cachedProfile = profile;
-  _profileUpdatedAt = versionStr;
+  entry.profile = profile;
+  entry.updatedAt = versionStr;
 
-  console.log(`[bridge] Company profile loaded/refreshed: "${profile.name || '(unnamed)'}"`);
+  console.log(`[bridge] Company profile loaded/refreshed for tenant ${tenantId}: "${profile.name || '(unnamed)'}"`);
   return profile;
 }
 
 /** Refresh without awaiting — errors are contained (never an unhandled rejection). */
-function refreshCompanyProfileInBackground() {
-  if (_profileRefreshing) return;
-  _profileRefreshing = true;
-  refreshCompanyProfile()
+function refreshCompanyProfileInBackground(tenantId) {
+  const entry = getProfileCacheEntry(tenantId);
+  if (entry.refreshing) return;
+  entry.refreshing = true;
+  refreshCompanyProfile(tenantId)
     .catch((e) => console.error('[bridge] Background profile refresh failed:', e?.message ?? e))
-    .finally(() => { _profileRefreshing = false; });
+    .finally(() => { entry.refreshing = false; });
 }
 
 /**
- * Returns the company profile (which now carries the dashboard-controlled voice
- * and greeting settings).
+ * Returns one tenant's company profile (which carries the dashboard-controlled
+ * voice and greeting settings).
  *
  * `force: true` awaits a version check so dashboard changes apply to the very
  * next call; otherwise the cached value is returned and a refresh runs in the
  * background once the TTL expires.
  *
+ * @param {string} tenantId
  * @param {{ force?: boolean }} [options]
  */
-async function getCompanyProfile({ force = false } = {}) {
+async function getCompanyProfile(tenantId, { force = false } = {}) {
+  const entry = getProfileCacheEntry(tenantId);
   const now = Date.now();
 
-  if (!_cachedProfile) {
-    _lastProfileCheck = now;
-    return refreshCompanyProfile();
+  if (!entry.profile) {
+    entry.lastCheck = now;
+    return refreshCompanyProfile(tenantId);
   }
 
   if (force) {
-    _lastProfileCheck = now;
+    entry.lastCheck = now;
     try {
-      return await refreshCompanyProfile();
+      return await refreshCompanyProfile(tenantId);
     } catch (e) {
       console.error('[bridge] Profile refresh failed:', e?.message ?? e);
-      return _cachedProfile;
+      return entry.profile;
     }
   }
 
-  if ((now - _lastProfileCheck) >= PROFILE_TTL_MS) {
-    _lastProfileCheck = now;
-    refreshCompanyProfileInBackground();
+  if ((now - entry.lastCheck) >= PROFILE_TTL_MS) {
+    entry.lastCheck = now;
+    refreshCompanyProfileInBackground(tenantId);
   }
-  return _cachedProfile;
+  return entry.profile;
 }
 
 // ─── Audio constants ──────────────────────────────────────────────────────────
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.8-live';
-const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL ?? 'gemini-embedding-2';
+// Per-tenant overrides are resolved at session start; these are fallbacks only.
+const GEMINI_MODEL = DEFAULT_LIVE_MODEL;
+const EMBEDDING_MODEL = DEFAULT_EMBEDDING_MODEL;
 const EMBED_TIMEOUT_MS = Number(process.env.EMBED_TIMEOUT_MS ?? 8000);
 const GEMINI_INPUT_SAMPLE_RATE = 16000;  // Gemini Live expects 16 kHz input
 const GEMINI_OUTPUT_SAMPLE_RATE = 24000; // Gemini Live outputs 24 kHz
@@ -322,14 +359,18 @@ class CallSession {
    * @param {import('@google/genai').GoogleGenAI} ai
    * @param {object} companyProfile
    * @param {number} exotelRate  Actual call sample rate (8000/16000/24000)
+   * @param {{ tenantId: string, liveModel: string, embeddingModel: string }} tenant
    */
-  constructor(callSid, streamSid, streamKey, exotelWs, ai, companyProfile, exotelRate) {
+  constructor(callSid, streamSid, streamKey, exotelWs, ai, companyProfile, exotelRate, tenant) {
     this.callSid = callSid;
     this.streamSid = streamSid;
     this.streamKey = streamKey === 'stream_sid' ? 'stream_sid' : 'streamSid';
     this.exotelWs = exotelWs;
     this.ai = ai;
     this.companyProfile = companyProfile;
+    this.tenantId = tenant.tenantId;
+    this.liveModel = tenant.liveModel;
+    this.embeddingModel = tenant.embeddingModel;
 
     // Per-call audio math (precomputed once so the hot path never divides).
     this.exotelRate = normalizeExotelRate(exotelRate) ?? DEFAULT_EXOTEL_RATE;
@@ -430,7 +471,7 @@ class CallSession {
   ensureCallRecord() {
     if (this.callId) return Promise.resolve(this.callId);
     if (!this.callIdPromise) {
-      this.callIdPromise = upsertCallRecord(this._startRecord())
+      this.callIdPromise = upsertCallRecord(this.tenantId, this._startRecord())
         .then((id) => { this.callId = id; return id; })
         .catch((e) => { this.err('Failed to create call record:', e?.message ?? e); return null; });
     }
@@ -516,9 +557,19 @@ class CallSession {
     // activations/deactivations apply immediately to the next call.
     let activeInstructions = [];
     try {
-      activeInstructions = await loadActiveInstructions();
+      activeInstructions = await loadActiveInstructions(this.tenantId);
     } catch {
       activeInstructions = [];
+    }
+
+    // Resolve the tenant's current runtime mode (expired modes fall back to
+    // `available`, producing an empty block).
+    let runtimeInstruction = '';
+    try {
+      const runtimeState = await getTenantRuntimeState(this.tenantId);
+      runtimeInstruction = buildRuntimeInstruction(runtimeState);
+    } catch (e) {
+      this.err('Failed to load runtime mode:', e?.message ?? e);
     }
 
     const audioSettings = resolveLiveAudioSettings();
@@ -527,14 +578,15 @@ class CallSession {
       this.companyProfile,
       { pitch, speed },
       activeInstructions,
+      runtimeInstruction,
     );
 
-    this.log(`Connecting to Gemini Live (model: ${GEMINI_MODEL}, voice: ${voiceName})`);
+    this.log(`Connecting to Gemini Live (model: ${this.liveModel}, voice: ${voiceName})`);
 
     const doneConnect = timer('gemini-live-connect');
     const connectStartNs = hrNow();
     const sessionPromise = this.ai.live.connect({
-      model: GEMINI_MODEL,
+      model: this.liveModel,
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
@@ -618,7 +670,7 @@ class CallSession {
     logPerf('gemini', {
       call: this.callSid,
       connect_ms: connectMs.toFixed(0),
-      model: GEMINI_MODEL,
+      model: this.liveModel,
       buffered_kb: Number((this.pendingInput.length / 1024).toFixed(1)),
     });
     this.log('Gemini Live session ready');
@@ -848,7 +900,7 @@ class CallSession {
         booking = (async () => {
           const callId = await this.ensureCallRecord();
           const doneDb = timer('db-persist-appointment');
-          const entry = await persistAppointment(this.callSid, args, callId);
+          const entry = await persistAppointment(this.tenantId, this.callSid, args, callId);
           doneDb();
           return entry;
         })();
@@ -875,16 +927,19 @@ class CallSession {
     // Respond to Gemini FIRST so Maya can keep talking immediately.
     this._sendToolResponse(fc, result);
 
-    // CRM sync + audit in the background — never blocks audio.
-    if (getCrmProvider() !== 'none' && result.result.includes('successfully')) {
+    // CRM sync + audit in the background — never blocks audio. Resolve the
+    // tenant's provider inside the background task so it never delays the tool
+    // response, and only sync when this tenant actually configured a CRM.
+    if (result.result.includes('successfully')) {
       runBackground('crm-book', async () => {
-        const sync = await syncToCrm({
+        if ((await getCrmProvider(this.tenantId)) === 'none') return;
+        const sync = await syncToCrm(this.tenantId, {
           contact: { name: args.customerName, phone: this.phone, source: 'phone' },
           call: { callSid: this.callSid, intent: this.intent, outcome: 'booked' },
           appointment: { date: args.date, time: args.time, reason: args.reason, status: 'confirmed' },
           company: this.companyProfile,
         });
-        await logCrmSyncEvent({
+        await logCrmSyncEvent(this.tenantId, {
           callSid: this.callSid,
           provider: sync.provider,
           status: sync.ok ? 'success' : 'failed',
@@ -903,7 +958,7 @@ class CallSession {
       return;
     }
     const callId = await this.ensureCallRecord();
-    const entry = await persistCallbackRequest(this.callSid, args, callId);
+    const entry = await persistCallbackRequest(this.tenantId, this.callSid, args, callId);
     if (!this.intent) this.intent = 'Callback request';
     this.caller = args.customerName || this.caller;
     this._sendToolResponse(fc, { result: `Callback request saved successfully (ID: ${entry.id}).` });
@@ -918,7 +973,7 @@ class CallSession {
       return;
     }
     const callId = await this.ensureCallRecord();
-    const entry = await persistQuoteRequest(this.callSid, args, callId);
+    const entry = await persistQuoteRequest(this.tenantId, this.callSid, args, callId);
     if (!this.intent) this.intent = 'Quote request';
     this.caller = args.customerName || this.caller;
     this._sendToolResponse(fc, { result: `Quote request saved successfully (ID: ${entry.id}).` });
@@ -933,7 +988,7 @@ class CallSession {
       return;
     }
     const callId = await this.ensureCallRecord();
-    const entry = await persistMessage(this.callSid, args, callId);
+    const entry = await persistMessage(this.tenantId, this.callSid, args, callId);
     if (!this.intent) this.intent = 'Message taken';
     this.caller = args.customerName || this.caller;
     this._sendToolResponse(fc, { result: `Message saved successfully (ID: ${entry.id}).` });
@@ -953,7 +1008,7 @@ class CallSession {
 
       const doneEmbed = timer('gemini-embed-query');
       const response = await withTimeout(
-        this.ai.models.embedContent({ model: EMBEDDING_MODEL, contents: query }),
+        this.ai.models.embedContent({ model: this.embeddingModel, contents: query }),
         EMBED_TIMEOUT_MS,
         'embedContent',
       );
@@ -962,7 +1017,7 @@ class CallSession {
       const queryVector = response.embeddings?.[0]?.values;
       if (queryVector?.length) {
         const doneSearch = timer('pgvector-search');
-        result = await searchKnowledgeEmbeddings(`[${queryVector.join(',')}]`, 3);
+        result = await searchKnowledgeEmbeddings(this.tenantId, `[${queryVector.join(',')}]`, 3);
         doneSearch();
       }
     } catch (e) {
@@ -1046,13 +1101,13 @@ class CallSession {
       }
       const record = this.buildCallRecord();
       const doneDb = timer('db-upsert-call-record');
-      const callId = await upsertCallRecord(record);
+      const callId = await upsertCallRecord(this.tenantId, record);
       doneDb();
       this.log(`Call record saved (${record.outcome}, ${record.transcript.length} turns)`);
 
       // Persist per-call latency/throughput for later dashboard audits.
       const m = this.metrics.snapshot();
-      await upsertCallMetrics(callId, {
+      await upsertCallMetrics(this.tenantId, callId, {
         callSid: this.callSid,
         channel: 'phone',
         outcome: record.outcome,
@@ -1074,7 +1129,7 @@ class CallSession {
       });
 
       // Always leave a per-call log row, even if no action tool was called.
-      await persistCallLog({
+      await persistCallLog(this.tenantId, {
         callSid: this.callSid,
         callerNumber: this.phone,
         startedAt: record.startedAt,
@@ -1083,28 +1138,27 @@ class CallSession {
         transcript: record.transcript,
       });
 
-      if (getCrmProvider() !== 'none') {
-        runBackground('crm-close', async () => {
-          const sync = await syncToCrm({
-            contact: { name: this.caller, phone: this.phone, source: 'phone' },
-            call: {
-              callSid: this.callSid,
-              intent: this.intent,
-              outcome: record.outcome,
-              summary: record.summary,
-              durationSec: record.durationSec,
-              startedAt: record.startedAt,
-            },
-            company: this.companyProfile,
-          });
-          await logCrmSyncEvent({
+      runBackground('crm-close', async () => {
+        if ((await getCrmProvider(this.tenantId)) === 'none') return;
+        const sync = await syncToCrm(this.tenantId, {
+          contact: { name: this.caller, phone: this.phone, source: 'phone' },
+          call: {
             callSid: this.callSid,
-            provider: sync.provider,
-            status: sync.ok ? 'success' : 'failed',
-            error: sync.error,
-          });
+            intent: this.intent,
+            outcome: record.outcome,
+            summary: record.summary,
+            durationSec: record.durationSec,
+            startedAt: record.startedAt,
+          },
+          company: this.companyProfile,
         });
-      }
+        await logCrmSyncEvent(this.tenantId, {
+          callSid: this.callSid,
+          provider: sync.provider,
+          status: sync.ok ? 'success' : 'failed',
+          error: sync.error,
+        });
+      });
     } catch (e) {
       this.err('Error persisting call record:', e);
     }
@@ -1116,33 +1170,27 @@ class CallSession {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  // Validate required env vars
-  if (!process.env.GEMINI_API_KEY) {
-    console.error(
-      '[bridge] FATAL: GEMINI_API_KEY environment variable is not set.\n' +
-        '  Set it in .env (for dev) or your Render environment variables.\n' +
-        '  Do NOT use NEXT_PUBLIC_GOOGLE_API_KEY — that key is exposed client-side.',
-    );
-    process.exit(1);
-  }
-
-  if (!process.env.DATABASE_URL) {
-    console.error(
-      '[bridge] FATAL: DATABASE_URL is not set.\n' +
-        '  Use the Neon POOLED (PgBouncer) connection string, not the direct endpoint.',
-    );
-    process.exit(1);
-  }
-
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-  // Warm the profile cache at startup so the first call doesn't pay the load cost.
-  let companyProfile;
-  try {
-    companyProfile = await getCompanyProfile();
-  } catch (error) {
-    console.error('[bridge] FATAL: Could not load company profile from Postgres:', error.message);
-    process.exit(1);
+  // Validate required env vars. Tenant Gemini credentials are resolved per
+  // call/session, so there is deliberately no global GEMINI_API_KEY here.
+  const required = [
+    [
+      'DATABASE_URL',
+      'Use the Neon POOLED (PgBouncer) connection string, not the direct endpoint.',
+    ],
+    [
+      'BRIDGE_AUTH_SECRET',
+      'Must be identical on Vercel and Render; it verifies browser bridge tokens.',
+    ],
+    [
+      'TENANT_SECRETS_ENCRYPTION_KEY',
+      'Must be identical on Vercel and Render; it decrypts tenant provider secrets.',
+    ],
+  ];
+  for (const [name, hint] of required) {
+    if (!process.env[name]) {
+      console.error(`[bridge] FATAL: ${name} environment variable is not set.\n  ${hint}`);
+      process.exit(1);
+    }
   }
 
   const port = parseInt(process.env.PORT ?? '3000', 10);
@@ -1220,60 +1268,158 @@ async function main() {
     allowedBrowserOrigins.length ? allowedBrowserOrigins.join(', ') : 'any (PUBLIC_APP_ORIGIN unset)',
   );
 
-  server.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, 'http://localhost');
+  // ── Tenant resolution helpers ──────────────────────────────────────────────
+  /**
+   * Resolves a tenant from `/ws/exotel/:slug?token=`. Returns the tenant row
+   * only when the slug exists AND the presented token matches the stored hash.
+   * The hash is compared in constant time; the plaintext token is never logged.
+   */
+  async function resolveExotelTenant(slug, token) {
+    if (!slug || !token) return null;
+    const tenant = await getTenantBySlug(slug);
+    if (!tenant) return null;
+    const storedHash = await getTenantBridgeCredential(tenant.id);
+    if (!verifyExotelToken(token, storedHash)) return null;
+    return tenant;
+  }
 
-    if (url.pathname === '/ws/exotel') {
-      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-    } else if (url.pathname === '/ws/browser') {
-      const origin = req.headers.origin;
-      const ip = req.socket.remoteAddress ?? 'unknown';
-      const activeSessions = browserSessionsByIp.get(ip) ?? 0;
+  server.on('upgrade', async (req, socket, head) => {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const exotelMatch = url.pathname.match(/^\/ws\/exotel\/([^/]+)\/?$/);
 
-      if (allowedBrowserOrigins.length && origin && !allowedBrowserOrigins.includes(normalizeOrigin(origin))) {
-        if (browserOriginRejects++ < 5) {
-          console.warn(
-            `[bridge] Rejected /ws/browser origin "${origin}" (allowed: ${allowedBrowserOrigins.join(', ')})`,
-          );
+      if (exotelMatch) {
+        const slug = decodeURIComponent(exotelMatch[1]);
+        const token = url.searchParams.get('token') ?? '';
+        let tenant = null;
+        try {
+          tenant = await resolveExotelTenant(slug, token);
+        } catch (error) {
+          console.error('[bridge] Exotel tenant resolution failed:', error?.message ?? error);
         }
-        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-        socket.destroy();
+        if (!tenant) {
+          // 404 for both unknown slug and bad token — avoids enumeration.
+          socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        req._tenant = tenant;
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
         return;
       }
-      if (activeSessions >= maxBrowserSessionsPerIp) {
-        socket.write('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\n\r\n');
+
+      if (url.pathname === '/ws/exotel') {
+        // Bare path is rejected: every Exotel call must carry a tenant slug+token.
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
         socket.destroy();
         return;
       }
 
-      browserSessionsByIp.set(ip, activeSessions + 1);
-      browserWss.handleUpgrade(req, socket, head, (ws) => {
-        ws._keralaiIp = ip;
-        browserWss.emit('connection', ws, req);
-      });
-    } else {
+      if (url.pathname === '/ws/browser') {
+        const token = url.searchParams.get('token') ?? '';
+        const verified = verifyBridgeToken(token, 'browser');
+        if (!verified.ok) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
+        const origin = req.headers.origin;
+        const ip = req.socket.remoteAddress ?? 'unknown';
+        const activeSessions = browserSessionsByIp.get(ip) ?? 0;
+
+        if (allowedBrowserOrigins.length && origin && !allowedBrowserOrigins.includes(normalizeOrigin(origin))) {
+          if (browserOriginRejects++ < 5) {
+            console.warn(
+              `[bridge] Rejected /ws/browser origin "${origin}" (allowed: ${allowedBrowserOrigins.join(', ')})`,
+            );
+          }
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        if (activeSessions >= maxBrowserSessionsPerIp) {
+          socket.write('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
+        req._bridge = verified.payload;
+        browserSessionsByIp.set(ip, activeSessions + 1);
+        browserWss.handleUpgrade(req, socket, head, (ws) => {
+          ws._keralaiIp = ip;
+          browserWss.emit('connection', ws, req);
+        });
+        return;
+      }
+
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
+    } catch (error) {
+      console.error('[bridge] Upgrade handler failed:', error?.message ?? error);
+      try { socket.destroy(); } catch { /* ignore */ }
     }
   });
 
   // ── Browser relay handler ──────────────────────────────────────────────────
   browserWss.on('connection', (ws, req) => {
-    console.log('[bridge] New browser voice session from', req.socket.remoteAddress);
+    // The tenant comes from the verified signed token, never from client input.
+    const tenantId = req._bridge?.tid;
+    console.log('[bridge] New browser voice session from', req.socket.remoteAddress, `(tenant ${tenantId})`);
 
-    // Each call refreshes the cached profile (cheap TTL check)
-    getCompanyProfile().then((profile) => {
-      const session = new BrowserSession(
-        ws, ai, profile,
-        buildSystemInstruction, buildTools, buildGreeting,
-      );
+    /** @type {BrowserSession | null} */
+    let session = null;
+    let sessionTtl = null;
 
-      const sessionTtl = setTimeout(() => {
+    // Always release the per-IP slot and close the session, even if setup fails
+    // before a BrowserSession exists.
+    ws.on('close', () => {
+      if (sessionTtl) clearTimeout(sessionTtl);
+      const ip = ws._keralaiIp;
+      const count = browserSessionsByIp.get(ip) ?? 1;
+      if (count <= 1) browserSessionsByIp.delete(ip);
+      else browserSessionsByIp.set(ip, count - 1);
+      if (session) session.close().catch((e) => console.error('[bridge][browser] close failed:', e));
+    });
+    ws.on('error', (e) => console.error('[bridge][browser] WebSocket error:', e));
+
+    (async () => {
+      if (!tenantId) { ws.close(1008, 'Missing tenant'); return; }
+
+      const tenant = await getTenantById(tenantId);
+      if (!tenant) { ws.close(1008, 'Unknown tenant'); return; }
+
+      // Resolve the tenant's own Gemini credential, models, profile and current
+      // runtime mode before opening a session. There is no global fallback key.
+      const [ai, liveModel, embeddingModel, profile, runtimeState] = await Promise.all([
+        getTenantGeminiClient(tenantId),
+        getTenantLiveModel(tenantId),
+        getTenantEmbeddingModel(tenantId),
+        getCompanyProfile(tenantId, { force: true }),
+        getTenantRuntimeState(tenantId),
+      ]);
+      const runtimeInstruction = buildRuntimeInstruction(runtimeState);
+
+      session = new BrowserSession(ws, {
+        tenantId,
+        ai,
+        liveModel,
+        embeddingModel,
+        companyProfile: profile,
+        runtimeInstruction,
+        buildInstruction: buildSystemInstruction,
+        buildTools,
+        buildGreeting,
+      });
+
+      sessionTtl = setTimeout(() => {
+        if (!session) return;
         session.send({ type: 'error', message: 'This demo session has reached its time limit.' });
         session.close().finally(() => ws.close(1000, 'Session TTL reached'));
       }, Number(process.env.BROWSER_SESSION_TTL_MS ?? 15 * 60 * 1000));
 
       ws.on('message', async (raw) => {
+        if (!session) return;
         let frame;
         try { frame = JSON.parse(raw.toString()); } catch {
           ws.close(1003, 'JSON frames required'); return;
@@ -1288,26 +1434,18 @@ async function main() {
           await session.close();
         }
       });
-
-      ws.on('close', () => {
-        clearTimeout(sessionTtl);
-        const ip = ws._keralaiIp;
-        const count = browserSessionsByIp.get(ip) ?? 1;
-        if (count <= 1) browserSessionsByIp.delete(ip);
-        else browserSessionsByIp.set(ip, count - 1);
-        session.close().catch((e) => console.error('[bridge][browser] close failed:', e));
-      });
-
-      ws.on('error', (e) => console.error('[bridge][browser] WebSocket error:', e));
-    }).catch((e) => {
-      console.error('[bridge][browser] Failed to load profile:', e);
-      ws.close(1011, 'Profile load failed');
+    })().catch((e) => {
+      console.error('[bridge][browser] Session setup failed:', e?.message ?? e);
+      try { ws.close(1011, 'Session setup failed'); } catch { /* ignore */ }
     });
   });
 
   // ── Exotel handler ─────────────────────────────────────────────────────────
   wss.on('connection', (ws, req) => {
-    console.log('[bridge] New Exotel WebSocket connection from', req.socket.remoteAddress);
+    const tenant = req._tenant;
+    console.log(
+      `[bridge] New Exotel WebSocket connection from ${req.socket.remoteAddress} (tenant ${tenant?.slug ?? 'unknown'})`,
+    );
 
     // Applet URL may carry ?sample-rate=8000|16000|24000 (authoritative at start).
     const queryRate =
@@ -1369,18 +1507,38 @@ async function main() {
 
           if (session) { console.warn('[bridge] Duplicate start event — ignoring'); break; }
 
+          const tenantId = tenant.id;
+
           // Create the session synchronously (before any await) so concurrent
-          // 'start'/'media'/'stop' events always observe it.
-          const created = new CallSession(callSid, streamSid, streamKey, ws, ai, companyProfile, exotelRate);
+          // 'start'/'media'/'stop' events always observe it. The tenant-scoped
+          // Gemini client/models/profile are resolved immediately below; caller
+          // audio captured meanwhile is buffered inside the session.
+          const created = new CallSession(callSid, streamSid, streamKey, ws, null, {}, exotelRate, {
+            tenantId,
+            liveModel: GEMINI_MODEL,
+            embeddingModel: EMBEDDING_MODEL,
+          });
           session = created;
           created.caller = startMeta.from ?? startMeta.caller ?? startMeta.custom_parameters?.caller ?? 'Unknown caller';
           created.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
-          logPerf('call-start', { call: callSid, stream: streamSid, model: GEMINI_MODEL, rate: exotelRate });
+          logPerf('call-start', { call: callSid, stream: streamSid, tenant: tenant.slug, rate: exotelRate });
 
-          // Refresh settings before connecting so dashboard changes apply to this
-          // call. Falls back to the cached/startup profile on DB failure.
-          try { created.companyProfile = await getCompanyProfile({ force: true }); }
-          catch { /* keep startup profile */ }
+          // Resolve this tenant's own Gemini credential, models and profile
+          // before connecting. Dashboard changes apply to the very next call.
+          try {
+            const [ai, liveModel, embeddingModel, profile] = await Promise.all([
+              getTenantGeminiClient(tenantId),
+              getTenantLiveModel(tenantId),
+              getTenantEmbeddingModel(tenantId),
+              getCompanyProfile(tenantId, { force: true }).catch(() => created.companyProfile),
+            ]);
+            created.ai = ai;
+            created.liveModel = liveModel || created.liveModel;
+            created.embeddingModel = embeddingModel || created.embeddingModel;
+            created.companyProfile = profile ?? created.companyProfile;
+          } catch (e) {
+            console.error(`[bridge][${callSid}] Tenant setup failed:`, e?.message ?? e);
+          }
 
           // Create the DB calls row in the background so bookings can reference
           // it even though the call is still in progress.
@@ -1388,6 +1546,15 @@ async function main() {
 
           // A 'stop' may have arrived while we awaited — don't connect Gemini.
           if (created.closed) break;
+
+          // A tenant without a usable Gemini credential cannot run a call.
+          if (!created.ai) {
+            console.error(`[bridge][${callSid}] No Gemini credential for tenant ${tenant.slug} — ending call`);
+            if (session === created) session = null;
+            try { await created.close(); } catch { /* logged inside close() */ }
+            if (ws.readyState === 1) ws.close(1011, 'Tenant Gemini credential unavailable');
+            break;
+          }
 
           try {
             await created.openGeminiSession();
@@ -1440,14 +1607,14 @@ async function main() {
 ║  KeralaI Bridge — Standalone Exotel ↔ Gemini Live           ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Health check :  http://localhost:${port}/health              ║
-║  Exotel WS   :  ws://localhost:${port}/ws/exotel              ║
+║  Exotel WS   :  ws://localhost:${port}/ws/exotel/:slug        ║
 ║  Browser WS  :  ws://localhost:${port}/ws/browser             ║
 ║                                                              ║
 ║  Exotel rate : ${DEFAULT_EXOTEL_RATE} Hz (default; per-call via applet) ║
 ║  Gemini in   : ${GEMINI_INPUT_SAMPLE_RATE} Hz                              ║
 ║  Gemini out  : ${GEMINI_OUTPUT_SAMPLE_RATE} Hz                              ║
 ║  Profile TTL : ${PROFILE_TTL_MS / 1000}s                              ║
-║  CRM         : ${getCrmProvider()}                                  ║
+║  Tenants     : per-tenant credentials + models (no global key) ║
 ║  Greeting    : ${GREETING_ENABLED ? 'ON (server)' : 'OFF (external/Exotel)'}                ║
 ║  DEBUG_TIMING: ${debugTiming ? 'ON' : 'off'}                                ║
 ╚══════════════════════════════════════════════════════════════╝

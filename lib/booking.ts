@@ -123,7 +123,7 @@ export function validateBookingRequest(date: string, time: string): BookingValid
 }
 
 /** Returns the bookable slots for a date, excluding already-taken ones. */
-export async function getAvailability(date: string): Promise<{
+export async function getAvailability(tenantId: string, date: string): Promise<{
   date: string;
   slots: { time: string; available: boolean }[];
   closed: boolean;
@@ -136,7 +136,7 @@ export async function getAvailability(date: string): Promise<{
   const open = toMinutes(bookingSettings.openTime);
   const close = toMinutes(bookingSettings.closeTime);
 
-  const appointments = await getAppointments();
+  const appointments = await getAppointments(tenantId);
   const taken = new Set(
     appointments
       .filter((apt) => apt.date === date && apt.status !== "cancelled")
@@ -153,21 +153,24 @@ export async function getAvailability(date: string): Promise<{
 }
 
 /** Books a validated appointment, returning the saved record. */
-export async function bookAppointment(input: {
-  customerName: string;
-  date: string;
-  time: string;
-  reason?: string;
-  callSid?: string;
-  customerPhone?: string;
-  customerEmail?: string;
-}): Promise<{ ok: true; appointment: Appointment } | { ok: false; reason: string }> {
+export async function bookAppointment(
+  tenantId: string,
+  input: {
+    customerName: string;
+    date: string;
+    time: string;
+    reason?: string;
+    callSid?: string;
+    customerPhone?: string;
+    customerEmail?: string;
+  },
+): Promise<{ ok: true; appointment: Appointment } | { ok: false; reason: string }> {
   const validation = validateBookingRequest(input.date, input.time);
   if (!validation.ok) {
     return { ok: false, reason: validation.reason ?? "That slot is not available." };
   }
 
-  const appointments = await getAppointments();
+  const appointments = await getAppointments(tenantId);
   const clash = appointments.find(
     (apt) =>
       apt.date === validation.normalisedDate &&
@@ -190,7 +193,7 @@ export async function bookAppointment(input: {
     createdAt: new Date().toISOString(),
   };
 
-  const saved = await addAppointment(appointment);
+  const saved = await addAppointment(tenantId, appointment);
   return { ok: true, appointment: saved };
 }
 

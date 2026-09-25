@@ -1,22 +1,24 @@
 import { NextResponse } from 'next/server';
 import { getProfile, saveProfile } from '@/lib/store';
+import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return NextResponse.json(await getProfile());
+    const { tenantId } = await resolveTenantContext(request);
+    return NextResponse.json(await getProfile(tenantId));
   } catch (error) {
-    console.error('[api/company-profile] GET failed:', error);
-    return NextResponse.json({ error: 'Failed to read profile' }, { status: 500 });
+    return handleApiError(error, 'Failed to read profile');
   }
 }
 
 export async function POST(request: Request) {
   try {
+    // Company profile is workspace configuration: only owners/admins may change it.
+    const { tenantId } = await resolveTenantContext(request, { roles: ['owner', 'admin'] });
     const profile = await request.json();
-    const saved = await saveProfile(profile);
+    const saved = await saveProfile(tenantId, profile);
     return NextResponse.json({ success: true, profile: saved });
   } catch (error) {
-    console.error('[api/company-profile] POST failed:', error);
-    return NextResponse.json({ error: 'Failed to save profile' }, { status: 500 });
+    return handleApiError(error, 'Failed to save profile');
   }
 }

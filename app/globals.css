@@ -63,3 +63,18 @@ h3 {
 .skeleton {
   @apply animate-pulse rounded-lg bg-slate-200/70;
 }
+
+/* PWA safe areas — keep content clear of notches and home indicators. */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (display-mode: standalone) {
+  body {
+    overscroll-behavior-y: none;
+  }
+}

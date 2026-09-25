@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
 import { cn } from "@/lib/utils";
 import type { CallMetric, CallMetricsSummary } from "@/types";
 
@@ -126,7 +127,7 @@ export default function PerformancePage() {
 
   return (
     <div className="min-h-screen bg-[hsl(var(--background))]">
-      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-8">
+      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-[calc(env(safe-area-inset-top)+2rem)]">
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard"
@@ -157,7 +158,7 @@ export default function PerformancePage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-14 sm:px-6">
+      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-28 sm:px-6 lg:pb-14">
         {error && (
           <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             <TriangleAlert className="h-4 w-4 shrink-0" />
@@ -373,6 +374,7 @@ export default function PerformancePage() {
           </>
         )}
       </main>
+      <MobileBottomNav linkMode />
     </div>
   );
 }

@@ -46,7 +46,7 @@ The application is architected into two decoupled, independently deployable serv
 npm install
 cp .env.local.example .env.local     # fill in DATABASE_URL + Gemini keys
 npm run migrate                      # create the schema
-npm run seed                         # load company profile + knowledge base
+npm run seed                         # seed profile + knowledge into the "legacy" tenant (set SEED_TENANT_SLUG to target another)
 npm run dev                          # start Next.js dashboard (http://localhost:3000)
 npm run dev:bridge                   # start standalone audio bridge (http://localhost:3001)
 ```

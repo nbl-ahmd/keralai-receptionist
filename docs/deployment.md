@@ -121,6 +121,12 @@ per session.
 > TENANT_SECRETS_ENCRYPTION_KEY on Vercel and Render`. Fix the Render value to
 > match Vercel (do **not** regenerate), then re-save the affected credentials.
 >
+> To confirm both sides derived the same key before re-saving credentials,
+> compare the non-secret `secretsKeyFingerprint` from the dashboard's
+> `GET /api/health` with the bridge's `GET /health`, e.g.
+> `curl https://keralai-bridge.onrender.com/health`. The two 8-character
+> hashes must match; the fingerprint never reveals the key itself.
+>
 > If `LEGACY_GEMINI_API_KEY` is set on the bridge, the pre-multitenancy Gemini
 > key is imported into the legacy tenant exactly once, encrypted at rest, so
 > deployments upgrading from the single-tenant version keep working.

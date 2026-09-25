@@ -3,9 +3,11 @@
  *
  * Bridge twin of lib/net/safe-webhook-url.ts. Blocks SSRF via tenant-configured
  * CRM webhook URLs: production is HTTPS-only on ports 80/443 with no private,
- * loopback, link-local or cloud-metadata targets; outside production loopback is
- * allowed for local webhooks while metadata/link-local stays blocked. Callers
- * must also pass `redirect: 'error'` so a redirect cannot bypass validation.
+ * loopback, link-local or cloud-metadata targets; outside production only true
+ * loopback is allowed for local webhooks, while RFC1918/CGNAT/metadata/
+ * link-local stay blocked. Callers must also pass `redirect: 'error'` so a
+ * redirect cannot bypass validation. Residual DNS-rebinding (TOCTOU) risk is
+ * mitigated by production egress controls.
  */
 
 import { lookup } from 'node:dns/promises';

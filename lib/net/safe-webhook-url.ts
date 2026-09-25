@@ -8,10 +8,15 @@
  * loopback. This validates the URL and every DNS result before the request.
  *
  * In production: HTTPS only, ports 80/443 only, and no private/loopback/
- * link-local/metadata targets. Outside production, loopback is allowed so a
- * local webhook (n8n, Make, etc.) can be tested; metadata/link-local is still
- * blocked. Callers must also disable redirects (`redirect: "error"`) so a 3xx
- * cannot bounce to a blocked target after validation.
+ * link-local/metadata targets. Outside production, only true loopback is
+ * allowed so a local webhook (n8n, Make, etc.) can be tested; RFC1918, CGNAT,
+ * metadata and link-local are still blocked. Callers must also disable
+ * redirects (`redirect: "error"`) so a 3xx cannot bounce to a blocked target
+ * after validation.
+ *
+ * Residual risk: `fetch` resolves DNS again after this check, so a
+ * rebinding DNS server could still slip past (TOCTOU). Combine with network
+ * egress controls in production; pinning the validated IP is out of scope here.
  *
  * Server-only.
  */

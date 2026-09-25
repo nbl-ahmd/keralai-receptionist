@@ -37,9 +37,25 @@ export async function getTenantGeminiClient(tenantId) {
   const cached = clientCache.get(tenantId);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
-  const apiKey = await getTenantGeminiApiKey(tenantId);
+  let apiKey;
+  try {
+    apiKey = await getTenantGeminiApiKey(tenantId);
+  } catch (error) {
+    // A decryption failure almost always means the bridge's
+    // TENANT_SECRETS_ENCRYPTION_KEY does not match the dashboard's. Surface a
+    // clear, actionable error (never the ciphertext or the key).
+    const failure = new Error(
+      'The workspace Gemini credential could not be decrypted. TENANT_SECRETS_ENCRYPTION_KEY ' +
+        'must be identical on the dashboard and the bridge; re-save the key after fixing it.',
+    );
+    failure.code = 'TENANT_SECRET_DECRYPT_FAILED';
+    failure.cause = error;
+    throw failure;
+  }
   if (!apiKey) {
-    throw new Error('This workspace has no Gemini API key configured.');
+    const missing = new Error('This workspace has no Gemini API key configured.');
+    missing.code = 'TENANT_GEMINI_KEY_MISSING';
+    throw missing;
   }
   const client = new GoogleGenAI({ apiKey });
   clientCache.set(tenantId, { value: client, expiresAt: Date.now() + CACHE_TTL_MS });

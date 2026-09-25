@@ -84,6 +84,7 @@ import {
   importLegacyGeminiKeyIfNeeded,
 } from './gemini.mjs';
 import { verifyBridgeToken, verifyExotelToken } from './bridge-token.mjs';
+import { getSecretsKeyFingerprint } from './secrets.mjs';
 import { auditTenantGeminiKeys } from './secrets.mjs';
 import { BrowserSession } from './browser-session.mjs';
 import { buildRuntimeInstruction } from './shared/runtime-modes.mjs';
@@ -1300,8 +1301,16 @@ async function main() {
     }
 
     if (req.method === 'GET' && url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, service: 'keralai-bridge' }));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          service: 'keralai-bridge',
+          // Non-secret: compare with the dashboard's /api/health to confirm both
+          // processes derived the same TENANT_SECRETS_ENCRYPTION_KEY.
+          secretsKeyFingerprint: getSecretsKeyFingerprint(),
+        }),
+      );
       return;
     }
 

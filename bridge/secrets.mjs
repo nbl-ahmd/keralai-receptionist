@@ -44,6 +44,24 @@ function getEncryptionKey() {
   return cachedKey;
 }
 
+/**
+ * Non-secret fingerprint of the derived master key.
+ *
+ * Safe to expose/log: it lets an operator confirm the dashboard and the bridge
+ * derived the SAME key without ever revealing the key. A mismatch here is the
+ * usual cause of "Unsupported state or unable to authenticate data" during
+ * decryption. Mirrors getEncryptionKeyFingerprint() in lib/tenant/secrets.ts.
+ *
+ * @returns {string | null} 8 hex chars, or null when the key is not configured.
+ */
+export function getSecretsKeyFingerprint() {
+  try {
+    return crypto.createHash('sha256').update(getEncryptionKey()).digest('hex').slice(0, 8);
+  } catch {
+    return null;
+  }
+}
+
 export function decryptSecret(secret) {
   const authTag = secret.authTag ?? secret.auth_tag;
   if (!authTag) throw new Error('Secret is missing its authentication tag');

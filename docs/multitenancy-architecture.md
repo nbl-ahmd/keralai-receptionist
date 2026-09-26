@@ -144,6 +144,32 @@ and tenant-scoped. They are never embedded, and normal knowledge search excludes
 them. Active instructions are loaded per call and combined with the runtime mode
 at session initialization.
 
+## Assistant identity & behavior
+
+The system prompt is **generic and shared**. There is no hardcoded person,
+business, or language anywhere in `bridge/shared/maya-config.mjs` or
+`lib/maya-config.ts`; the same prompt is used for every workspace. All
+tenant-specific detail is injected from the tenant's `company_profile`
+(edited in Dashboard → Settings).
+
+Migration `008_assistant_config.sql` adds the tenant-scoped identity columns:
+
+- `assistant_name` — how the assistant introduces itself; empty means a generic
+  "the AI assistant".
+- `assistant_language` — preferred spoken language(s) as free text; empty means
+  "match the caller".
+- `additional_info` — extra owner-approved facts injected into the prompt.
+- `end_call_enabled` — whether the assistant may hang up once the caller clearly
+  signals they are finished. The `endCall` tool is always declared; the bridge
+  enforces this flag even if the model calls it.
+
+Existing active-instruction and runtime-mode behavior is unchanged: both are
+still loaded per call and combined with the generic prompt.
+
+`008` also normalizes the legacy transcript speaker label: rows with
+`role = 'maya'` become `role = 'assistant'` so stored transcripts stay readable
+without implying a specific person.
+
 ## Bridge routing
 
 The bridge is tenant-aware on both transports.
@@ -154,8 +180,8 @@ The bridge is tenant-aware on both transports.
   `wss://tenant:<token>@host/ws/exotel/:tenantSlug` that Exotel forwards as an
   `Authorization: Basic` header. The bridge also accepts a trailing
   `/ws/exotel/:tenantSlug/<token>` path segment. Exotel has been observed
-  stripping or mangling query parameters, so the dashboard shows the Basic-auth
-  URL first.
+  stripping or mangling query parameters, so the dashboard shows only the
+  Basic-auth URL (the query-token form remains a bridge-side fallback).
 - The bare path `/ws/exotel` is rejected — there is no default tenant.
 - Only a SHA-256 **hash** of the token is stored, in
   `tenant_bridge_credentials`. The bridge verifies with
@@ -244,7 +270,7 @@ survive a logout.
 | Gemini | `lib/gemini.ts`, `bridge/gemini.mjs` |
 | Store | `lib/store.ts`, `bridge/db.mjs` |
 | Bridge | `bridge/server.mjs`, `bridge/browser-session.mjs`, `bridge/bridge-token.mjs`, `bridge/secrets.mjs`, `bridge/crm.mjs` |
-| Migrations | `db/migrations/006_multitenancy_foundation.sql`, `db/migrations/007_tenant_scope.sql` |
+| Migrations | `db/migrations/006_multitenancy_foundation.sql`, `db/migrations/007_tenant_scope.sql`, `db/migrations/008_assistant_config.sql` |
 | APIs | `app/api/tenant/*`, `app/api/modes/*`, `app/api/voice/token/*` |
 
 See also: [`environment-variables.md`](./environment-variables.md),

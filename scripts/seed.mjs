@@ -55,12 +55,16 @@ loadEnv();
 const CHUNK_SIZE = 500;
 
 const companyProfile = {
-  name: "Domweave",
-  industry: "Web design & software development agency",
-  description: "Domweave builds websites, landing pages, web apps, and custom software for businesses.",
-  address: "India",
-  contactEmail: "hello@domweave.com",
+  name: process.env.SEED_COMPANY_NAME || "Example Co",
+  industry: "Professional services",
+  description:
+    "Example Co answers calls from customers and helps with bookings, questions, and requests.",
+  address: process.env.SEED_COMPANY_ADDRESS || "Kerala, India",
+  contactEmail: "hello@example.com",
   contactPhone: "",
+  assistantName: process.env.SEED_ASSISTANT_NAME || "Ava",
+  assistantLanguage: "Malayalam and English",
+  additionalInfo: "Open Monday to Saturday, 9 AM to 6 PM.",
 };
 
 const knowledgeItems = [
@@ -68,25 +72,25 @@ const knowledgeItems = [
     type: "text",
     title: "Services",
     content:
-      "Domweave offers four core services: (1) Business websites — marketing sites, portfolios, and brochure sites. (2) Landing pages — high-conversion single pages for campaigns and product launches. (3) Web applications — custom dashboards, internal tools, and SaaS products. (4) Custom software — bespoke backend systems and integrations built to a client's specific workflow.",
+      "Example Co provides professional services to customers. Replace this sample knowledge with your own services, hours, policies, and FAQs from the dashboard → Knowledge.",
   },
   {
     type: "text",
     title: "Process",
     content:
-      "Domweave's typical engagement starts with a discovery call to understand the client's goals, followed by a proposal with scope and timeline, then design, development, review cycles, and launch. Ongoing support and maintenance are available after launch.",
+      "A typical engagement starts with a discovery call to understand the customer's needs, followed by a proposal with scope and timeline, then delivery and follow-up support.",
   },
   {
     type: "text",
     title: "Getting a quote",
     content:
-      "Pricing depends on project scope. For an accurate quote, Maya should collect the caller's name, the type of project (website, landing page, web app, or custom software), a rough idea of their timeline, and the best way to reach them, then let them know the team will follow up with a proposal.",
+      "Pricing depends on scope. For an accurate quote, the assistant should collect the caller's name, what they need, a rough timeline, and the best way to reach them, then let them know the team will follow up with a proposal.",
   },
   {
     type: "text",
     title: "Booking a call",
     content:
-      "If a caller wants to discuss their project in detail, Maya should offer to book an appointment using the bookAppointment tool, collecting their name, preferred date/time, and a short reason (e.g. 'website redesign discussion').",
+      "If a caller wants to discuss something in detail, the assistant should offer to book an appointment using the bookAppointment tool, collecting their name, preferred date/time, and a short reason.",
   },
 ];
 
@@ -150,12 +154,16 @@ async function main() {
 
   // ── Company profile ───────────────────────────────────────────────────────
   await pool.query(
-    `insert into company_profile (tenant_id, name, industry, description, address, contact_email, contact_phone, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, now())
+    `insert into company_profile (
+       tenant_id, name, industry, description, address, contact_email, contact_phone,
+       assistant_name, assistant_language, additional_info, end_call_enabled, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, now())
      on conflict (tenant_id) do update set
        name = excluded.name, industry = excluded.industry, description = excluded.description,
        address = excluded.address, contact_email = excluded.contact_email,
-       contact_phone = excluded.contact_phone, updated_at = now()`,
+       contact_phone = excluded.contact_phone, assistant_name = excluded.assistant_name,
+       assistant_language = excluded.assistant_language, additional_info = excluded.additional_info,
+       updated_at = now()`,
     [
       tenantId,
       companyProfile.name,
@@ -164,6 +172,9 @@ async function main() {
       companyProfile.address,
       companyProfile.contactEmail,
       companyProfile.contactPhone,
+      companyProfile.assistantName,
+      companyProfile.assistantLanguage,
+      companyProfile.additionalInfo,
     ],
   );
   console.log("✓ Company profile seeded");

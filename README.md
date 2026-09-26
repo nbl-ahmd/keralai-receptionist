@@ -1,7 +1,7 @@
 # KeralAI Receptionist
 
-> **Maya** — a Malayalam-first AI voice receptionist that answers calls, answers from your own
-> knowledge base, books appointments, syncs to your CRM, and reports every call.
+> **KeralAI Receptionist** — a multitenant AI voice receptionist that answers calls, answers from
+> your own knowledge base, books appointments, syncs to your CRM, and reports every call.
 
 The platform pairs the **Gemini 2.5 Live API** (real-time speech in/out) with **Neon Postgres**
 (durable state + pgvector retrieval) and an **Exotel** phone bridge.
@@ -86,8 +86,8 @@ The bridge is configured via `render.yaml` for Render Web Service deployment (Ro
 - Resamples Exotel PCM (8 kHz) ↔ Gemini Live (16 kHz in / 24 kHz out) with precomputed ratios;
 - In-memory profile caching with TTL + version-check query;
 - Fire-and-forget background CRM sync;
-- **Dashboard-managed voice settings** (Dashboard → Settings): voice, pitch, speed, and an opening-greeting toggle/custom text, stored in `company_profile` and applied to the next call. Env vars (`MAYA_VOICE`, `MAYA_PITCH`, `MAYA_SPEED`, `MAYA_GREETING`) are fallback defaults only;
-- **Real tool execution**: on every Live `functionCall`, the matching handler runs, writes to Neon, and returns a `functionResponse`. Tools: `bookAppointment` → `appointments`; `requestCallback` → `callback_requests`; `captureQuoteRequest` → `quote_requests`; `takeMessage` → `messages`; `searchKnowledgeBase` → pgvector. Every call also writes a `call_log` row on hangup. A DB error returns a `FAILED` response so Maya never falsely confirms;
+- **Dashboard-managed assistant settings** (Dashboard → Settings): assistant name, preferred language, business/owner details, additional approved information, voice, pitch, speed, opening-greeting toggle/custom text, and automatic call ending, stored in `company_profile` and applied to the next call. Env vars (`ASSISTANT_VOICE`, `ASSISTANT_PITCH`, `ASSISTANT_SPEED`, `ASSISTANT_GREETING`) are fallback defaults only;
+- **Real tool execution**: on every Live `functionCall`, the matching handler runs, writes to Neon, and returns a `functionResponse`. Tools: `bookAppointment` → `appointments`; `requestCallback` → `callback_requests`; `captureQuoteRequest` → `quote_requests`; `takeMessage` → `messages`; `searchKnowledgeBase` → pgvector. Every call also writes a `call_log` row on hangup. A DB error returns a `FAILED` response so the assistant never falsely confirms;
 - **Inbox (CRM)** page (`/dashboard/crm` or Dashboard → Inbox): recent appointments, callback requests, quote requests, and messages, with one-click "mark handled/read" status updates;
 - Audio sample rate auto-detected per call from Exotel (`start.media_format.sample_rate` / `?sample-rate=`);
 - Shuts down gracefully on `SIGTERM`/`SIGINT`.

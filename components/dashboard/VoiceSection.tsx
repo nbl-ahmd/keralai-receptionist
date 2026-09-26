@@ -25,7 +25,10 @@ interface VoiceSectionProps {
 }
 
 export function VoiceSection({ profile, isSaving, onPatch, onSave, onStartSession }: VoiceSectionProps) {
-  const defaultGreeting = `Thank you for calling ${profile.name || "me"}. This is my AI assistant, how can I help?`;
+  const assistantName = profile.assistantName?.trim();
+  const defaultGreeting = assistantName
+    ? `Hi, this is ${assistantName} from ${profile.name || "the team"}. How can I help?`
+    : `Hi, you've reached ${profile.name || "the team"}. How can I help?`;
   const effectiveGreeting = profile.greetingText?.trim() || defaultGreeting;
 
   return (
@@ -175,31 +178,33 @@ export function VoiceSection({ profile, isSaving, onPatch, onSave, onStartSessio
             <CardTitle className="flex items-center gap-2">
               <User className="h-4 w-4 text-emerald-600" /> Assistant profile
             </CardTitle>
-            <CardDescription>Basic details the assistant uses to introduce you accurately.</CardDescription>
+            <CardDescription>
+              Basic details the assistant uses to represent this workspace accurately.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <label htmlFor="profile-name" className="text-xs font-medium text-slate-600">
-                  Your name
+                  Business / owner name
                 </label>
                 <Input
                   id="profile-name"
                   value={profile.name}
                   onChange={(e) => onPatch({ name: e.target.value })}
-                  placeholder="e.g. Nabeel"
+                  placeholder="e.g. Acme Clinic"
                   className="mt-1"
                 />
               </div>
               <div>
                 <label htmlFor="profile-role" className="text-xs font-medium text-slate-600">
-                  What you do
+                  Industry / what you do
                 </label>
                 <Input
                   id="profile-role"
                   value={profile.industry}
                   onChange={(e) => onPatch({ industry: e.target.value })}
-                  placeholder="e.g. Software engineer"
+                  placeholder="e.g. Dental clinic"
                   className="mt-1"
                 />
               </div>
@@ -229,6 +234,30 @@ export function VoiceSection({ profile, isSaving, onPatch, onSave, onStartSessio
                   className="mt-1"
                 />
               </div>
+              <div>
+                <label htmlFor="profile-assistant-name" className="text-xs font-medium text-slate-600">
+                  Assistant name
+                </label>
+                <Input
+                  id="profile-assistant-name"
+                  value={profile.assistantName ?? ""}
+                  onChange={(e) => onPatch({ assistantName: e.target.value })}
+                  placeholder="e.g. Ava"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <label htmlFor="profile-assistant-language" className="text-xs font-medium text-slate-600">
+                  Preferred language
+                </label>
+                <Input
+                  id="profile-assistant-language"
+                  value={profile.assistantLanguage ?? ""}
+                  onChange={(e) => onPatch({ assistantLanguage: e.target.value })}
+                  placeholder="e.g. Malayalam and English"
+                  className="mt-1"
+                />
+              </div>
             </div>
             <div>
               <label htmlFor="profile-location" className="text-xs font-medium text-slate-600">
@@ -244,16 +273,57 @@ export function VoiceSection({ profile, isSaving, onPatch, onSave, onStartSessio
             </div>
             <div>
               <label htmlFor="profile-about" className="text-xs font-medium text-slate-600">
-                About you
+                About
               </label>
               <Textarea
                 id="profile-about"
                 rows={3}
                 value={profile.description}
                 onChange={(e) => onPatch({ description: e.target.value })}
-                placeholder="What you work on, and how you'd like calls handled."
+                placeholder="What this business does, and how calls should be handled."
                 className="mt-1 resize-none"
               />
+            </div>
+            <div>
+              <label htmlFor="profile-additional" className="text-xs font-medium text-slate-600">
+                Additional approved information
+              </label>
+              <Textarea
+                id="profile-additional"
+                rows={3}
+                value={profile.additionalInfo ?? ""}
+                onChange={(e) => onPatch({ additionalInfo: e.target.value })}
+                placeholder="Facts the assistant may share on calls: hours, services, policies, FAQs…"
+                className="mt-1 resize-none"
+              />
+            </div>
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">End the call automatically</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    When the caller clearly signals they are finished, the assistant says goodbye and hangs up.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={profile.endCallEnabled !== false}
+                  aria-label="Toggle automatic call ending"
+                  onClick={() => onPatch({ endCallEnabled: !(profile.endCallEnabled !== false) })}
+                  className={cn(
+                    "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors",
+                    profile.endCallEnabled !== false ? "bg-emerald-500" : "bg-slate-300",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                      profile.endCallEnabled !== false ? "translate-x-6" : "translate-x-1",
+                    )}
+                  />
+                </button>
+              </div>
             </div>
             <Button onClick={onSave} disabled={isSaving} variant="outline" className="gap-1.5">
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

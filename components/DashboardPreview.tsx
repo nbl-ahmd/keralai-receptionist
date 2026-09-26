@@ -92,7 +92,7 @@ export function DashboardPreview({ className }: { className?: string }) {
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Active instruction</p>
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               </div>
-              <p className="mt-1 text-xs text-slate-700">Nabeel is in a meeting. Tell callers he will call back.</p>
+              <p className="mt-1 text-xs text-slate-700">In a meeting. Tell callers we will call back.</p>
             </div>
 
             <div className="mt-3 space-y-1.5">

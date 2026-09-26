@@ -42,7 +42,7 @@ value to Render (never regenerate), then re-save affected credentials. See
 | `GEMINI_MODEL` | Optional | Default Gemini Live model fallback (`gemini-3.8-live`). |
 | `GEMINI_EMBEDDING_MODEL` | Optional | Default embedding model fallback (`gemini-embedding-2`). |
 | `BOOKING_OPEN_TIME`, `BOOKING_CLOSE_TIME`, `BOOKING_SLOT_MINUTES`, `BOOKING_OPEN_DAYS`, `BOOKING_HORIZON_DAYS` | Optional | Booking-rule fallbacks. |
-| `MAYA_VOICE`, `MAYA_PITCH`, `MAYA_SPEED`, `MAYA_GREETING` | Optional | Voice fallbacks when a tenant has no saved value. |
+| `ASSISTANT_VOICE`, `ASSISTANT_PITCH`, `ASSISTANT_SPEED`, `ASSISTANT_GREETING` | Optional | Voice/greeting fallbacks when a tenant has no saved value. The legacy `MAYA_*` names still work. |
 | `EXOTEL_SAMPLE_RATE` | Optional | Fallback sample rate (`8000`). |
 | `PORT` | Optional | Dev server port (default `3000`). |
 
@@ -74,6 +74,12 @@ value to Render (never regenerate), then re-save affected credentials. See
 | `EMBED_TIMEOUT_MS` | Optional | Embedding request timeout (default `8000`). |
 | `CRM_TIMEOUT_MS` | Optional | CRM webhook timeout (default `8000`). |
 | `BARGE_IN_MUTE_MS` | Optional | Barge-in mute watchdog (default `2000`). |
+| `END_CALL_GRACE_MS` | Optional | Delay before the bridge hangs up after the assistant ends the call (default `900`). |
+| `GEMINI_TRANSCRIPTION_LANGUAGES` | Optional | Comma-separated input-transcription language codes (default `ml-IN,en-IN`). |
+| `GEMINI_TRANSCRIPTION_CUSTOM_VOCABULARY` | Optional | Extra words to improve recognition; tenant profile names are merged in automatically. |
+| `GEMINI_TRANSCRIPTION_MODE` | Optional | `VERBATIM` (default) or `SMART`. |
+| `GEMINI_END_SILENCE_MS` | Optional | End-of-speech silence for VAD (default `350`; lower = faster turn-taking). |
+| `GEMINI_PREFIX_PADDING_MS` | Optional | VAD prefix padding in ms (default `200`). |
 | `LATENCY_LOG`, `LATENCY_LOG_INTERVAL_MS`, `VERBOSE_AUDIO_LOG`, `SLOW_DB_MS` | Optional | Observability controls. |
 | `METRICS_ENABLED`, `METRICS_TOKEN` | Optional | `GET /metrics` controls. |
 | `DEBUG_TIMING` | Optional | Legacy per-phase timing logs. |

@@ -56,11 +56,11 @@ services:
       # ── Optional: phone bridge behaviour ──────────────────────────────────
       # - key: EXOTEL_SAMPLE_RATE
       #   value: "8000"        # 8000 (default) or 16000
-      # - key: MAYA_VOICE
+      # - key: ASSISTANT_VOICE
       #   value: Aoede         # Aoede | Kore | Zephyr | Puck | Fenrir | Charon
-      # - key: MAYA_PITCH
+      # - key: ASSISTANT_PITCH
       #   value: Normal        # Low | Normal | High
-      # - key: MAYA_SPEED
+      # - key: ASSISTANT_SPEED
       #   value: Normal        # Slow | Normal | Fast
       # - key: PG_POOL_MAX
       #   value: "10"

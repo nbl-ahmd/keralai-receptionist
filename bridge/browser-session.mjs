@@ -78,6 +78,7 @@ export class BrowserSession {
     this.pitch = 'Normal';
     this.speed = 'Normal';
     this.report = true;
+    this._endCallTimer = null;
 
     this.metrics = new CallMetrics(this.callSid);
     this._statsTimer = null;
@@ -132,7 +133,7 @@ export class BrowserSession {
     } catch {
       activeInstructions = [];
     }
-    const audioSettings = resolveLiveAudioSettings();
+    const audioSettings = resolveLiveAudioSettings(process.env, this.companyProfile);
 
     const connectStartNs = hrNow();
     const sessionPromise = this.ai.live.connect({
@@ -143,6 +144,7 @@ export class BrowserSession {
         systemInstruction: this.buildInstruction(
           this.companyProfile,
           {
+            voiceName: this.voiceName,
             pitch: this.pitch,
             speed: this.speed,
           },
@@ -210,7 +212,7 @@ export class BrowserSession {
     const inputText = message.serverContent?.inputTranscription?.text;
     if (inputText) this.addTranscript('caller', inputText);
     const outputText = message.serverContent?.outputTranscription?.text;
-    if (outputText) this.addTranscript('maya', outputText);
+    if (outputText) this.addTranscript('assistant', outputText);
 
     if (message.toolCall) {
       for (const fc of message.toolCall.functionCalls ?? []) {
@@ -241,7 +243,7 @@ export class BrowserSession {
             result = { result: 'Unable to save the appointment. Please offer another way to follow up.' };
           }
 
-          // Send tool response first — don't block Maya on CRM sync
+          // Send tool response first — don't block the assistant on CRM sync
           this.geminiSession.sendToolResponse({
             functionResponses: { id: fc.id, name: fc.name, response: result },
           });
@@ -307,6 +309,40 @@ export class BrowserSession {
           this.geminiSession.sendToolResponse({
             functionResponses: { id: fc.id, name: fc.name, response },
           });
+        } else if (fc.name === 'endCall') {
+          if (this.companyProfile?.endCallEnabled === false) {
+            this.geminiSession.sendToolResponse({
+              functionResponses: {
+                id: fc.id,
+                name: fc.name,
+                response: {
+                  result:
+                    'Ending sessions is disabled for this workspace. Say a brief, warm goodbye and let the visitor disconnect.',
+                },
+              },
+            });
+          } else {
+            if (!this.intent) this.intent = 'Conversation completed';
+            this.geminiSession.sendToolResponse({
+              functionResponses: {
+                id: fc.id,
+                name: fc.name,
+                response: { result: 'OK. The session will end now.' },
+              },
+            });
+            this.send({ type: 'ended', reason: fc.args?.reason ?? 'completed' });
+            if (!this._endCallTimer) {
+              this._endCallTimer = setTimeout(() => {
+                this._endCallTimer = null;
+                if (this.closed) return;
+                this.close().catch((error) =>
+                  console.error('[browser][relay] close after endCall failed:', error),
+                );
+                try { this.ws.close(1000, 'Assistant ended session'); } catch { /* ignore */ }
+              }, 900);
+              this._endCallTimer.unref?.();
+            }
+          }
         } else if (fc.name) {
           this.geminiSession.sendToolResponse({
             functionResponses: { id: fc.id, name: fc.name, response: { result: 'OK' } },
@@ -359,6 +395,7 @@ export class BrowserSession {
     this.closed = true;
     processMetrics.activeCalls = Math.max(0, processMetrics.activeCalls - 1);
     if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; }
+    if (this._endCallTimer) { clearTimeout(this._endCallTimer); this._endCallTimer = null; }
     const endedAt = new Date().toISOString();
     const durationSec = Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(this.startedAt)) / 1000));
     if (this.outcome === 'answered' && this.transcript.length === 0) this.outcome = 'abandoned';
@@ -381,7 +418,11 @@ export class BrowserSession {
         durationSec,
         outcome: this.outcome,
         intent: this.intent,
-        summary: this.transcript.slice(0, 4).map((t) => `${t.role === 'caller' ? 'Caller' : 'Maya'}: ${t.text}`).join(' ') || undefined,
+        summary:
+          this.transcript
+            .slice(0, 4)
+            .map((t) => `${t.role === 'caller' ? 'Caller' : (this.companyProfile?.assistantName?.trim() || 'Assistant')}: ${t.text}`)
+            .join(' ') || undefined,
         sentiment: 'neutral',
         transcript: this.transcript,
         bookingIds: this.bookingIds,

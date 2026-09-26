@@ -20,7 +20,7 @@ export interface VoiceOption {
   desc: string;
 }
 
-/** Gemini Live prebuilt voices available to Maya. */
+/** Gemini Live prebuilt voices available to the assistant. */
 export const VOICE_OPTIONS: VoiceOption[] = [
   { id: 'Aoede', label: 'Aoede', gender: 'Female', desc: 'Warm & Professional' },
   { id: 'Kore', label: 'Kore', gender: 'Female', desc: 'Calm & Professional' },
@@ -34,6 +34,10 @@ export const VOICE_PITCHES: VoicePitch[] = ['Low', 'Normal', 'High'];
 export const VOICE_SPEEDS: VoiceSpeed[] = ['Slow', 'Normal', 'Fast'];
 
 export interface CompanyProfile {
+  /**
+   * Name of the business/organisation the assistant represents. For a personal
+   * assistant setup this can be the owner's name. Never assume a specific person.
+   */
   name: string;
   industry: string;
   description: string;
@@ -44,10 +48,25 @@ export interface CompanyProfile {
   voiceName?: VoiceName;
   voicePitch?: VoicePitch;
   voiceSpeed?: VoiceSpeed;
-  /** Whether the bridge has Maya speak an opening greeting. */
+  /** Whether the bridge has the assistant speak an opening greeting. */
   greetingEnabled?: boolean;
   /** Custom opening line; when empty the default greeting is used. */
   greetingText?: string | null;
+  /**
+   * How the assistant introduces itself (e.g. "Ava"). Empty means the assistant
+   * describes itself generically ("the AI assistant"). No personal name is
+   * hardcoded anywhere.
+   */
+  assistantName?: string;
+  /**
+   * Preferred spoken language(s), free text (e.g. "Malayalam and English").
+   * Empty means "match whatever language the caller uses".
+   */
+  assistantLanguage?: string;
+  /** Extra owner-approved facts the assistant may share with callers. */
+  additionalInfo?: string;
+  /** Allow the assistant to end the call once the caller is clearly finished. */
+  endCallEnabled?: boolean;
 }
 
 export interface Appointment {
@@ -59,7 +78,7 @@ export interface Appointment {
   time: string;
   reason?: string;
   status: 'confirmed' | 'pending' | 'cancelled';
-  /** Call that produced this booking, when booked by Maya. */
+  /** Call that produced this booking, when booked by the assistant. */
   callSid?: string;
   createdAt?: string;
 }
@@ -73,7 +92,8 @@ export type CallOutcome =
   | 'in-progress';
 
 export interface TranscriptTurn {
-  role: 'caller' | 'maya';
+  /** Speaker of a transcript turn. 'assistant' never implies a specific person. */
+  role: 'caller' | 'assistant';
   text: string;
   at: string;
 }

@@ -55,8 +55,9 @@ and `TENANT_SECRETS_ENCRYPTION_KEY`. The latter two must be identical in
 
 - Migrations are filename-ordered (`db/migrations/*.sql`) and run through
   `scripts/migrate.mjs`.
-- `006_multitenancy_foundation.sql` and `007_tenant_scope.sql` are idempotent and
-  transactional; re-running is safe.
+- `006_multitenancy_foundation.sql`, `007_tenant_scope.sql`, and
+  `008_assistant_config.sql` are idempotent and transactional; re-running is
+  safe.
 - Existing single-tenant rows are backfilled into a generated legacy tenant. No
   data is deleted.
 - To claim the legacy data, set `LEGACY_TENANT_CLAIM_EMAIL` to the intended owner
@@ -142,18 +143,13 @@ platform account and no Exotel credential in the environment.
    Click **Save Exotel account**, then **Test connection** to confirm Exotel
    accepts the credentials and to list the numbers on their account.
 3. In the same page under **Exotel routing**, click **Rotate** to generate a
-   token. Two URLs are shown once:
-   - **Recommended (Basic auth)** — put this in the Voicebot applet's URL
-     field:
-     ```
-     wss://tenant:<token>@<service-name>.onrender.com/ws/exotel/<tenant-slug>
-     ```
-     Exotel moves the credentials out of the URL and sends them as an
-     `Authorization: Basic` header, which it reliably forwards.
-   - **Alternative (query token)** — if the applet rejects Basic auth:
-     ```
-     wss://<service-name>.onrender.com/ws/exotel/<tenant-slug>?token=<token>
-     ```
+   token. A single URL is shown once. Put it in the Voicebot applet's URL
+   field:
+   ```
+   wss://tenant:<token>@<service-name>.onrender.com/ws/exotel/<tenant-slug>
+   ```
+   Exotel moves the credentials out of the URL and sends them as an
+   `Authorization: Basic` header, which it reliably forwards.
 4. Paste the URL into the tester's Exotel Voicebot applet. Calls to *their*
    number now reach *their* workspace.
 5. Only a SHA-256 hash of the token is stored. Rotating invalidates the old URL
@@ -161,10 +157,11 @@ platform account and no Exotel credential in the environment.
 
 > Exotel has been observed stripping or mangling arbitrary query parameters
 > (its own docs note `token=abc` sometimes arriving as `token:abc=`). That is
-> why the dashboard now shows the Basic-auth URL first. The bridge accepts the
+> why the dashboard shows only the Basic-auth URL. The bridge still accepts the
 > token from `?token=`, a malformed `?token:<token>=` key, an `Authorization:
-> Basic` header, or a trailing `/ws/exotel/<slug>/<token>` path segment — so any
-> of these forms authenticates.
+> Basic` header, or a trailing `/ws/exotel/<slug>/<token>` path segment, as
+> resilience fallbacks — so a call authenticates even if Exotel rewrites the
+> URL.
 
 A tester with no Exotel account creates a new one (their own trial number) and
 repeats steps 1–4; nothing is shared with other tenants. The bare path
@@ -179,7 +176,7 @@ never the token itself. Watch the Render logs and match the line:
 | Log line | Meaning | Fix |
 | --- | --- | --- |
 | `[exotel-auth] rejected bare /ws/exotel …` | The Exotel applet still points at the old pre-multitenancy path. | Paste the tenant URL from Settings → Providers → Exotel routing into the applet. |
-| `[exotel-auth] upgrade … tokenPresent=no tokenSource=none` then `reason=missing_slug_or_token` | The applet URL carries the slug but no token. | Re-copy the **recommended Basic-auth URL** (or the query-token alternative) from Settings → Providers → Exotel routing; do not hand-type it. `queryParams=0` in the same line usually means Exotel stripped the query string entirely — use the Basic-auth URL. |
+| `[exotel-auth] upgrade … tokenPresent=no tokenSource=none` then `reason=missing_slug_or_token` | The applet URL carries the slug but no token. | Re-copy the Basic-auth URL from Settings → Providers → Exotel routing; do not hand-type it. `queryParams=0` in the same line usually means Exotel stripped the query string entirely. |
 | `[exotel-auth] rejected slug=… reason=unknown_slug` | The slug in the URL is wrong. | Re-copy the URL; do not rename the workspace. |
 | `[exotel-auth] rejected … reason=no_credential_configured` | No token has been generated for this workspace. | Click **Rotate** to generate one. |
 | `[exotel-auth] rejected … reason=token_mismatch tenant=…` | The token was rotated after it was pasted into Exotel. | Update the applet with the current URL. |
@@ -217,7 +214,7 @@ values differ between Vercel and Render.
 ## 7. Post-deploy checklist
 
 - [ ] `npm run build` and `npm run lint` pass.
-- [ ] `npm run migrate` applied 006 and 007; `npm run migrate:status` is clean.
+- [ ] `npm run migrate` applied 006–008; `npm run migrate:status` is clean.
 - [ ] Health check: `GET /api/health` reports `auth`, `bridgeAuth`, and
       `secretsEncryption` as `configured` (it stays public and coarse).
 - [ ] Register user A and user B; confirm each receives a distinct tenant.

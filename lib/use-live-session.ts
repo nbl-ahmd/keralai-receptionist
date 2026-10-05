@@ -37,7 +37,13 @@ export interface LiveSessionOptions {
 export interface LiveSessionState {
   isConnected: boolean;
   isConnecting: boolean;
+  /** True once a session has connected at least once (for reconnect copy). */
+  hasConnected: boolean;
   isMuted: boolean;
+  /** True while assistant audio is actively playing (assistant is speaking). */
+  isSpeaking: boolean;
+  /** Timestamp of the most recent caller barge-in, for a transient indicator. */
+  lastInterruptedAt: number | null;
   volume: number;
   error: string | null;
   transcript: TranscriptTurn[];
@@ -110,11 +116,16 @@ export function useLiveSession({
 }: LiveSessionOptions): LiveSessionState {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [hasConnected, setHasConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [lastInterruptedAt, setLastInterruptedAt] = useState<number | null>(null);
   const [volume, setVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const transcriptRef = useRef<TranscriptTurn[]>([]);
+  /** Number of assistant audio buffers currently playing. */
+  const speakingCountRef = useRef(0);
 
   const socketRef = useRef<WebSocket | null>(null);
   const inputContextRef = useRef<AudioContext | null>(null);
@@ -152,6 +163,8 @@ export function useLiveSession({
     });
     sourcesRef.current.clear();
     nextStartTimeRef.current = 0;
+    speakingCountRef.current = 0;
+    setIsSpeaking(false);
   }, []);
 
   const pushTranscript = useCallback((role: TranscriptTurn["role"], text: string) => {
@@ -228,6 +241,9 @@ export function useLiveSession({
     connectedRef.current = false;
     setIsConnected(false);
     setVolume(0);
+    setIsSpeaking(false);
+    speakingCountRef.current = 0;
+    setHasConnected(false);
   }, [clearConnectTimeout, stopPlayback]);
 
   const connect = useCallback(async () => {
@@ -259,6 +275,8 @@ export function useLiveSession({
       analyserRef.current = analyser;
 
       const url = withBridgeToken(bridgeAuth.wsUrl, bridgeAuth.token);
+      // Never surface the signed token that lives in the query string.
+      const displayUrl = url.split("?")[0];
       const socket = new WebSocket(url);
       socketRef.current = socket;
 
@@ -269,6 +287,7 @@ export function useLiveSession({
           connectedRef.current = true;
           setIsConnecting(false);
           setIsConnected(true);
+          setHasConnected(true);
           drawVisualizer();
           return;
         }
@@ -288,6 +307,7 @@ export function useLiveSession({
         }
         if (frame.type === "interrupted") {
           stopPlayback();
+          setLastInterruptedAt(Date.now());
           return;
         }
         if (frame.type === "audio" && frame.data && outputContextRef.current) {
@@ -303,7 +323,13 @@ export function useLiveSession({
           source.buffer = audioBuffer;
           source.connect(analyserRef.current || context.destination);
           if (analyserRef.current) analyserRef.current.connect(context.destination);
-          source.addEventListener("ended", () => sourcesRef.current.delete(source));
+          speakingCountRef.current += 1;
+          setIsSpeaking(true);
+          source.addEventListener("ended", () => {
+            sourcesRef.current.delete(source);
+            speakingCountRef.current = Math.max(0, speakingCountRef.current - 1);
+            if (speakingCountRef.current === 0) setIsSpeaking(false);
+          });
           source.start(nextStartTimeRef.current);
           nextStartTimeRef.current += audioBuffer.duration;
           sourcesRef.current.add(source);
@@ -313,7 +339,7 @@ export function useLiveSession({
       socket.onerror = () => {
         clearConnectTimeout();
         setIsConnecting(false);
-        setError(`Could not reach the voice relay at ${url}. Check the bridge URL.`);
+        setError(`Could not reach the voice relay at ${displayUrl}. Check the bridge URL.`);
       };
       socket.onclose = () => {
         clearConnectTimeout();
@@ -327,7 +353,7 @@ export function useLiveSession({
       connectTimeoutRef.current = window.setTimeout(() => {
         connectTimeoutRef.current = null;
         if (!connectedRef.current) {
-          setError(`The voice relay didn't respond in time (${url}). Please try again.`);
+          setError(`The voice relay didn't respond in time (${displayUrl}). Please try again.`);
           void disconnect();
         }
       }, CONNECT_TIMEOUT_MS);
@@ -345,7 +371,7 @@ export function useLiveSession({
           }));
           resolve();
         };
-        socket.addEventListener("error", () => reject(new Error(`Voice relay connection failed (${url}).`)), { once: true });
+        socket.addEventListener("error", () => reject(new Error(`Voice relay connection failed (${displayUrl}).`)), { once: true });
       });
 
       const source = inputContext.createMediaStreamSource(stream);
@@ -360,7 +386,7 @@ export function useLiveSession({
       source.connect(processor);
       processor.connect(inputContext.destination);
     } catch (error) {
-      console.error("Voice relay connection failed:", error);
+      console.error("Voice relay connection failed:", error instanceof Error ? error.message : error);
       setError(error instanceof Error ? error.message : "Could not start the voice session.");
       await disconnect();
     }
@@ -376,7 +402,10 @@ export function useLiveSession({
   return {
     isConnected,
     isConnecting,
+    hasConnected,
     isMuted,
+    isSpeaking,
+    lastInterruptedAt,
     volume,
     error,
     transcript,

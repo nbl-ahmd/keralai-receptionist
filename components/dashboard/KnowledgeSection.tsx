@@ -17,14 +17,16 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { CompanyProfile, KnowledgeChatMessage, KnowledgeItem } from "@/types";
 
-import { EmptyState, toDate } from "./shared";
+import { toDate } from "./shared";
 
 interface ParsePreview {
   content: string;
@@ -105,20 +107,20 @@ export function KnowledgeSection({
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquarePlus className="h-4 w-4 text-emerald-600" /> Describe it in your own words
+            <CardTitle className="flex items-center gap-2 font-display">
+              <MessageSquarePlus className="h-4 w-4 text-primary" aria-hidden /> Describe it in your own words
             </CardTitle>
-            <CardDescription>
-              Write naturally. The assistant drafts a clean entry and decides whether it&apos;s reference knowledge
-              or a temporary instruction.
+            <CardDescription className="mt-1">
+              Write naturally. The assistant drafts a clean entry and decides whether it&apos;s reference knowledge or
+              a temporary instruction.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <ScrollArea className="h-[260px] rounded-xl border border-slate-100 bg-slate-50/40 p-4 sm:h-[300px]">
+            <ScrollArea className="h-[260px] rounded-xl border border-border bg-surface-2/50 p-4 sm:h-[300px]">
               <div className="space-y-3">
                 {chatMessages.length === 0 && (
-                  <div className="rounded-xl border border-slate-100 bg-white p-3.5 text-sm text-slate-600">
-                    <p className="font-medium text-slate-700">Try something like:</p>
+                  <div className="rounded-xl border border-border bg-card p-3.5 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">Try something like:</p>
                     <p className="mt-1">&ldquo;We&apos;re open Monday to Saturday, 9 AM to 6 PM.&rdquo;</p>
                     <p className="mt-1">&ldquo;Tell callers I&apos;m sleeping and will call back after waking up.&rdquo;</p>
                   </div>
@@ -129,21 +131,21 @@ export function KnowledgeSection({
                     className={cn(
                       "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed",
                       message.role === "user"
-                        ? "ml-auto bg-emerald-600 text-white"
-                        : "bg-white text-slate-700 ring-1 ring-slate-200/70",
+                        ? "ml-auto bg-primary text-primary-foreground"
+                        : "bg-card text-foreground ring-1 ring-border",
                     )}
                   >
                     {message.text}
                     {message.createdItemId && (
-                      <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-emerald-700">
-                        <CheckCircle2 className="h-3 w-3" /> Saved
+                      <p className="mt-1.5 flex items-center gap-1 text-2xs font-medium text-emerald-700">
+                        <CheckCircle2 className="h-3 w-3" aria-hidden /> Saved
                       </p>
                     )}
                   </div>
                 ))}
                 {isChatting && (
-                  <div className="flex items-center gap-2 text-sm text-slate-500">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Drafting…
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Drafting…
                   </div>
                 )}
                 <div ref={chatEndRef} />
@@ -171,10 +173,10 @@ export function KnowledgeSection({
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Plus className="h-4 w-4 text-emerald-600" /> Add manually or upload
+            <CardTitle className="flex items-center gap-2 font-display">
+              <Plus className="h-4 w-4 text-primary" aria-hidden /> Add manually or upload
             </CardTitle>
-            <CardDescription>Paste text, or let the assistant extract it from a file.</CardDescription>
+            <CardDescription className="mt-1">Paste text, or let the assistant extract it from a file.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-col gap-3 sm:flex-row">
@@ -185,10 +187,7 @@ export function KnowledgeSection({
                 aria-label="Entry title"
                 className="flex-1"
               />
-              <Select
-                value={newDocType}
-                onValueChange={(v) => onNewDocTypeChange(v as KnowledgeItem["type"])}
-              >
+              <Select value={newDocType} onValueChange={(v) => onNewDocTypeChange(v as KnowledgeItem["type"])}>
                 <SelectTrigger className="sm:w-48" aria-label="Entry type">
                   <SelectValue placeholder="Type" />
                 </SelectTrigger>
@@ -203,7 +202,7 @@ export function KnowledgeSection({
               </Select>
             </div>
 
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-muted-foreground">
               {newDocType === "instruction"
                 ? "Applied directly to new calls. Not searched like reference knowledge."
                 : "Available for the assistant to reference when answering."}
@@ -221,8 +220,8 @@ export function KnowledgeSection({
               aria-label="Entry content"
             />
             <div className="flex flex-wrap gap-2">
-              <Button onClick={onAddKnowledge} disabled={isSavingDoc} className="gap-1.5">
-                {isSavingDoc ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              <Button onClick={onAddKnowledge} disabled={isSavingDoc} loading={isSavingDoc} className="gap-1.5">
+                {!isSavingDoc && <Plus className="h-4 w-4" aria-hidden />}
                 {newDocType === "instruction" ? "Save instruction" : "Save knowledge"}
               </Button>
               <input
@@ -238,21 +237,23 @@ export function KnowledgeSection({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isFileLoading || isParsing}
               >
-                <UploadCloud className="h-4 w-4" />
+                <UploadCloud className="h-4 w-4" aria-hidden />
                 {isParsing ? "Reading file…" : "Upload file"}
               </Button>
             </div>
 
             {parseError && (
-              <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                <AlertTriangle className="h-4 w-4 shrink-0" /> {parseError}
+              <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-destructive-soft px-3 py-2 text-sm text-red-700">
+                <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden /> {parseError}
               </div>
             )}
 
             {parsePreview && (
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+              <div className="space-y-3 rounded-xl border border-border bg-surface-2 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Draft from file</p>
+                  <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Draft from file
+                  </p>
                   <div className="flex gap-2">
                     <Button variant="ghost" size="sm" onClick={onDiscardParsed}>
                       Discard
@@ -274,9 +275,9 @@ export function KnowledgeSection({
                   aria-label="Draft content"
                 />
                 {parseProfile && (
-                  <div className="space-y-2 rounded-lg border border-emerald-200/70 bg-emerald-50/60 p-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">
+                  <div className="space-y-2 rounded-lg border border-emerald-200/70 bg-success-soft/60 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-2xs font-semibold uppercase tracking-wide text-emerald-800">
                         Suggested assistant profile
                       </p>
                       <Button size="sm" variant="secondary" onClick={onApplyParsedProfile}>
@@ -297,22 +298,22 @@ export function KnowledgeSection({
 
       <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
         <Card>
-          <CardHeader className="flex flex-row items-start justify-between space-y-0">
+          <CardHeader className="flex flex-row items-start justify-between gap-3">
             <div>
-              <CardTitle>Knowledge</CardTitle>
-              <CardDescription>
+              <CardTitle className="font-display">Knowledge</CardTitle>
+              <CardDescription className="mt-1">
                 Reference information the assistant can use when answering questions.
               </CardDescription>
             </div>
             <Badge variant="secondary" className="gap-1">
-              <Database className="h-3 w-3" /> {knowledge.length}
+              <Database className="h-3 w-3" aria-hidden /> {knowledge.length}
             </Badge>
           </CardHeader>
           <CardContent>
             {loading ? (
               <div className="space-y-3">
                 {[0, 1, 2].map((i) => (
-                  <div key={i} className="skeleton h-16 rounded-xl" />
+                  <Skeleton key={i} className="h-16 rounded-xl" />
                 ))}
               </div>
             ) : knowledge.length === 0 ? (
@@ -323,20 +324,20 @@ export function KnowledgeSection({
               />
             ) : (
               <ScrollArea className="h-[300px] pr-3 sm:h-[360px]">
-                <ul className="divide-y divide-slate-100">
+                <ul className="divide-y divide-border">
                   {knowledge.map((item) => (
                     <li key={item.id} className="flex items-start gap-3 py-3">
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
-                        <FileText className="h-4 w-4" />
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-3 text-slate-500">
+                        <FileText className="h-4 w-4" aria-hidden />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-slate-900">{item.title}</p>
-                        <p className="line-clamp-2 text-sm text-slate-600">{item.content}</p>
-                        <p className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+                        <p className="text-sm font-medium text-foreground">{item.title}</p>
+                        <p className="line-clamp-2 text-sm text-muted-foreground">{item.content}</p>
+                        <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                           <span className="capitalize">{item.type}</span>
-                          <span>·</span>
+                          <span aria-hidden>·</span>
                           <span>Available to assistant</span>
-                          <span>·</span>
+                          <span aria-hidden>·</span>
                           <span>{toDate(item.dateAdded).toLocaleDateString()}</span>
                         </p>
                       </div>
@@ -344,7 +345,7 @@ export function KnowledgeSection({
                         variant="ghost"
                         size="icon"
                         aria-label={`Delete ${item.title}`}
-                        className="text-slate-500 hover:text-red-600"
+                        className="text-muted-foreground hover:text-red-600"
                         onClick={() => onDelete(item.id)}
                       >
                         <Trash2 className="h-4 w-4" />
@@ -359,10 +360,12 @@ export function KnowledgeSection({
 
         <Card className={cn(activeInstructions.length > 0 && "border-emerald-200/70")}>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-emerald-600" /> Active instructions
+            <CardTitle className="flex items-center gap-2 font-display">
+              <Zap className="h-4 w-4 text-primary" aria-hidden /> Active instructions
             </CardTitle>
-            <CardDescription>Applied directly to new calls — separate from knowledge.</CardDescription>
+            <CardDescription className="mt-1">
+              Applied directly to new calls — separate from knowledge.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {activeInstructions.length === 0 ? (
@@ -373,18 +376,15 @@ export function KnowledgeSection({
               />
             ) : (
               activeInstructions.map((item) => (
-                <div key={item.id} className="rounded-xl border border-emerald-200/70 bg-emerald-50/50 p-3.5">
-                  <div className="flex items-center gap-2">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
-                    <Badge className="bg-emerald-600 text-white">Active</Badge>
-                  </div>
-                  <p className="mt-1.5 text-sm font-medium text-slate-900">{item.title}</p>
-                  <p className="mt-0.5 line-clamp-2 text-sm text-slate-600">{item.content}</p>
+                <div key={item.id} className="rounded-xl border border-emerald-200/70 bg-success-soft/50 p-3.5">
+                  <Badge variant="success">Active</Badge>
+                  <p className="mt-1.5 text-sm font-medium text-foreground">{item.title}</p>
+                  <p className="mt-0.5 line-clamp-2 text-sm text-muted-foreground">{item.content}</p>
                 </div>
               ))
             )}
             <Button variant="outline" size="sm" className="w-full gap-1.5" onClick={onGoToInstructions}>
-              <Zap className="h-3.5 w-3.5" /> Manage instructions
+              <Zap className="h-3.5 w-3.5" aria-hidden /> Manage instructions
             </Button>
           </CardContent>
         </Card>

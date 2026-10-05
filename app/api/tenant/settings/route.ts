@@ -48,7 +48,17 @@ export async function PATCH(request: Request) {
       if (typeof body.value !== 'string') {
         return NextResponse.json({ error: 'Model setting must be a string' }, { status: 400 });
       }
-      await setTenantSetting(tenantId, key, body.value.trim().slice(0, 120));
+      // Validate the model id shape, and require live models to actually be
+      // Live API models so an unsupported id can't silently break a workspace.
+      const model = body.value.trim();
+      const validShape = /^[a-z0-9][a-z0-9.\-]{0,119}$/i.test(model);
+      if (!validShape) {
+        return NextResponse.json({ error: 'Invalid model id' }, { status: 400 });
+      }
+      if (key === SETTING_KEYS.geminiLiveModel && !/live/i.test(model)) {
+        return NextResponse.json({ error: 'The live model must be a Gemini Live API model' }, { status: 400 });
+      }
+      await setTenantSetting(tenantId, key, model);
       if (key === SETTING_KEYS.geminiTextModel || key === SETTING_KEYS.geminiEmbeddingModel) {
         invalidateTenantGeminiCache(tenantId);
       }

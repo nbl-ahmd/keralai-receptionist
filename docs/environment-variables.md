@@ -81,7 +81,8 @@ value to Render (never regenerate), then re-save affected credentials. See
 | `GEMINI_END_SILENCE_MS` | Optional | End-of-speech silence for VAD (default `350`; lower = faster turn-taking). |
 | `GEMINI_PREFIX_PADDING_MS` | Optional | VAD prefix padding in ms (default `200`). |
 | `LATENCY_LOG`, `LATENCY_LOG_INTERVAL_MS`, `VERBOSE_AUDIO_LOG`, `SLOW_DB_MS` | Optional | Observability controls. |
-| `METRICS_ENABLED`, `METRICS_TOKEN` | Optional | `GET /metrics` controls. |
+| `METRICS_ENABLED`, `METRICS_TOKEN` | Optional | `GET /metrics` controls. In production metrics are disabled unless `METRICS_TOKEN` is set. |
+| `EXPOSE_SECRETS_FINGERPRINT` | Optional | Set to `1` to include `secretsKeyFingerprint` in `/health` while debugging key alignment. Off by default in production. |
 | `DEBUG_TIMING` | Optional | Legacy per-phase timing logs. |
 | `PORT` | Optional | Local dev port only; Render injects it. |
 

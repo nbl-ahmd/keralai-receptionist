@@ -6,17 +6,19 @@ import {
   CalendarClock,
   Car,
   CheckCircle2,
-  Loader2,
   Moon,
   Sparkles,
   Target,
-  TriangleAlert,
   Users,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { StatusIndicator } from "@/components/ui/status-indicator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { AssistantModeState } from "@/lib/use-assistant-mode";
@@ -52,6 +54,10 @@ function formatExpiry(iso: string | null): string | null {
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * Quick-control surface for the tenant's assistant runtime mode. The mode is
+ * applied to new calls until it is cleared or expires.
+ */
 export function AssistantModeCard({ mode }: { mode: AssistantModeState }) {
   const [showCustom, setShowCustom] = useState(false);
   const [customLabel, setCustomLabel] = useState("");
@@ -59,8 +65,8 @@ export function AssistantModeCard({ mode }: { mode: AssistantModeState }) {
   const [customExpiry, setCustomExpiry] = useState<string>("none");
 
   const status = mode.status;
-  const active = Boolean(status && status.mode !== "available");
-  const expiryText = status?.expiresAt ? formatExpiry(status.expiresAt) : null;
+  const active = Boolean(status && status.mode !== "available" && !status.expired);
+  const expiryText = active && status?.expiresAt ? formatExpiry(status.expiresAt) : null;
 
   const builtIns = useMemo(
     () => (mode.data?.modes ?? []).filter((definition) => definition.id !== "custom"),
@@ -82,46 +88,33 @@ export function AssistantModeCard({ mode }: { mode: AssistantModeState }) {
   };
 
   return (
-    <Card className="shadow-card">
+    <Card>
       <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <CardTitle className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-emerald-600" /> Assistant status
+        <div className="min-w-0">
+          <CardTitle className="flex items-center gap-2 font-display">
+            <Sparkles className="h-4 w-4 text-primary" aria-hidden /> Assistant status
           </CardTitle>
-          <CardDescription>
+          <CardDescription className="mt-1">
             Set what your assistant should say about your availability on new calls.
           </CardDescription>
         </div>
-        <div
-          className={cn(
-            "inline-flex shrink-0 items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold",
-            active ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-700",
-          )}
-        >
-          <span
-            className={cn("h-2 w-2 rounded-full", active ? "bg-amber-500" : "bg-emerald-500")}
-            aria-hidden
+        <div className="flex shrink-0 items-center gap-2">
+          <StatusIndicator
+            tone={active ? "warning" : "online"}
+            label={status?.label ?? "Available"}
+            pulse={active}
           />
-          {status?.label ?? "Available"}
         </div>
       </CardHeader>
 
       <CardContent className="space-y-5">
-        {mode.error && (
-          <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{mode.error}</span>
-          </div>
-        )}
+        {mode.error && <Notice tone="error">{mode.error}</Notice>}
 
         <div>
-          <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">Quick actions</p>
+          <p className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Quick actions</p>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
             {QUICK_MODES.map((item) => {
-              const isActive =
-                item.id === "available"
-                  ? !active
-                  : status?.mode === item.id && !status?.expired;
+              const isActive = item.id === "available" ? !active : status?.mode === item.id && !status?.expired;
               return (
                 <button
                   key={item.id}
@@ -130,13 +123,13 @@ export function AssistantModeCard({ mode }: { mode: AssistantModeState }) {
                   onClick={() => (item.id === "available" ? mode.clearMode() : mode.setMode(item.id))}
                   aria-pressed={isActive}
                   className={cn(
-                    "flex min-h-[64px] flex-col items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 disabled:opacity-60",
+                    "flex min-h-[64px] flex-col items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
                     isActive
-                      ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                      ? "border-primary/30 bg-primary-soft text-primary-soft-foreground"
+                      : "border-border bg-card text-muted-foreground hover:bg-surface-2",
                   )}
                 >
-                  <item.icon className="h-5 w-5" />
+                  <item.icon className="h-5 w-5" aria-hidden />
                   {item.label}
                 </button>
               );
@@ -145,97 +138,98 @@ export function AssistantModeCard({ mode }: { mode: AssistantModeState }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {expiryText && active ? (
-            <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-              <CalendarClock className="h-3.5 w-3.5" /> Active until {expiryText}
+          {expiryText ? (
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <CalendarClock className="h-3.5 w-3.5" aria-hidden /> Active until {expiryText}
             </span>
           ) : (
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-muted-foreground">
               {active ? "Active with no expiry." : "Callers are told you are reachable."}
             </span>
           )}
           <button
             type="button"
             onClick={() => setShowCustom((open) => !open)}
-            className="ml-auto inline-flex min-h-[44px] items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+            className="ml-auto inline-flex min-h-[44px] items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-primary-soft-foreground transition-colors hover:bg-primary-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <Sparkles className="h-3.5 w-3.5" />
+            <Sparkles className="h-3.5 w-3.5" aria-hidden />
             {showCustom ? "Hide custom mode" : "Custom mode"}
           </button>
         </div>
 
         {showCustom && (
-          <div className="space-y-3 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <label htmlFor="custom-label" className="text-xs font-medium text-slate-600">
-                  Status label
-                </label>
-                <Input
-                  id="custom-label"
-                  value={customLabel}
-                  onChange={(event) => setCustomLabel(event.target.value)}
-                  placeholder="e.g. At the clinic"
-                  maxLength={120}
+          <div className="space-y-4 rounded-2xl border border-border bg-surface-2 p-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Status label">
+                {({ id, ...aria }) => (
+                  <Input
+                    id={id}
+                    value={customLabel}
+                    onChange={(event) => setCustomLabel(event.target.value)}
+                    placeholder="e.g. At the clinic"
+                    maxLength={120}
+                    {...aria}
+                  />
+                )}
+              </Field>
+              <Field label="Ends">
+                {({ id }) => (
+                  <Select value={customExpiry} onValueChange={setCustomExpiry}>
+                    <SelectTrigger id={id} aria-label="Custom mode expiry">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {EXPIRY_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </Field>
+            </div>
+            <Field label="What should the assistant say?">
+              {({ id, ...aria }) => (
+                <Textarea
+                  id={id}
+                  value={customInstruction}
+                  onChange={(event) => setCustomInstruction(event.target.value)}
+                  rows={3}
+                  maxLength={2000}
+                  className="resize-none"
+                  placeholder="I'm at the clinic this afternoon and will call back after 5."
+                  {...aria}
                 />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="custom-expiry" className="text-xs font-medium text-slate-600">
-                  Ends
-                </label>
-                <select
-                  id="custom-expiry"
-                  value={customExpiry}
-                  onChange={(event) => setCustomExpiry(event.target.value)}
-                  className="flex h-11 w-full rounded-xl border border-input bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
-                >
-                  {EXPIRY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <label htmlFor="custom-instruction" className="text-xs font-medium text-slate-600">
-                What should the assistant say?
-              </label>
-              <Textarea
-                id="custom-instruction"
-                value={customInstruction}
-                onChange={(event) => setCustomInstruction(event.target.value)}
-                rows={3}
-                maxLength={2000}
-                className="resize-none"
-                placeholder="I'm at the clinic this afternoon and will call back after 5."
-              />
-            </div>
+              )}
+            </Field>
             <Button
               onClick={applyCustom}
               disabled={mode.busy || (!customLabel.trim() && !customInstruction.trim())}
-              className="gap-2"
+              loading={mode.busy}
+              className="w-full gap-2 sm:w-auto"
             >
-              {mode.busy && <Loader2 className="h-4 w-4 animate-spin" />}
               Apply custom mode
             </Button>
           </div>
         )}
 
-        <div className="flex flex-wrap gap-1.5">
-          {builtIns.map((definition) => (
-            <button
-              key={definition.id}
-              type="button"
-              disabled={mode.busy}
-              onClick={() => mode.setMode(definition.id)}
-              className="inline-flex min-h-[44px] items-center rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-500 transition hover:border-emerald-200 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:opacity-60"
-              title={definition.instruction}
-            >
-              {definition.label}
-            </button>
-          ))}
-        </div>
+        {builtIns.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {builtIns.map((definition) => (
+              <button
+                key={definition.id}
+                type="button"
+                disabled={mode.busy}
+                onClick={() => mode.setMode(definition.id)}
+                className="inline-flex min-h-[44px] items-center rounded-full border border-border bg-card px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary-soft-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                title={definition.instruction}
+              >
+                {definition.label}
+              </button>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

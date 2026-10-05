@@ -1,25 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import Link from "next/link";
-import {
-  ArrowLeft,
-  CalendarClock,
-  Check,
-  Loader2,
-  MessageSquare,
-  PhoneCall,
-  RefreshCw,
-  Sparkles,
-  TriangleAlert,
-} from "lucide-react";
+import { CalendarClock, Check, Loader2, MessageSquare, PhoneCall, Sparkles } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import AppShell from "@/components/app/AppShell";
+import { telHref } from "@/components/app/attention";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Card, CardContent } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Notice } from "@/components/ui/notice";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
+import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import type { Appointment, CallbackRequest, MessageRow, QuoteRequest } from "@/types";
 
@@ -39,7 +32,91 @@ function formatWhen(iso?: string | null): string {
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function statusVariant(status: string): BadgeProps["variant"] {
+  return ["confirmed", "handled", "contacted", "read"].includes(status) ? "success" : "warning";
+}
+
+/** A single inbox record rendered as a scannable card (no horizontal scroll). */
+function InboxCard({
+  title,
+  contact,
+  meta,
+  status,
+  action,
+  phone,
+}: {
+  title: ReactNode;
+  contact?: ReactNode;
+  meta: { label: string; value: ReactNode }[];
+  status?: ReactNode;
+  action?: ReactNode;
+  phone?: string | null;
+}) {
+  const tel = telHref(phone);
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-foreground">{title}</p>
+            {contact && <p className="mt-0.5 truncate text-xs text-muted-foreground">{contact}</p>}
+          </div>
+          {status}
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
+          {meta.map((item) => (
+            <div key={item.label} className="min-w-0">
+              <dt className="text-2xs uppercase tracking-wide text-muted-foreground">{item.label}</dt>
+              <dd className="mt-0.5 truncate text-sm text-foreground">{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+
+        {(action || tel) && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {tel && (
+              <Button asChild size="sm" variant="outline" className="gap-1.5">
+                <a href={tel} aria-label={`Call back ${typeof title === "string" ? title : "this caller"}`}>
+                  <PhoneCall className="h-3.5 w-3.5" aria-hidden /> Call back
+                </a>
+              </Button>
+            )}
+            {action}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function HandleButton({
+  label,
+  done,
+  busy,
+  onClick,
+}: {
+  label: string;
+  done: boolean;
+  busy: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      size="sm"
+      variant={done ? "ghost" : "outline"}
+      className="gap-1.5 whitespace-nowrap"
+      disabled={done || busy}
+      onClick={onClick}
+    >
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" aria-hidden />}
+      {done ? "Done" : label}
+    </Button>
+  );
+}
+
 export default function CrmPage() {
+  const { toast } = useToast();
   const [data, setData] = useState<InboxPayload>(EMPTY);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -47,27 +124,30 @@ export default function CrmPage() {
   const [error, setError] = useState<string | null>(null);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
 
-  const load = useCallback(async (silent = false) => {
-    if (!silent) setIsRefreshing(true);
-    try {
-      const response = await fetch("/api/inbox", { cache: "no-store" });
-      const payload = (await response.json()) as InboxPayload & { error?: string };
-      if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load");
-      setData({
-        appointments: payload.appointments ?? [],
-        callbacks: payload.callbacks ?? [],
-        quotes: payload.quotes ?? [],
-        messages: payload.messages ?? [],
-      });
-      setError(null);
-      setLastSynced(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load inbox");
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setIsRefreshing(true);
+      try {
+        const response = await fetch("/api/inbox", { cache: "no-store" });
+        const payload = (await response.json()) as InboxPayload & { error?: string };
+        if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load");
+        setData({
+          appointments: payload.appointments ?? [],
+          callbacks: payload.callbacks ?? [],
+          quotes: payload.quotes ?? [],
+          messages: payload.messages ?? [],
+        });
+        setError(null);
+        setLastSynced(new Date());
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load inbox");
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     void load(true);
@@ -93,7 +173,6 @@ export default function CrmPage() {
             read: true,
           }),
         });
-        // Reflect immediately, then reconcile with the server.
         setData((prev) => {
           if (type === "appointment") {
             return {
@@ -113,19 +192,17 @@ export default function CrmPage() {
               quotes: prev.quotes.map((q) => (q.id === id ? { ...q, status: "contacted" } : q)),
             };
           }
-          return {
-            ...prev,
-            messages: prev.messages.map((m) => (m.id === id ? { ...m, read: true } : m)),
-          };
+          return { ...prev, messages: prev.messages.map((m) => (m.id === id ? { ...m, read: true } : m)) };
         });
+        toast({ message: "Marked as handled.", tone: "success" });
         void load(true);
       } catch {
-        setError("Could not update item");
+        toast({ message: "Could not update item.", tone: "error" });
       } finally {
         setBusyId(null);
       }
     },
-    [load],
+    [load, toast],
   );
 
   const counts = useMemo(
@@ -139,292 +216,196 @@ export default function CrmPage() {
     [data],
   );
 
-  return (
-    <div className="min-h-screen bg-[hsl(var(--background))]">
-      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-[calc(env(safe-area-inset-top)+2rem)]">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-            title="Back to dashboard"
-            aria-label="Back to dashboard"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          <div className="min-w-0">
-            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Inbox</h1>
-            <p className="mt-0.5 text-sm text-slate-500">Everything your assistant captured on calls.</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="hidden text-xs text-slate-500 sm:block">
-            {lastSynced ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Syncing…"}
-          </span>
-          <Button variant="ghost" size="sm" className="gap-1.5 text-slate-600" onClick={() => load()} disabled={isRefreshing}>
-            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
-        </div>
-      </header>
+  const tabTrigger = "w-full gap-1.5 px-2";
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-28 sm:px-6 lg:pb-14">
-        {error && (
-          <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            <TriangleAlert className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
+  return (
+    <AppShell
+      eyebrow="Workspace"
+      title="Inbox"
+      description="Everything your assistant captured on calls — bookings, callbacks, quotes and messages."
+      activeRoute="inbox"
+      routeMode
+      onRefresh={() => load()}
+      refreshing={isRefreshing}
+      lastSynced={lastSynced}
+      contentWidth="narrow"
+    >
+      <div className="space-y-5">
+        {error && <Notice tone="error">{error}</Notice>}
 
         {isLoading ? (
-          <div className="flex h-64 items-center justify-center text-slate-500">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading inbox…
-          </div>
+          <SkeletonRows rows={4} />
         ) : (
           <Tabs defaultValue="appointments" className="w-full">
             <TabsList className="grid w-full grid-cols-2 gap-1.5 sm:grid-cols-4">
-              <TabsTrigger value="appointments" className="w-full gap-1.5 px-2">
-                <CalendarClock className="h-4 w-4 shrink-0" /> Appointments <Badge variant="secondary">{counts.appointments}</Badge>
+              <TabsTrigger value="appointments" className={tabTrigger}>
+                <CalendarClock className="h-4 w-4 shrink-0" aria-hidden /> Appointments
+                <Badge variant="secondary">{counts.appointments}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="callbacks" className="w-full gap-1.5 px-2">
-                <PhoneCall className="h-4 w-4 shrink-0" /> Callbacks <Badge variant="secondary">{counts.callbacks}</Badge>
+              <TabsTrigger value="callbacks" className={tabTrigger}>
+                <PhoneCall className="h-4 w-4 shrink-0" aria-hidden /> Callbacks
+                <Badge variant="secondary">{counts.callbacks}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="quotes" className="w-full gap-1.5 px-2">
-                <Sparkles className="h-4 w-4 shrink-0" /> Quotes <Badge variant="secondary">{counts.quotes}</Badge>
+              <TabsTrigger value="quotes" className={tabTrigger}>
+                <Sparkles className="h-4 w-4 shrink-0" aria-hidden /> Quotes
+                <Badge variant="secondary">{counts.quotes}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="messages" className="w-full gap-1.5 px-2">
-                <MessageSquare className="h-4 w-4 shrink-0" /> Messages <Badge variant="secondary">{counts.messages}</Badge>
+              <TabsTrigger value="messages" className={tabTrigger}>
+                <MessageSquare className="h-4 w-4 shrink-0" aria-hidden /> Messages
+                <Badge variant="secondary">{counts.messages}</Badge>
               </TabsTrigger>
             </TabsList>
 
-            {/* Appointments */}
-            <TabsContent value="appointments" className="mt-6">
-              <Card className="shadow-card">
-                <CardHeader>
-                  <CardTitle>Appointments</CardTitle>
-                  <CardDescription>Bookings arranged by your assistant (newest first).</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
-                    <Table
-                      head={["Guest", "Phone", "When", "Reason", "Status", ""]}
-                      empty="No appointments yet."
-                      rows={data.appointments.map((a) => ({
-                        id: a.id,
-                        cells: [
-                          <span key="n" className="font-semibold text-slate-900">{a.customerName}</span>,
-                          <span key="p" className="text-slate-600">{a.customerPhone || "—"}</span>,
-                          <span key="w" className="text-slate-600">{a.date} · {a.time}</span>,
-                          <span key="r" className="text-slate-500">{a.reason || "—"}</span>,
-                          <StatusBadge key="s" status={a.status} />,
-                          <HandleButton
-                            key="b"
-                            label="Confirm"
-                            done={a.status === "confirmed"}
-                            busy={busyId === a.id}
-                            onClick={() => markHandled("appointment", a.id)}
-                          />,
-                        ],
-                      }))}
+            <TabsContent value="appointments" className="mt-5">
+              {data.appointments.length === 0 ? (
+                <EmptyState
+                  icon={<CalendarClock className="h-5 w-5" />}
+                  title="No appointments yet"
+                  description="Bookings your assistant arranges with callers will appear here."
+                />
+              ) : (
+                <div className="space-y-3">
+                  {data.appointments.map((a) => (
+                    <InboxCard
+                      key={a.id}
+                      title={a.customerName}
+                      contact={a.customerPhone || "No phone provided"}
+                      phone={a.customerPhone}
+                      status={<Badge variant={statusVariant(a.status)} className="capitalize">{a.status}</Badge>}
+                      meta={[
+                        { label: "When", value: `${a.date} · ${a.time}` },
+                        { label: "Reason", value: a.reason || "—" },
+                      ]}
+                      action={
+                        <HandleButton
+                          label="Confirm"
+                          done={a.status === "confirmed"}
+                          busy={busyId === a.id}
+                          onClick={() => markHandled("appointment", a.id)}
+                        />
+                      }
                     />
-                  </ScrollArea>
-                </CardContent>
-              </Card>
+                  ))}
+                </div>
+              )}
             </TabsContent>
 
-            {/* Callbacks */}
-            <TabsContent value="callbacks" className="mt-6">
-              <Card className="shadow-card">
-                <CardHeader>
-                  <CardTitle>Callback requests</CardTitle>
-                  <CardDescription>Callers who asked to be called back.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
-                    <Table
-                      head={["Name", "Phone", "Preferred", "Reason", "Status", ""]}
-                      empty="No callback requests yet."
-                      rows={data.callbacks.map((c) => ({
-                        id: c.id,
-                        cells: [
-                          <span key="n" className="font-semibold text-slate-900">{c.customerName}</span>,
-                          <span key="p" className="text-slate-600">{c.phone || "—"}</span>,
-                          <span key="t" className="text-slate-600">{c.preferredTime || "—"}</span>,
-                          <span key="r" className="text-slate-500">{c.reason || "—"}</span>,
-                          <StatusBadge key="s" status={c.status} />,
-                          <HandleButton
-                            key="b"
-                            label="Mark handled"
-                            done={c.status === "handled"}
-                            busy={busyId === c.id}
-                            onClick={() => markHandled("callback", c.id)}
-                          />,
-                        ],
-                      }))}
+            <TabsContent value="callbacks" className="mt-5">
+              {data.callbacks.length === 0 ? (
+                <EmptyState
+                  icon={<PhoneCall className="h-5 w-5" />}
+                  title="No callback requests yet"
+                  description="Callers who ask to be called back will appear here."
+                />
+              ) : (
+                <div className="space-y-3">
+                  {data.callbacks.map((c) => (
+                    <InboxCard
+                      key={c.id}
+                      title={c.customerName}
+                      contact={c.phone || "No phone provided"}
+                      phone={c.phone}
+                      status={<Badge variant={statusVariant(c.status)} className="capitalize">{c.status}</Badge>}
+                      meta={[
+                        { label: "Preferred time", value: c.preferredTime || "Any time" },
+                        { label: "Reason", value: c.reason || "—" },
+                      ]}
+                      action={
+                        <HandleButton
+                          label="Mark handled"
+                          done={c.status === "handled"}
+                          busy={busyId === c.id}
+                          onClick={() => markHandled("callback", c.id)}
+                        />
+                      }
                     />
-                  </ScrollArea>
-                </CardContent>
-              </Card>
+                  ))}
+                </div>
+              )}
             </TabsContent>
 
-            {/* Quotes */}
-            <TabsContent value="quotes" className="mt-6">
-              <Card className="shadow-card">
-                <CardHeader>
-                  <CardTitle>Quote requests</CardTitle>
-                  <CardDescription>Callers who asked for pricing or a quote.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
-                    <Table
-                      head={["Name", "Phone", "Project", "Details", "Timeline", "Status", ""]}
-                      empty="No quote requests yet."
-                      rows={data.quotes.map((q) => ({
-                        id: q.id,
-                        cells: [
-                          <span key="n" className="font-semibold text-slate-900">{q.customerName}</span>,
-                          <span key="p" className="text-slate-600">{q.phone || "—"}</span>,
-                          <span key="pt" className="text-slate-600">{q.projectType || "—"}</span>,
-                          <span key="d" className="text-slate-500">{q.details || "—"}</span>,
-                          <span key="t" className="text-slate-600">{q.timeline || "—"}</span>,
-                          <StatusBadge key="s" status={q.status} />,
-                          <HandleButton
-                            key="b"
-                            label="Mark contacted"
-                            done={q.status === "contacted"}
-                            busy={busyId === q.id}
-                            onClick={() => markHandled("quote", q.id)}
-                          />,
-                        ],
-                      }))}
+            <TabsContent value="quotes" className="mt-5">
+              {data.quotes.length === 0 ? (
+                <EmptyState
+                  icon={<Sparkles className="h-5 w-5" />}
+                  title="No quote requests yet"
+                  description="Callers who ask for pricing or a quote will appear here."
+                />
+              ) : (
+                <div className="space-y-3">
+                  {data.quotes.map((q) => (
+                    <InboxCard
+                      key={q.id}
+                      title={q.customerName}
+                      contact={q.phone || "No phone provided"}
+                      phone={q.phone}
+                      status={<Badge variant={statusVariant(q.status)} className="capitalize">{q.status}</Badge>}
+                      meta={[
+                        { label: "Project", value: q.projectType || "—" },
+                        { label: "Timeline", value: q.timeline || "—" },
+                        { label: "Details", value: q.details || "—" },
+                      ]}
+                      action={
+                        <HandleButton
+                          label="Mark contacted"
+                          done={q.status === "contacted"}
+                          busy={busyId === q.id}
+                          onClick={() => markHandled("quote", q.id)}
+                        />
+                      }
                     />
-                  </ScrollArea>
-                </CardContent>
-              </Card>
+                  ))}
+                </div>
+              )}
             </TabsContent>
 
-            {/* Messages */}
-            <TabsContent value="messages" className="mt-6">
-              <Card className="shadow-card">
-                <CardHeader className="flex items-start justify-between">
-                  <div>
-                    <CardTitle>General messages</CardTitle>
-                    <CardDescription>Anything else callers asked to pass on.</CardDescription>
-                  </div>
-                  {counts.unhandledMessages > 0 && (
-                    <Badge variant="accent">{counts.unhandledMessages} unread</Badge>
-                  )}
-                </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-[60vh] max-h-[560px] min-h-[320px] pr-2">
-                    <div className="space-y-3">
-                      {data.messages.length === 0 && (
-                        <p className="py-10 text-center text-sm text-slate-500">No messages yet.</p>
-                      )}
-                      {data.messages.map((m) => (
-                        <div
-                          key={m.id}
-                          className={cn(
-                            "rounded-2xl border p-4",
-                            m.read ? "border-slate-100 bg-white" : "border-emerald-200 bg-emerald-50/40",
-                          )}
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="text-sm font-semibold text-slate-900">
-                              {m.customerName} {m.phone ? <span className="font-normal text-slate-500">· {m.phone}</span> : null}
-                            </span>
-                            <span className="text-xs text-slate-500">{formatWhen(m.createdAt)}</span>
+            <TabsContent value="messages" className="mt-5">
+              {data.messages.length === 0 ? (
+                <EmptyState
+                  icon={<MessageSquare className="h-5 w-5" />}
+                  title="No messages yet"
+                  description="Notes callers leave for you will appear here."
+                />
+              ) : (
+                <div className="space-y-3">
+                  {data.messages.map((m) => (
+                    <Card key={m.id} className={cn(!m.read && "border-emerald-200 bg-success-soft/40")}>
+                      <CardContent className="space-y-3 p-4 sm:p-5">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-foreground">{m.customerName}</p>
+                            {m.phone && <p className="mt-0.5 truncate text-xs text-muted-foreground">{m.phone}</p>}
                           </div>
-                          <p className="mt-2 text-sm text-slate-700">{m.message}</p>
-                          <div className="mt-3 flex items-center gap-3">
-                            <Badge variant={m.read ? "secondary" : "accent"}>{m.read ? "read" : "unread"}</Badge>
-                            <HandleButton
-                              label="Mark read"
-                              done={m.read}
-                              busy={busyId === m.id}
-                              onClick={() => markHandled("message", m.id)}
-                            />
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">{formatWhen(m.createdAt)}</span>
+                            <Badge variant={m.read ? "secondary" : "accent"}>{m.read ? "Read" : "New"}</Badge>
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  </ScrollArea>
-                </CardContent>
-              </Card>
+                        <p className="text-sm leading-relaxed text-foreground">{m.message}</p>
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          {telHref(m.phone) && (
+                            <Button asChild size="sm" variant="outline" className="gap-1.5">
+                              <a href={telHref(m.phone)!} aria-label={`Call back ${m.customerName}`}>
+                                <PhoneCall className="h-3.5 w-3.5" aria-hidden /> Call back
+                              </a>
+                            </Button>
+                          )}
+                          <HandleButton
+                            label="Mark read"
+                            done={m.read}
+                            busy={busyId === m.id}
+                            onClick={() => markHandled("message", m.id)}
+                          />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
             </TabsContent>
           </Tabs>
         )}
-      </main>
-      <MobileBottomNav linkMode activeRoute="inbox" />
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const tone =
-    status === "confirmed" || status === "handled" || status === "contacted"
-      ? "bg-emerald-100 text-emerald-800"
-      : "bg-amber-100 text-amber-800";
-  return <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold capitalize", tone)}>{status}</span>;
-}
-
-function HandleButton({
-  label,
-  done,
-  busy,
-  onClick,
-}: {
-  label: string;
-  done: boolean;
-  busy: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <Button
-      size="sm"
-      variant={done ? "ghost" : "outline"}
-      className="gap-1.5 whitespace-nowrap"
-      disabled={done || busy}
-      onClick={onClick}
-    >
-      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-      {done ? "Done" : label}
-    </Button>
-  );
-}
-
-function Table({
-  head,
-  rows,
-  empty,
-}: {
-  head: string[];
-  rows: { id: string; cells: ReactNode[] }[];
-  empty: string;
-}) {
-  if (rows.length === 0) {
-    return <p className="py-10 text-center text-sm text-slate-500">{empty}</p>;
-  }
-  return (
-    <div className="overflow-x-auto rounded-2xl border border-slate-100">
-      <table className="w-full text-sm">
-        <thead className="bg-slate-50 text-left text-xs uppercase tracking-[0.12em] text-slate-500">
-          <tr>
-            {head.map((h, i) => (
-              <th key={i} className="whitespace-nowrap px-4 py-3">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {rows.map((row) => (
-            <tr key={row.id} className="hover:bg-slate-50">
-              {row.cells.map((cell, i) => (
-                <td key={i} className="px-4 py-3 align-middle">{cell}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+      </div>
+    </AppShell>
   );
 }

@@ -1,6 +1,8 @@
-import type { ReactNode } from "react";
 import type { CallRecord } from "@/types";
-import { cn } from "@/lib/utils";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
+
+export { EmptyState } from "@/components/ui/empty-state";
+export { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 
 export function formatDuration(seconds: number): string {
   if (!seconds) return "—";
@@ -19,6 +21,19 @@ export function formatWhen(iso?: string | null): string {
     : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+export function formatFullDate(iso?: string | null): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export function toDate(value: unknown): Date {
   if (value instanceof Date) return value;
   const parsed = new Date(String(value));
@@ -34,7 +49,17 @@ export const OUTCOME_LABELS: Record<CallRecord["outcome"], string> = {
   "in-progress": "In progress",
 };
 
-/** Calm, low-saturation outcome treatments — never colour alone (each has a label). */
+/** Semantic badge variant per outcome — the label always states the outcome. */
+export const OUTCOME_VARIANTS: Record<CallRecord["outcome"], BadgeProps["variant"]> = {
+  booked: "success",
+  answered: "secondary",
+  escalated: "warning",
+  missed: "danger",
+  abandoned: "outline",
+  "in-progress": "info",
+};
+
+/** @deprecated prefer OutcomeBadge; retained for any lingering class-based use. */
 export const OUTCOME_STYLES: Record<CallRecord["outcome"], string> = {
   booked: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
   answered: "bg-slate-100 text-slate-700 ring-slate-500/20",
@@ -52,44 +77,8 @@ export function OutcomeBadge({
   className?: string;
 }) {
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset",
-        OUTCOME_STYLES[outcome],
-        className,
-      )}
-    >
+    <Badge variant={OUTCOME_VARIANTS[outcome]} className={className}>
       {OUTCOME_LABELS[outcome]}
-    </span>
-  );
-}
-
-export function EmptyState({
-  icon,
-  title,
-  description,
-  action,
-  className,
-}: {
-  icon: ReactNode;
-  title: string;
-  description?: string;
-  action?: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className={cn(
-        "flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 px-6 py-10 text-center",
-        className,
-      )}
-    >
-      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-500 ring-1 ring-slate-200/70">
-        {icon}
-      </span>
-      <p className="mt-3 text-sm font-semibold text-slate-800">{title}</p>
-      {description && <p className="mt-1 max-w-sm text-sm text-slate-500">{description}</p>}
-      {action && <div className="mt-4">{action}</div>}
-    </div>
+    </Badge>
   );
 }

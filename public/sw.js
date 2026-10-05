@@ -9,20 +9,33 @@
  *
  * This keeps the PWA installable and fast to reload without ever serving one
  * tenant's data to another, or a stale authenticated page after logout.
+ *
+ * Updates: the app shows an in-page prompt when a new worker is waiting (see
+ * components/pwa/ServiceWorkerUpdate.tsx) and posts SKIP_WAITING to activate it,
+ * so users are never stranded on an obsolete build.
  */
 
-const STATIC_CACHE = "keralai-static-v1";
+const STATIC_CACHE = "keralai-static-v2";
 const STATIC_PREFIXES = ["/_next/static/", "/icons/"];
 
 self.addEventListener("install", () => {
+  // Activate as soon as the page asks us to, via SKIP_WAITING.
   self.skipWaiting();
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      await Promise.all(keys.filter((key) => key !== STATIC_CACHE).map((key) => caches.delete(key)));
+      await Promise.all(
+        keys.filter((key) => key !== STATIC_CACHE).map((key) => caches.delete(key)),
+      );
       await self.clients.claim();
     })(),
   );

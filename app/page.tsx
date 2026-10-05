@@ -129,7 +129,7 @@ export default function LandingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[hsl(var(--background))]">
+    <div className="min-h-app bg-background">
       {/* Nav */}
       <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/85 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3.5 sm:px-6">
@@ -205,7 +205,7 @@ export default function LandingPage() {
             <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
               <Sparkles className="h-3.5 w-3.5" /> Personal AI phone assistant
             </span>
-            <h1 className="mt-5 text-4xl font-semibold leading-[1.08] tracking-tight text-slate-900 sm:text-5xl">
+            <h1 className="mt-5 font-display text-4xl font-semibold leading-[1.08] tracking-tight text-slate-900 sm:text-5xl">
               Your calls, handled. You stay informed.
             </h1>
             <p className="mt-5 max-w-xl text-lg leading-relaxed text-slate-600">
@@ -238,7 +238,7 @@ export default function LandingPage() {
       <section id="how" className="border-t border-slate-200/70 bg-white">
         <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
           <div className="max-w-2xl">
-            <h2 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
+            <h2 className="font-display text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
               Set it up once, then let it answer
             </h2>
             <p className="mt-3 text-base leading-relaxed text-slate-600">
@@ -267,7 +267,7 @@ export default function LandingPage() {
       <section id="capabilities" className="border-t border-slate-200/70">
         <div className="mx-auto grid max-w-6xl gap-10 px-4 py-16 sm:px-6 lg:grid-cols-[0.8fr_1.2fr] lg:gap-16 lg:py-20">
           <div className="lg:sticky lg:top-24 lg:self-start">
-            <h2 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
+            <h2 className="font-display text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
               What it can do
             </h2>
             <p className="mt-3 max-w-sm text-base leading-relaxed text-slate-600">
@@ -295,7 +295,7 @@ export default function LandingPage() {
       <section id="dashboard" className="border-t border-slate-200/70 bg-white">
         <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-16 sm:px-6 lg:grid-cols-2 lg:gap-16 lg:py-20">
           <div>
-            <h2 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
+            <h2 className="font-display text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
               One calm place for everything that happened
             </h2>
             <p className="mt-3 text-base leading-relaxed text-slate-600">
@@ -329,7 +329,7 @@ export default function LandingPage() {
       <section id="demo" className="border-t border-slate-200/70">
         <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
           <div className="mx-auto max-w-2xl text-center">
-            <h2 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
+            <h2 className="font-display text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
               Talk to the assistant
             </h2>
             <p className="mt-3 text-base leading-relaxed text-slate-600">
@@ -353,7 +353,7 @@ export default function LandingPage() {
         <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
           <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:gap-16">
             <div>
-              <h2 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
+              <h2 className="font-display text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
                 Honest by design
               </h2>
               <p className="mt-3 text-base leading-relaxed text-slate-600">

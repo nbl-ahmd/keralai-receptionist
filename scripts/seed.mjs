@@ -125,6 +125,13 @@ async function embed(apiKey, text, attempt = 1) {
 }
 
 async function main() {
+  // This is a local developer tool. It uses a process-global GEMINI_API_KEY for
+  // embeddings, which bypasses the per-tenant credential policy, so refuse to
+  // run against production.
+  if (process.env.NODE_ENV === "production") {
+    console.error("FATAL: scripts/seed.mjs is a development-only tool and will not run in production.");
+    process.exit(1);
+  }
   if (!process.env.DATABASE_URL) {
     console.error("FATAL: DATABASE_URL is not set.");
     process.exit(1);

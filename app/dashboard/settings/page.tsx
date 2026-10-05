@@ -1,16 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Check, Loader2, Mic, Save, Settings2, Sparkles, TriangleAlert, User } from "lucide-react";
+import { Check, Mic, Save, Settings2, Sparkles, User } from "lucide-react";
 
+import AppShell from "@/components/app/AppShell";
+import ProviderSettings from "@/components/dashboard/ProviderSettings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
+import { Segmented } from "@/components/ui/segmented";
+import { SettingsSection } from "@/components/ui/section";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Switch, SwitchField } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import ProviderSettings from "@/components/dashboard/ProviderSettings";
-import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
+import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import {
   CompanyProfile,
@@ -41,12 +46,12 @@ const EMPTY_PROFILE: CompanyProfile = {
 };
 
 export default function SettingsPage() {
+  const { toast } = useToast();
   const [profile, setProfile] = useState<CompanyProfile>(EMPTY_PROFILE);
   const [initial, setInitial] = useState<CompanyProfile>(EMPTY_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<Date | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -68,10 +73,7 @@ export default function SettingsPage() {
     void load();
   }, [load]);
 
-  const dirty = useMemo(
-    () => JSON.stringify(profile) !== JSON.stringify(initial),
-    [profile, initial],
-  );
+  const dirty = useMemo(() => JSON.stringify(profile) !== JSON.stringify(initial), [profile, initial]);
 
   const assistantName = profile.assistantName?.trim();
   const defaultGreeting = assistantName
@@ -94,10 +96,12 @@ export default function SettingsPage() {
         setProfile(merged);
         setInitial(merged);
       }
-      setSavedAt(new Date());
       setError(null);
+      toast({ message: "Settings saved.", tone: "success" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save settings");
+      const message = err instanceof Error ? err.message : "Failed to save settings";
+      setError(message);
+      toast({ message, tone: "error" });
     } finally {
       setIsSaving(false);
     }
@@ -106,353 +110,269 @@ export default function SettingsPage() {
   const patch = (changes: Partial<CompanyProfile>) => setProfile((prev) => ({ ...prev, ...changes }));
 
   return (
-    <div className="min-h-screen bg-[hsl(var(--background))]">
-      <header className="mx-auto flex max-w-5xl flex-col gap-4 px-4 pb-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-[calc(env(safe-area-inset-top)+2rem)]">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-            title="Back to dashboard"
-            aria-label="Back to dashboard"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          <div className="min-w-0">
-            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Settings</h1>
-            <p className="mt-0.5 text-sm text-slate-500">
-              Voice, greeting, workspace, and provider credentials. Saved and applied to new calls.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {savedAt && !dirty && (
-            <span className="flex items-center gap-1 text-xs font-medium text-emerald-700">
-              <Check className="h-3.5 w-3.5" /> Saved
+    <AppShell
+      eyebrow="Workspace"
+      title="Settings"
+      description="Your assistant's identity, voice and provider credentials. Saved changes apply to new calls."
+      activeRoute="settings"
+      routeMode
+      contentWidth="narrow"
+      actions={
+        <>
+          {!dirty && !isLoading && (
+            <span className="hidden items-center gap-1 text-xs font-medium text-emerald-700 sm:flex">
+              <Check className="h-3.5 w-3.5" aria-hidden /> Saved
             </span>
           )}
-          <Button className="w-full gap-2 sm:w-auto" onClick={save} disabled={isSaving || !dirty}>
-            {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          <Button size="sm" className="gap-1.5" onClick={save} disabled={isSaving || !dirty} loading={isSaving}>
+            {!isSaving && <Save className="h-4 w-4" aria-hidden />}
             {isSaving ? "Saving…" : "Save changes"}
           </Button>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-5xl space-y-6 px-4 pb-28 sm:px-6 lg:pb-14">
-        {error && (
-          <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            <TriangleAlert className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
+        </>
+      }
+    >
+      <div className="space-y-6">
+        {error && <Notice tone="error">{error}</Notice>}
 
         {isLoading ? (
-          <div className="flex h-64 items-center justify-center text-slate-500">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading settings…
+          <div className="space-y-6">
+            <Skeleton className="h-72 rounded-2xl" />
+            <Skeleton className="h-40 rounded-2xl" />
           </div>
         ) : (
           <>
             {/* Assistant profile */}
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <User className="h-4 w-4 text-emerald-600" /> Assistant profile
-                </CardTitle>
-                <CardDescription>
-                  Everything tenant-specific lives here. The assistant never invents details, so keep this accurate.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label htmlFor="setting-name" className="text-xs font-medium text-slate-600">
-                      Business / owner name
-                    </label>
+            <SettingsSection
+              icon={User}
+              title="Assistant profile"
+              description="The facts your assistant uses to represent this workspace. It never invents details, so keep this accurate."
+            >
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Business / owner name">
+                  {({ id, ...aria }) => (
                     <Input
-                      id="setting-name"
+                      id={id}
                       value={profile.name}
                       onChange={(e) => patch({ name: e.target.value })}
                       placeholder="e.g. Acme Clinic"
-                      className="mt-1"
+                      {...aria}
                     />
-                  </div>
-                  <div>
-                    <label htmlFor="setting-industry" className="text-xs font-medium text-slate-600">
-                      Industry / what you do
-                    </label>
+                  )}
+                </Field>
+                <Field label="Industry / what you do">
+                  {({ id, ...aria }) => (
                     <Input
-                      id="setting-industry"
+                      id={id}
                       value={profile.industry}
                       onChange={(e) => patch({ industry: e.target.value })}
                       placeholder="e.g. Dental clinic"
-                      className="mt-1"
+                      {...aria}
                     />
-                  </div>
-                  <div>
-                    <label htmlFor="setting-assistant-name" className="text-xs font-medium text-slate-600">
-                      Assistant name
-                    </label>
+                  )}
+                </Field>
+                <Field label="Assistant name" hint="How the assistant introduces itself.">
+                  {({ id, ...aria }) => (
                     <Input
-                      id="setting-assistant-name"
+                      id={id}
                       value={profile.assistantName ?? ""}
                       onChange={(e) => patch({ assistantName: e.target.value })}
                       placeholder="e.g. Ava"
-                      className="mt-1"
+                      {...aria}
                     />
-                  </div>
-                  <div>
-                    <label htmlFor="setting-assistant-language" className="text-xs font-medium text-slate-600">
-                      Preferred language
-                    </label>
+                  )}
+                </Field>
+                <Field label="Preferred language">
+                  {({ id, ...aria }) => (
                     <Input
-                      id="setting-assistant-language"
+                      id={id}
                       value={profile.assistantLanguage ?? ""}
                       onChange={(e) => patch({ assistantLanguage: e.target.value })}
                       placeholder="e.g. Malayalam and English"
-                      className="mt-1"
+                      {...aria}
                     />
-                  </div>
-                  <div>
-                    <label htmlFor="setting-email" className="text-xs font-medium text-slate-600">
-                      Contact email
-                    </label>
+                  )}
+                </Field>
+                <Field label="Contact email">
+                  {({ id, ...aria }) => (
                     <Input
-                      id="setting-email"
+                      id={id}
                       type="email"
+                      autoComplete="email"
                       value={profile.contactEmail}
                       onChange={(e) => patch({ contactEmail: e.target.value })}
                       placeholder="hello@example.com"
-                      className="mt-1"
+                      {...aria}
                     />
-                  </div>
-                  <div>
-                    <label htmlFor="setting-phone" className="text-xs font-medium text-slate-600">
-                      Contact phone
-                    </label>
+                  )}
+                </Field>
+                <Field label="Contact phone">
+                  {({ id, ...aria }) => (
                     <Input
-                      id="setting-phone"
+                      id={id}
                       type="tel"
+                      autoComplete="tel"
                       value={profile.contactPhone}
                       onChange={(e) => patch({ contactPhone: e.target.value })}
                       placeholder="+91 …"
-                      className="mt-1"
+                      {...aria}
                     />
-                  </div>
-                </div>
-                <div>
-                  <label htmlFor="setting-location" className="text-xs font-medium text-slate-600">
-                    Location
-                  </label>
+                  )}
+                </Field>
+              </div>
+
+              <Field label="Location">
+                {({ id, ...aria }) => (
                   <Input
-                    id="setting-location"
+                    id={id}
                     value={profile.address}
                     onChange={(e) => patch({ address: e.target.value })}
                     placeholder="e.g. Kochi, Kerala"
-                    className="mt-1"
+                    {...aria}
                   />
-                </div>
-                <div>
-                  <label htmlFor="setting-about" className="text-xs font-medium text-slate-600">
-                    About
-                  </label>
+                )}
+              </Field>
+
+              <Field label="About" hint="What this business does and how calls should be handled.">
+                {({ id, ...aria }) => (
                   <Textarea
-                    id="setting-about"
+                    id={id}
                     rows={3}
                     value={profile.description}
                     onChange={(e) => patch({ description: e.target.value })}
-                    placeholder="What this business does, and how calls should be handled."
-                    className="mt-1 resize-none"
+                    placeholder="Describe your business and the tone the assistant should use."
+                    {...aria}
                   />
-                </div>
-                <div>
-                  <label htmlFor="setting-additional" className="text-xs font-medium text-slate-600">
-                    Additional approved information
-                  </label>
+                )}
+              </Field>
+
+              <Field
+                label="Additional approved information"
+                hint="Extra facts the assistant may share: hours, services, policies, FAQs."
+              >
+                {({ id, ...aria }) => (
                   <Textarea
-                    id="setting-additional"
+                    id={id}
                     rows={3}
                     value={profile.additionalInfo ?? ""}
                     onChange={(e) => patch({ additionalInfo: e.target.value })}
-                    placeholder="Facts the assistant may share on calls: hours, services, policies, FAQs…"
-                    className="mt-1 resize-none"
+                    placeholder="Open Mon–Sat, 9 AM to 6 PM. Closed on public holidays."
+                    {...aria}
                   />
-                </div>
-                <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">End the call automatically</p>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      Hang up after the caller clearly signals they are finished.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={profile.endCallEnabled !== false}
-                    aria-label="Toggle automatic call ending"
-                    onClick={() => patch({ endCallEnabled: !(profile.endCallEnabled !== false) })}
-                    className={cn(
-                      "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition",
-                      profile.endCallEnabled !== false ? "bg-emerald-500" : "bg-slate-300",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "inline-block h-5 w-5 transform rounded-full bg-white shadow transition",
-                        profile.endCallEnabled !== false ? "translate-x-6" : "translate-x-1",
-                      )}
-                    />
-                  </button>
-                </div>
-              </CardContent>
-            </Card>
+                )}
+              </Field>
+
+              <SwitchField
+                label="End the call automatically"
+                description="Hang up after the caller clearly signals they are finished."
+                checked={profile.endCallEnabled !== false}
+                onCheckedChange={(checked) => patch({ endCallEnabled: checked })}
+              />
+            </SettingsSection>
 
             {/* Voice */}
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Mic className="h-4 w-4 text-emerald-600" /> Voice
-                </CardTitle>
-                <CardDescription>Choose the voice your assistant speaks with.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {VOICE_OPTIONS.map((voice) => {
-                    const active = profile.voiceName === voice.id;
-                    return (
-                      <button
-                        key={voice.id}
-                        type="button"
-                        onClick={() => patch({ voiceName: voice.id as VoiceName })}
-                        className={cn(
-                          "flex flex-col items-start rounded-2xl border p-4 text-left transition",
-                          active
-                            ? "border-emerald-300 bg-emerald-50/60 shadow-sm ring-1 ring-emerald-200"
-                            : "border-slate-100 bg-white hover:border-emerald-200",
-                        )}
-                      >
-                        <div className="flex w-full items-center justify-between">
-                          <span className="text-sm font-semibold text-slate-900">{voice.label}</span>
-                          <Badge variant={active ? "accent" : "secondary"}>{voice.gender}</Badge>
-                        </div>
-                        <span className="mt-1 text-xs text-slate-500">{voice.desc}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
+            <SettingsSection
+              icon={Mic}
+              title="Voice"
+              description="Choose the voice your assistant speaks with on calls."
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                {VOICE_OPTIONS.map((voice) => {
+                  const active = profile.voiceName === voice.id;
+                  return (
+                    <button
+                      key={voice.id}
+                      type="button"
+                      onClick={() => patch({ voiceName: voice.id as VoiceName })}
+                      aria-pressed={active}
+                      className={cn(
+                        "flex flex-col items-start rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        active
+                          ? "border-primary/40 bg-primary-soft/50"
+                          : "border-border bg-card hover:border-primary/20 hover:bg-surface-2",
+                      )}
+                    >
+                      <div className="flex w-full items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-foreground">{voice.label}</span>
+                        <Badge variant={active ? "default" : "secondary"}>{voice.gender}</Badge>
+                      </div>
+                      <span className="mt-1 text-xs text-muted-foreground">{voice.desc}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </SettingsSection>
 
             {/* Modulation */}
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Settings2 className="h-4 w-4 text-emerald-600" /> Modulation
-                </CardTitle>
-                <CardDescription>Pitch and speed applied to your assistant&apos;s voice.</CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-6 sm:grid-cols-2">
+            <SettingsSection
+              icon={Settings2}
+              title="Modulation"
+              description="Fine-tune pitch and speaking speed."
+            >
+              <div className="grid gap-5 sm:grid-cols-2">
                 <div>
-                  <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">Pitch</p>
-                  <div className="flex gap-2">
-                    {VOICE_PITCHES.map((option) => (
-                      <button
-                        key={option}
-                        type="button"
-                        onClick={() => patch({ voicePitch: option as VoicePitch })}
-                        className={cn(
-                          "flex-1 rounded-xl border px-3 py-2 text-sm font-semibold transition",
-                          profile.voicePitch === option
-                            ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                        )}
-                      >
-                        {option}
-                      </button>
-                    ))}
-                  </div>
+                  <p className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Pitch</p>
+                  <Segmented
+                    value={(profile.voicePitch ?? "Normal") as VoicePitch}
+                    onValueChange={(value) => patch({ voicePitch: value })}
+                    options={VOICE_PITCHES.map((option) => ({ value: option, label: option }))}
+                    aria-label="Voice pitch"
+                  />
                 </div>
                 <div>
-                  <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">Speed</p>
-                  <div className="flex gap-2">
-                    {VOICE_SPEEDS.map((option) => (
-                      <button
-                        key={option}
-                        type="button"
-                        onClick={() => patch({ voiceSpeed: option as VoiceSpeed })}
-                        className={cn(
-                          "flex-1 rounded-xl border px-3 py-2 text-sm font-semibold transition",
-                          profile.voiceSpeed === option
-                            ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                        )}
-                      >
-                        {option}
-                      </button>
-                    ))}
-                  </div>
+                  <p className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Speed</p>
+                  <Segmented
+                    value={(profile.voiceSpeed ?? "Normal") as VoiceSpeed}
+                    onValueChange={(value) => patch({ voiceSpeed: value })}
+                    options={VOICE_SPEEDS.map((option) => ({ value: option, label: option }))}
+                    aria-label="Speaking speed"
+                  />
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </SettingsSection>
 
             {/* Greeting */}
-            <Card className="shadow-card">
-              <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles className="h-4 w-4 text-emerald-600" /> Opening greeting
-                  </CardTitle>
-                  <CardDescription>
-                    Turn off when an Exotel greeting/IVR applet already greets the caller.
-                  </CardDescription>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={Boolean(profile.greetingEnabled)}
-                  onClick={() => patch({ greetingEnabled: !profile.greetingEnabled })}
-                  className={cn(
-                    "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition",
-                    profile.greetingEnabled ? "bg-emerald-500" : "bg-slate-300",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "inline-block h-5 w-5 transform rounded-full bg-white shadow transition",
-                      profile.greetingEnabled ? "translate-x-6" : "translate-x-1",
-                    )}
-                  />
-                </button>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">
-                    Custom greeting (optional)
-                  </p>
+            <SettingsSection
+              icon={Sparkles}
+              title="Opening greeting"
+              description="The first thing callers hear."
+              status={
+                <Switch
+                  checked={Boolean(profile.greetingEnabled)}
+                  onCheckedChange={(checked) => patch({ greetingEnabled: checked })}
+                  aria-label="Enable opening greeting"
+                />
+              }
+            >
+              <Field
+                label="Custom greeting (optional)"
+                hint={profile.greetingEnabled ? undefined : "Turn the greeting on to use a custom line."}
+              >
+                {({ id, ...aria }) => (
                   <Textarea
+                    id={id}
                     value={profile.greetingText ?? ""}
                     onChange={(e) => patch({ greetingText: e.target.value })}
                     rows={3}
                     placeholder={defaultGreeting}
-                    className="resize-none"
                     disabled={!profile.greetingEnabled}
+                    {...aria}
                   />
-                </div>
-                <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Preview</p>
-                  <p className="mt-1 text-sm text-slate-700">
-                    {profile.greetingEnabled
-                      ? `Assistant: “${effectiveGreeting}”`
-                      : "Greeting off — the assistant waits for the caller to speak first."}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+                )}
+              </Field>
+              <div className="rounded-xl border border-border bg-surface-2 p-4">
+                <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
+                <p className="mt-1 text-sm text-foreground">
+                  {profile.greetingEnabled
+                    ? `Assistant: “${effectiveGreeting}”`
+                    : "Greeting off — the assistant waits for the caller to speak first."}
+                </p>
+              </div>
+            </SettingsSection>
           </>
         )}
 
         <ProviderSettings />
-      </main>
-      <MobileBottomNav linkMode activeRoute="settings" />
-    </div>
+      </div>
+    </AppShell>
   );
 }

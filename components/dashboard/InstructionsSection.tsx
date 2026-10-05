@@ -1,15 +1,18 @@
 import { useState } from "react";
-import { Loader2, Plus, Trash2, Zap } from "lucide-react";
+import { Plus, Trash2, Zap } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { KnowledgeItem } from "@/types";
 
-import { EmptyState, toDate } from "./shared";
+import { toDate } from "./shared";
 
 interface InstructionsSectionProps {
   instructions: KnowledgeItem[];
@@ -48,64 +51,59 @@ export function InstructionsSection({
 
   return (
     <div className="space-y-6">
-      <Card className="border-emerald-200/70">
+      <Card className="border-emerald-200/60">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <CardTitle className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-emerald-600" /> Active instructions
+            <CardTitle className="flex items-center gap-2 font-display">
+              <Zap className="h-4 w-4 text-primary" aria-hidden /> Active instructions
             </CardTitle>
-            <CardDescription>
-              Temporary instructions that affect the assistant on new calls. They are applied directly — not
-              searched like reference knowledge.
+            <CardDescription className="mt-1">
+              Temporary instructions that affect the assistant on new calls. They are applied directly — not searched
+              like reference knowledge.
             </CardDescription>
           </div>
-          <Badge variant={activeCount > 0 ? "default" : "secondary"}>
-            {activeCount} active
-          </Badge>
+          <Badge variant={activeCount > 0 ? "success" : "secondary"}>{activeCount} active</Badge>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-4">
-            <p className="text-sm font-medium text-slate-900">Add an instruction</p>
-            <p className="mt-0.5 text-xs text-slate-500">
+        <CardContent className="space-y-5">
+          <div className="rounded-xl border border-border bg-surface-2 p-4">
+            <p className="text-sm font-medium text-foreground">Add an instruction</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
               Write it the way you&apos;d explain it to a person. It applies to calls right away.
             </p>
-            <div className="mt-3 space-y-3">
-              <div>
-                <label htmlFor="instruction-title" className="text-xs font-medium text-slate-600">
-                  Title
-                </label>
-                <Input
-                  id="instruction-title"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="e.g. In a meeting"
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <label htmlFor="instruction-content" className="text-xs font-medium text-slate-600">
-                  What should the assistant say or do?
-                </label>
-                <Textarea
-                  id="instruction-content"
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  rows={3}
-                  placeholder="e.g. We are closed today. Tell callers we will be back tomorrow."
-                  className="mt-1 resize-none"
-                />
-              </div>
+            <div className="mt-4 space-y-4">
+              <Field label="Title">
+                {({ id, ...aria }) => (
+                  <Input
+                    id={id}
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="e.g. In a meeting"
+                    {...aria}
+                  />
+                )}
+              </Field>
+              <Field label="What should the assistant say or do?">
+                {({ id, ...aria }) => (
+                  <Textarea
+                    id={id}
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    rows={3}
+                    placeholder="e.g. We are closed today. Tell callers we will be back tomorrow."
+                    className="resize-none"
+                    {...aria}
+                  />
+                )}
+              </Field>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="flex items-center gap-1.5 text-xs text-slate-500">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
-                  New instructions are activated for upcoming calls.
-                </p>
+                <p className="text-xs text-muted-foreground">New instructions are activated for upcoming calls.</p>
                 <Button
                   onClick={submit}
                   disabled={isSaving || !title.trim() || !content.trim()}
+                  loading={isSaving}
                   className="w-full gap-1.5 sm:w-auto"
                 >
-                  {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                  {!isSaving && <Plus className="h-4 w-4" aria-hidden />}
                   Add instruction
                 </Button>
               </div>
@@ -115,7 +113,7 @@ export function InstructionsSection({
           {loading ? (
             <div className="space-y-3">
               {[0, 1].map((i) => (
-                <div key={i} className="skeleton h-24 rounded-xl" />
+                <Skeleton key={i} className="h-24 rounded-xl" />
               ))}
             </div>
           ) : instructions.length === 0 ? (
@@ -133,25 +131,19 @@ export function InstructionsSection({
                     key={item.id}
                     className={cn(
                       "rounded-xl border p-4 transition-colors",
-                      active ? "border-emerald-200/80 bg-emerald-50/40" : "border-slate-200/80 bg-white",
+                      active ? "border-emerald-200/70 bg-success-soft/40" : "border-border bg-card",
                     )}
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span
-                            className={cn("h-1.5 w-1.5 rounded-full", active ? "bg-emerald-500" : "bg-slate-300")}
-                            aria-hidden
-                          />
-                          <Badge variant={active ? "default" : "secondary"}>
-                            {active ? "Active" : "Inactive"}
-                          </Badge>
-                          <span className="text-xs text-slate-500">
+                          <Badge variant={active ? "success" : "secondary"}>{active ? "Active" : "Inactive"}</Badge>
+                          <span className="text-xs text-muted-foreground">
                             Updated {toDate(item.dateAdded).toLocaleDateString()}
                           </span>
                         </div>
-                        <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
-                        <p className="mt-1 text-sm leading-relaxed text-slate-600">{item.content}</p>
+                        <p className="mt-2 text-sm font-semibold text-foreground">{item.title}</p>
+                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{item.content}</p>
                       </div>
                       <div className="flex items-center gap-1">
                         <Button
@@ -165,7 +157,7 @@ export function InstructionsSection({
                           variant="ghost"
                           size="icon"
                           aria-label={`Delete instruction ${item.title}`}
-                          className="text-slate-500 hover:text-red-600"
+                          className="text-muted-foreground hover:text-red-600"
                           onClick={() => onDelete(item.id)}
                         >
                           <Trash2 className="h-4 w-4" />

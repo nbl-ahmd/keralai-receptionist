@@ -4,26 +4,18 @@ import { useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Loader2, TriangleAlert } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/field";
+import { Notice } from "@/components/ui/notice";
 import { signIn, signUp } from "@/lib/auth/client";
 
 /** Only allow same-origin relative redirects, so `?next=` can't be abused. */
 function safeNext(value: string | null): string {
   if (value && value.startsWith("/") && !value.startsWith("//")) return value;
   return "/dashboard";
-}
-
-function FieldError({ message }: { message: string | null }) {
-  if (!message) return null;
-  return (
-    <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-      <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-      <span>{message}</span>
-    </div>
-  );
 }
 
 export function LoginForm() {
@@ -58,14 +50,16 @@ export function LoginForm() {
 
   return (
     <form className="space-y-4" onSubmit={submit} noValidate>
-      <FieldError message={error} />
+      {error && (
+        <Notice tone="error" className="items-center">
+          {error}
+        </Notice>
+      )}
 
       <div className="space-y-1.5">
-        <label htmlFor="email" className="text-sm font-medium text-slate-700">
-          Email
-        </label>
+        <Label htmlFor="login-email">Email</Label>
         <Input
-          id="email"
+          id="login-email"
           name="email"
           type="email"
           autoComplete="email"
@@ -73,15 +67,14 @@ export function LoginForm() {
           value={email}
           onChange={(event) => setEmail(event.target.value)}
           placeholder="you@example.com"
+          aria-invalid={Boolean(error) || undefined}
         />
       </div>
 
       <div className="space-y-1.5">
-        <label htmlFor="password" className="text-sm font-medium text-slate-700">
-          Password
-        </label>
+        <Label htmlFor="login-password">Password</Label>
         <Input
-          id="password"
+          id="login-password"
           name="password"
           type="password"
           autoComplete="current-password"
@@ -89,6 +82,7 @@ export function LoginForm() {
           value={password}
           onChange={(event) => setPassword(event.target.value)}
           placeholder="Your password"
+          aria-invalid={Boolean(error) || undefined}
         />
       </div>
 
@@ -97,11 +91,11 @@ export function LoginForm() {
         {isSubmitting ? "Signing in…" : "Sign in"}
       </Button>
 
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-muted-foreground">
         New here?{" "}
         <Link
           href={(next === "/dashboard" ? "/register" : `/register?next=${encodeURIComponent(next)}`) as Route}
-          className="font-semibold text-emerald-700 hover:text-emerald-800"
+          className="font-semibold text-primary-soft-foreground hover:underline"
         >
           Create your workspace
         </Link>
@@ -158,14 +152,16 @@ export function RegisterForm() {
 
   return (
     <form className="space-y-4" onSubmit={submit} noValidate>
-      <FieldError message={error} />
+      {error && (
+        <Notice tone="error" className="items-center">
+          {error}
+        </Notice>
+      )}
 
       <div className="space-y-1.5">
-        <label htmlFor="name" className="text-sm font-medium text-slate-700">
-          Name
-        </label>
+        <Label htmlFor="register-name">Name</Label>
         <Input
-          id="name"
+          id="register-name"
           name="name"
           type="text"
           autoComplete="name"
@@ -176,11 +172,9 @@ export function RegisterForm() {
       </div>
 
       <div className="space-y-1.5">
-        <label htmlFor="email" className="text-sm font-medium text-slate-700">
-          Email
-        </label>
+        <Label htmlFor="register-email">Email</Label>
         <Input
-          id="email"
+          id="register-email"
           name="email"
           type="email"
           autoComplete="email"
@@ -192,11 +186,9 @@ export function RegisterForm() {
       </div>
 
       <div className="space-y-1.5">
-        <label htmlFor="password" className="text-sm font-medium text-slate-700">
-          Password
-        </label>
+        <Label htmlFor="register-password">Password</Label>
         <Input
-          id="password"
+          id="register-password"
           name="password"
           type="password"
           autoComplete="new-password"
@@ -204,15 +196,17 @@ export function RegisterForm() {
           value={password}
           onChange={(event) => setPassword(event.target.value)}
           placeholder="At least 8 characters"
+          aria-describedby="register-password-hint"
         />
+        <p id="register-password-hint" className="text-xs text-muted-foreground">
+          At least 8 characters.
+        </p>
       </div>
 
       <div className="space-y-1.5">
-        <label htmlFor="confirm" className="text-sm font-medium text-slate-700">
-          Confirm password
-        </label>
+        <Label htmlFor="register-confirm">Confirm password</Label>
         <Input
-          id="confirm"
+          id="register-confirm"
           name="confirm"
           type="password"
           autoComplete="new-password"
@@ -228,11 +222,11 @@ export function RegisterForm() {
         {isSubmitting ? "Creating workspace…" : "Create workspace"}
       </Button>
 
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-muted-foreground">
         Already have an account?{" "}
         <Link
           href={(next === "/dashboard" ? "/login" : `/login?next=${encodeURIComponent(next)}`) as Route}
-          className="font-semibold text-emerald-700 hover:text-emerald-800"
+          className="font-semibold text-primary-soft-foreground hover:underline"
         >
           Sign in
         </Link>

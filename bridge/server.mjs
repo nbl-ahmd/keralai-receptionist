@@ -1352,8 +1352,12 @@ async function main() {
           ok: true,
           service: 'keralai-bridge',
           // Non-secret: compare with the dashboard's /api/health to confirm both
-          // processes derived the same TENANT_SECRETS_ENCRYPTION_KEY.
-          secretsKeyFingerprint: getSecretsKeyFingerprint(),
+          // processes derived the same TENANT_SECRETS_ENCRYPTION_KEY. Exposed
+          // outside production, or in production when
+          // EXPOSE_SECRETS_FINGERPRINT=1 is set (see the dashboard route).
+          ...(process.env.NODE_ENV !== 'production' || process.env.EXPOSE_SECRETS_FINGERPRINT === '1'
+            ? { secretsKeyFingerprint: getSecretsKeyFingerprint() }
+            : {}),
         }),
       );
       return;
@@ -1367,7 +1371,12 @@ async function main() {
 
     // Aggregate latency/throughput snapshot for benchmarking (no PII).
     if (req.method === 'GET' && url === '/metrics') {
-      if (process.env.METRICS_ENABLED === '0') {
+      // Disabled explicitly, or in production without a token configured — an
+      // unauthenticated metrics surface should never be the production default.
+      if (
+        process.env.METRICS_ENABLED === '0' ||
+        (process.env.NODE_ENV === 'production' && !process.env.METRICS_TOKEN)
+      ) {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('Not Found');
         return;

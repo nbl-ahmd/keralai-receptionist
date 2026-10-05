@@ -1,22 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, Inbox, Loader2, LogOut, PhoneCall, RefreshCw, Settings2, X } from "lucide-react";
+import { Loader2, PhoneCall } from "lucide-react";
 
-import CallsSection from "@/components/dashboard/CallsSection";
-import DashboardSidebar, { NAV_ITEMS, type DashboardTab } from "@/components/dashboard/DashboardSidebar";
-import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
+import AppShell from "@/components/app/AppShell";
+import { AttentionBanner } from "@/components/app/attention";
 import AssistantModeCard from "@/components/dashboard/AssistantModeCard";
+import CallsSection from "@/components/dashboard/CallsSection";
 import InstructionsSection from "@/components/dashboard/InstructionsSection";
 import KnowledgeSection from "@/components/dashboard/KnowledgeSection";
 import OverviewSection from "@/components/dashboard/OverviewSection";
+import VoiceConsole from "@/components/dashboard/VoiceConsole";
 import VoiceSection from "@/components/dashboard/VoiceSection";
 import { toDate } from "@/components/dashboard/shared";
-import LiveReceptionist from "@/components/LiveReceptionist";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { useToast } from "@/components/ui/toast";
+import type { DashboardTab } from "@/components/app/navigation";
 import { useAssistantMode } from "@/lib/use-assistant-mode";
 import { signOut } from "@/lib/auth/client";
 import {
@@ -43,8 +43,8 @@ const EMPTY_PROFILE: CompanyProfile = {
 
 const TAB_HEADINGS: Record<DashboardTab, { title: string; description: string }> = {
   overview: {
-    title: "Your AI assistant",
-    description: "Handles calls, keeps conversations natural, and passes important information back to you.",
+    title: "Overview",
+    description: "Your assistant's status and the latest activity from your calls.",
   },
   calls: {
     title: "Calls",
@@ -56,7 +56,7 @@ const TAB_HEADINGS: Record<DashboardTab, { title: string; description: string }>
   },
   instructions: {
     title: "Active instructions",
-    description: "Temporary behavior that applies to new calls until you turn it off.",
+    description: "Temporary behaviour that applies to new calls until you turn it off.",
   },
   voice: {
     title: "Voice",
@@ -65,6 +65,8 @@ const TAB_HEADINGS: Record<DashboardTab, { title: string; description: string }>
 };
 
 export default function DashboardPage() {
+  const { toast } = useToast();
+
   const [profile, setProfile] = useState<CompanyProfile>(EMPTY_PROFILE);
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeItem[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -95,7 +97,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const applyHash = () => {
       const key = window.location.hash.replace(/^#/, "") as DashboardTab;
-      if (NAV_ITEMS.some((item) => item.key === key)) setActiveTab(key);
+      if (NAV_KEYS.includes(key)) setActiveTab(key);
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -127,8 +129,6 @@ export default function DashboardPage() {
   const [parseProfile, setParseProfile] = useState<Partial<CompanyProfile> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [banner, setBanner] = useState<{ message: string; tone: "info" | "success" | "warn" } | null>(null);
-  const bannerTimeoutRef = useRef<number | NodeJS.Timeout | null>(null);
   // Avoid clobbering in-progress profile edits during background polling.
   const profileDirtyRef = useRef(false);
 
@@ -146,12 +146,6 @@ export default function DashboardPage() {
     router.replace("/login");
     router.refresh();
   }, [router]);
-
-  const triggerBanner = useCallback((message: string, tone: "info" | "success" | "warn" = "info") => {
-    if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current as number);
-    setBanner({ message, tone });
-    bannerTimeoutRef.current = window.setTimeout(() => setBanner(null), 3200);
-  }, []);
 
   // ── Data loading ──────────────────────────────────────────────────────────
   const loadAll = useCallback(
@@ -191,13 +185,13 @@ export default function DashboardPage() {
         setLastSynced(new Date());
       } catch (error) {
         console.error("Failed to load dashboard data", error);
-        if (!silent) triggerBanner("Could not load dashboard data.", "warn");
+        if (!silent) toast({ message: "Could not load dashboard data.", tone: "error" });
       } finally {
         setIsLoading(false);
         setIsRefreshing(false);
       }
     },
-    [triggerBanner],
+    [toast],
   );
 
   useEffect(() => {
@@ -241,10 +235,13 @@ export default function DashboardPage() {
     );
   }, [selectedCall, appointments]);
 
-  const openCall = useCallback((id: string) => {
-    setSelectedCallId(id);
-    selectTab("calls");
-  }, [selectTab]);
+  const openCall = useCallback(
+    (id: string) => {
+      setSelectedCallId(id);
+      selectTab("calls");
+    },
+    [selectTab],
+  );
 
   // ── Knowledge actions ─────────────────────────────────────────────────────
   const persistKnowledgeItem = async (item: KnowledgeItem) => {
@@ -278,7 +275,7 @@ export default function DashboardPage() {
 
   const addKnowledgeItem = async () => {
     if (!newDocTitle.trim() || !newDocContent.trim()) {
-      triggerBanner("Add a title and content first.", "warn");
+      toast({ message: "Add a title and content first.", tone: "warning" });
       return;
     }
     setIsSavingDoc(true);
@@ -296,17 +293,15 @@ export default function DashboardPage() {
       setNewDocContent("");
       setNewDocTitle("");
       if (isInstruction) {
-        triggerBanner("Instruction saved and active.", "success");
+        toast({ message: "Instruction saved and active.", tone: "success" });
       } else {
-        triggerBanner(
-          result.warning
-            ? "Saved, but it may take a moment to become searchable."
-            : "Knowledge saved.",
-          result.warning ? "warn" : "success",
-        );
+        toast({
+          message: result.warning ? "Saved — it may take a moment to become searchable." : "Knowledge saved.",
+          tone: result.warning ? "warning" : "success",
+        });
       }
     } catch {
-      triggerBanner("Failed to save. Please try again.", "warn");
+      toast({ message: "Failed to save. Please try again.", tone: "error" });
     } finally {
       setIsSavingDoc(false);
     }
@@ -323,10 +318,10 @@ export default function DashboardPage() {
     };
     try {
       await persistKnowledgeItem(item);
-      triggerBanner("Instruction saved and active.", "success");
+      toast({ message: "Instruction saved and active.", tone: "success" });
       return true;
     } catch {
-      triggerBanner("Failed to save instruction.", "warn");
+      toast({ message: "Failed to save instruction.", tone: "error" });
       return false;
     }
   };
@@ -335,9 +330,12 @@ export default function DashboardPage() {
     const updated: KnowledgeItem = { ...item, isActive: !item.isActive };
     try {
       await persistKnowledgeItem(updated);
-      triggerBanner(updated.isActive ? "Instruction activated." : "Instruction turned off.", "success");
+      toast({
+        message: updated.isActive ? "Instruction activated." : "Instruction turned off.",
+        tone: "success",
+      });
     } catch {
-      triggerBanner("Failed to update instruction.", "warn");
+      toast({ message: "Failed to update instruction.", tone: "error" });
     }
   };
 
@@ -345,9 +343,9 @@ export default function DashboardPage() {
     setKnowledgeBase((prev) => prev.filter((item) => item.id !== id));
     try {
       await fetch(`/api/knowledge?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-      triggerBanner("Removed.", "success");
+      toast({ message: "Removed.", tone: "success" });
     } catch {
-      triggerBanner("Failed to remove item.", "warn");
+      toast({ message: "Failed to remove item.", tone: "error" });
       loadAll(true);
     }
   };
@@ -502,9 +500,9 @@ export default function DashboardPage() {
       await persistKnowledgeItem(item);
       setParsePreview(null);
       setParseProfile(null);
-      triggerBanner("File added to knowledge.", "success");
+      toast({ message: "File added to knowledge.", tone: "success" });
     } catch {
-      triggerBanner("Failed to save the file.", "warn");
+      toast({ message: "Failed to save the file.", tone: "error" });
     }
   };
 
@@ -518,7 +516,7 @@ export default function DashboardPage() {
       contactPhone: parseProfile.contactPhone || profile.contactPhone,
       contactEmail: parseProfile.contactEmail || profile.contactEmail,
     });
-    triggerBanner("Details applied. Remember to save.", "info");
+    toast({ message: "Details applied. Remember to save.", tone: "info" });
   };
 
   const saveProfile = async () => {
@@ -530,9 +528,9 @@ export default function DashboardPage() {
         body: JSON.stringify(profile),
       });
       profileDirtyRef.current = false;
-      triggerBanner("Changes saved.", "success");
+      toast({ message: "Changes saved.", tone: "success" });
     } catch {
-      triggerBanner("Failed to save changes.", "warn");
+      toast({ message: "Failed to save changes.", tone: "error" });
     } finally {
       setIsSavingProfile(false);
     }
@@ -554,7 +552,7 @@ export default function DashboardPage() {
     } catch {
       console.error("Failed to persist booking");
     }
-    triggerBanner("Booking captured from the live session.", "success");
+    toast({ message: "Booking captured from the live session.", tone: "success" });
   };
 
   const startVoiceSession = (autoConnect = false) => {
@@ -566,306 +564,151 @@ export default function DashboardPage() {
   const heading = TAB_HEADINGS[activeTab];
 
   return (
-    <div className="min-h-screen bg-[hsl(var(--background))]">
-      <header className="mx-auto max-w-7xl px-4 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:px-6 lg:pt-[calc(env(safe-area-inset-top)+2rem)]">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-start gap-3">
-            <Link
-              href="/"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-sm font-bold text-white transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 lg:hidden"
-              title="Back to site"
-              aria-label="Back to site"
-            >
-              KA
-            </Link>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-semibold tracking-tight text-slate-900">{heading.title}</h1>
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
-                    configured ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700",
-                  )}
-                >
-                  <span
-                    className={cn("h-1.5 w-1.5 rounded-full", configured ? "bg-emerald-500" : "bg-amber-500")}
-                    aria-hidden
-                  />
-                  {configured ? "Assistant configured" : "Setup needed"}
-                </span>
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
-                    modeActive ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-600",
-                  )}
-                  title={
-                    assistantMode.status?.expiresAt
-                      ? `Until ${new Date(assistantMode.status.expiresAt).toLocaleString()}`
-                      : undefined
-                  }
-                >
-                  <span
-                    className={cn("h-1.5 w-1.5 rounded-full", modeActive ? "bg-amber-500" : "bg-emerald-500")}
-                    aria-hidden
-                  />
-                  {assistantMode.status?.label ?? "Available"}
-                </span>
-              </div>
-              <p className="mt-0.5 max-w-2xl text-sm text-slate-500">{heading.description}</p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="hidden text-xs text-slate-500 sm:block">
-              {lastSynced
-                ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-                : "Syncing…"}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-1.5 text-slate-600"
-              onClick={() => loadAll()}
-              disabled={isRefreshing}
-              aria-label="Refresh data"
-            >
-              <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
-              <span className="hidden sm:inline">Refresh</span>
-            </Button>
-            <Button size="sm" className="gap-1.5" onClick={() => startVoiceSession(true)}>
-              <PhoneCall className="h-4 w-4" />
-              <span className="hidden sm:inline">Start live session</span>
-              <span className="sm:hidden">Live session</span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-1.5 text-slate-600"
-              onClick={handleSignOut}
-              aria-label="Sign out"
-              title="Sign out"
-            >
-              <LogOut className="h-4 w-4" />
-              <span className="hidden sm:inline">Sign out</span>
-            </Button>
-          </div>
-        </div>
-
-        {/* Mobile navigation */}
-        <nav
-          className="mt-4 flex gap-2 overflow-x-auto pb-1 lg:hidden"
-          aria-label="Assistant sections"
-        >
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => selectTab(item.key)}
-              aria-current={activeTab === item.key ? "page" : undefined}
-              className={cn(
-                "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1",
-                activeTab === item.key
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-slate-200 bg-white text-slate-600",
-              )}
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </button>
-          ))}
-          <Link
-            href="/dashboard/crm"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-          >
-            <Inbox className="h-4 w-4" />
-            Inbox
-          </Link>
-          <Link
-            href="/dashboard/settings"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-          >
-            <Settings2 className="h-4 w-4" />
-            Settings
-          </Link>
-        </nav>
-      </header>
-
-      {banner && (
-        <div className="mx-auto mt-4 max-w-7xl px-4 sm:px-6">
-          <div
-            role="status"
-            className={cn(
-              "flex items-center justify-between gap-3 rounded-xl border px-4 py-2.5 text-sm",
-              banner.tone === "success" && "border-emerald-200 bg-emerald-50 text-emerald-800",
-              banner.tone === "info" && "border-slate-200 bg-white text-slate-700",
-              banner.tone === "warn" && "border-amber-200 bg-amber-50 text-amber-800",
-            )}
-          >
-            <span className="flex items-center gap-2">
-              {banner.tone === "success" && <Check className="h-4 w-4" />}
-              {banner.message}
-            </span>
-            <button
-              type="button"
-              className="text-xs font-medium opacity-70 transition-opacity hover:opacity-100"
-              onClick={() => setBanner(null)}
-              aria-label="Dismiss notification"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
-      <main className="mx-auto grid max-w-7xl gap-6 px-4 pb-28 pt-6 sm:px-6 lg:grid-cols-[240px_1fr] lg:pb-14">
-        <DashboardSidebar
-          activeTab={activeTab}
-          onSelect={selectTab}
-          ownerName={profile.name}
-          configured={configured}
-        />
-
-        <section className="min-w-0">
-          {activeTab === "overview" && (
-            <>
-              <AssistantModeCard mode={assistantMode} />
-              <div className="mt-6">
-                <OverviewSection
-                  calls={calls}
-                  callbacks={callbacks}
-                  messages={messages}
-                  knowledge={knowledgeItems}
-                  instructions={instructionItems}
-                  appointments={appointments}
-                  loading={isLoading}
-                  onOpenCall={openCall}
-                  onGoTo={selectTab}
-                  onToggleInstruction={toggleInstructionActive}
-                />
-              </div>
-            </>
-          )}
-
-          {activeTab === "calls" && (
-            <CallsSection
-              filteredCalls={filteredCalls}
-              callFilter={callFilter}
-              onFilterChange={setCallFilter}
-              selectedCall={selectedCall}
-              callBookings={callBookings}
-              loading={isLoading}
-              onSelectCall={setSelectedCallId}
-            />
-          )}
-
-          {activeTab === "knowledge" && (
-            <KnowledgeSection
+    <>
+      <AppShell
+        title={heading.title}
+        description={heading.description}
+        activeTab={activeTab}
+        onSelectTab={selectTab}
+        status={{
+          configured,
+          modeLabel: assistantMode.status?.label ?? "Available",
+          modeActive,
+          modeExpiresAt: assistantMode.status?.expiresAt ?? null,
+        }}
+        onRefresh={() => loadAll()}
+        refreshing={isRefreshing}
+        lastSynced={lastSynced}
+        onSignOut={handleSignOut}
+        actions={
+          <Button size="sm" className="gap-1.5" onClick={() => startVoiceSession(true)}>
+            <PhoneCall className="h-4 w-4" aria-hidden />
+            <span className="hidden sm:inline">Start live session</span>
+            <span className="sm:hidden">Test</span>
+          </Button>
+        }
+      >
+        {activeTab === "overview" && (
+          <div className="space-y-6">
+            <AttentionBanner />
+            <AssistantModeCard mode={assistantMode} />
+            <OverviewSection
+              calls={calls}
+              callbacks={callbacks}
+              messages={messages}
               knowledge={knowledgeItems}
               instructions={instructionItems}
+              appointments={appointments}
               loading={isLoading}
-              chatMessages={chatMessages}
-              chatInput={chatInput}
-              isChatting={isChatting}
-              onChatInputChange={setChatInput}
-              onSendChat={sendChatMessage}
-              chatEndRef={chatEndRef}
-              newDocTitle={newDocTitle}
-              newDocType={newDocType}
-              newDocContent={newDocContent}
-              isSavingDoc={isSavingDoc}
-              onNewDocTitleChange={setNewDocTitle}
-              onNewDocTypeChange={setNewDocType}
-              onNewDocContentChange={setNewDocContent}
-              onAddKnowledge={addKnowledgeItem}
-              isParsing={isParsing}
-              isFileLoading={isFileLoading}
-              parseError={parseError}
-              parsePreview={parsePreview}
-              parseProfile={parseProfile}
-              onFileSelect={handleFileSelect}
-              onSaveParsed={saveParsedToKnowledge}
-              onDiscardParsed={() => {
-                setParsePreview(null);
-                setParseProfile(null);
-                setParseError(null);
-              }}
-              onApplyParsedProfile={applyParsedProfile}
-              onPreviewChange={setParsePreview}
-              fileInputRef={fileInputRef}
-              onDelete={deleteKnowledgeItem}
-              onGoToInstructions={() => selectTab("instructions")}
+              onOpenCall={openCall}
+              onGoTo={selectTab}
+              onToggleInstruction={toggleInstructionActive}
             />
-          )}
-
-          {activeTab === "instructions" && (
-            <InstructionsSection
-              instructions={instructionItems}
-              loading={isLoading}
-              onToggle={toggleInstructionActive}
-              onDelete={deleteKnowledgeItem}
-              onAdd={addInstruction}
-            />
-          )}
-
-          {activeTab === "voice" && (
-            <VoiceSection
-              profile={profile}
-              isSaving={isSavingProfile}
-              onPatch={updateProfileField}
-              onSave={saveProfile}
-              onStartSession={() => startVoiceSession(true)}
-            />
-          )}
-
-          {isLoading && activeTab !== "overview" && activeTab !== "calls" && activeTab !== "knowledge" && (
-            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-slate-500">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-            </div>
-          )}
-
-          {activeTab === "overview" && (
-            <p className="mt-6 text-center text-xs text-slate-500">
-              {contacts.length} contact{contacts.length === 1 ? "" : "s"} ·{" "}
-              {crmStatus?.configured ? `CRM connected (${crmStatus.provider})` : "No CRM connected"}
-              {bookingSettings
-                ? ` · Booking window ${bookingSettings.openTime}–${bookingSettings.closeTime}`
-                : ""}
-            </p>
-          )}
-        </section>
-      </main>
-
-      {showVoiceConsole && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-2 backdrop-blur-sm sm:p-4">
-          <div className="absolute right-3 top-3 z-10">
-            <Button
-              variant="secondary"
-              size="sm"
-              className="gap-1.5 bg-white"
-              onClick={() => {
-                setShowVoiceConsole(false);
-                setVoiceAutoConnect(false);
-                loadAll(true);
-              }}
-            >
-              <X className="h-4 w-4" /> Close
-            </Button>
+            {!isLoading && (
+              <p className="text-center text-xs text-muted-foreground">
+                {contacts.length} contact{contacts.length === 1 ? "" : "s"} ·{" "}
+                {crmStatus?.configured ? `CRM connected (${crmStatus.provider})` : "No CRM connected"}
+                {bookingSettings
+                  ? ` · Booking window ${bookingSettings.openTime}–${bookingSettings.closeTime}`
+                  : ""}
+              </p>
+            )}
           </div>
-          <div className="h-[92dvh] max-h-[820px] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-            <LiveReceptionist
-              companyProfile={profile}
-              onBookAppointment={handleBookedFromCall}
-              autoConnect={voiceAutoConnect}
-              onAutoConnectHandled={() => setVoiceAutoConnect(false)}
-              initialVoiceName={profile.voiceName}
-              initialPitch={profile.voicePitch}
-              initialSpeed={profile.voiceSpeed}
-            />
-          </div>
-        </div>
-      )}
+        )}
 
-      <MobileBottomNav activeTab={activeTab} onSelect={selectTab} />
-    </div>
+        {activeTab === "calls" && (
+          <CallsSection
+            filteredCalls={filteredCalls}
+            callFilter={callFilter}
+            onFilterChange={setCallFilter}
+            selectedCall={selectedCall}
+            callBookings={callBookings}
+            loading={isLoading}
+            onSelectCall={setSelectedCallId}
+            onCloseDetail={() => setSelectedCallId(null)}
+          />
+        )}
+
+        {activeTab === "knowledge" && (
+          <KnowledgeSection
+            knowledge={knowledgeItems}
+            instructions={instructionItems}
+            loading={isLoading}
+            chatMessages={chatMessages}
+            chatInput={chatInput}
+            isChatting={isChatting}
+            onChatInputChange={setChatInput}
+            onSendChat={sendChatMessage}
+            chatEndRef={chatEndRef}
+            newDocTitle={newDocTitle}
+            newDocType={newDocType}
+            newDocContent={newDocContent}
+            isSavingDoc={isSavingDoc}
+            onNewDocTitleChange={setNewDocTitle}
+            onNewDocTypeChange={setNewDocType}
+            onNewDocContentChange={setNewDocContent}
+            onAddKnowledge={addKnowledgeItem}
+            isParsing={isParsing}
+            isFileLoading={isFileLoading}
+            parseError={parseError}
+            parsePreview={parsePreview}
+            parseProfile={parseProfile}
+            onFileSelect={handleFileSelect}
+            onSaveParsed={saveParsedToKnowledge}
+            onDiscardParsed={() => {
+              setParsePreview(null);
+              setParseProfile(null);
+              setParseError(null);
+            }}
+            onApplyParsedProfile={applyParsedProfile}
+            onPreviewChange={setParsePreview}
+            fileInputRef={fileInputRef}
+            onDelete={deleteKnowledgeItem}
+            onGoToInstructions={() => selectTab("instructions")}
+          />
+        )}
+
+        {activeTab === "instructions" && (
+          <InstructionsSection
+            instructions={instructionItems}
+            loading={isLoading}
+            onToggle={toggleInstructionActive}
+            onDelete={deleteKnowledgeItem}
+            onAdd={addInstruction}
+          />
+        )}
+
+        {activeTab === "voice" && (
+          <VoiceSection
+            profile={profile}
+            isSaving={isSavingProfile}
+            onPatch={updateProfileField}
+            onSave={saveProfile}
+            onStartSession={() => startVoiceSession(true)}
+          />
+        )}
+
+        {isLoading && !["overview", "calls", "knowledge"].includes(activeTab) && (
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        )}
+      </AppShell>
+
+      <VoiceConsole
+        open={showVoiceConsole}
+        onClose={() => {
+          setShowVoiceConsole(false);
+          setVoiceAutoConnect(false);
+          loadAll(true);
+        }}
+        companyProfile={profile}
+        onBookAppointment={handleBookedFromCall}
+        autoConnect={voiceAutoConnect}
+        onAutoConnectHandled={() => setVoiceAutoConnect(false)}
+      />
+    </>
   );
 }
+
+const NAV_KEYS: DashboardTab[] = ["overview", "calls", "knowledge", "instructions", "voice"];

@@ -4,27 +4,29 @@ import { useCallback, useEffect, useState } from "react";
 import {
   BadgeCheck,
   Building2,
-  Check,
   Copy,
   Globe,
   KeyRound,
-  Loader2,
   Phone,
   PhoneOutgoing,
   RefreshCw,
   Save,
   ShieldCheck,
   Sparkles,
-  TriangleAlert,
   Trash2,
   Webhook,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog } from "@/components/ui/dialog";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
+import { Notice } from "@/components/ui/notice";
+import { Segmented } from "@/components/ui/segmented";
+import { SettingsSection } from "@/components/ui/section";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/components/ui/toast";
 
 interface SecretMeta {
   provider: string;
@@ -66,54 +68,20 @@ const SETTING = {
 } as const;
 
 const EXOTEL_SUBDOMAIN_OPTIONS = [
-  { value: "api.exotel.com", label: "Singapore — api.exotel.com" },
-  { value: "api.in.exotel.com", label: "Mumbai — api.in.exotel.com" },
+  { value: "api.exotel.com", label: "Singapore" },
+  { value: "api.in.exotel.com", label: "Mumbai" },
 ] as const;
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function Section({
-  icon: Icon,
-  title,
-  description,
-  children,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
+interface ConfirmState {
   title: string;
   description: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card className="shadow-card">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Icon className="h-4 w-4 text-emerald-600" /> {title}
-        </CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">{children}</CardContent>
-    </Card>
-  );
-}
-
-function Notice({ tone, children }: { tone: "ok" | "warn"; children: React.ReactNode }) {
-  return (
-    <div
-      className={cn(
-        "flex items-start gap-2 rounded-xl border px-3 py-2 text-sm",
-        tone === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800",
-      )}
-    >
-      {tone === "ok" ? (
-        <Check className="mt-0.5 h-4 w-4 shrink-0" />
-      ) : (
-        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-      )}
-      <span>{children}</span>
-    </div>
-  );
+  confirmLabel: string;
+  destructive?: boolean;
+  onConfirm: () => void | Promise<void>;
 }
 
 function SecretField({
@@ -135,19 +103,20 @@ function SecretField({
 }) {
   return (
     <div className="space-y-1.5">
-      <label className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-600">
-        {label}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-medium text-foreground">{label}</span>
         {configured && (
-          <span className="font-normal text-emerald-600">
-            configured{configured.maskedSuffix ? ` ${configured.maskedSuffix}` : ""}
-          </span>
+          <Badge variant="success" className="gap-1">
+            <BadgeCheck className="h-3 w-3" aria-hidden />
+            Configured{configured.maskedSuffix ? ` ${configured.maskedSuffix}` : ""}
+          </Badge>
         )}
-      </label>
+      </div>
       <div className="flex gap-2">
         <Input
           type="password"
           value={value}
-          placeholder={configured ? "Replace…" : placeholder}
+          placeholder={configured ? "Enter a new value to replace" : placeholder}
           autoComplete="off"
           onChange={(event) => onChange(event.target.value)}
           disabled={disabled}
@@ -159,6 +128,8 @@ function SecretField({
             onClick={onRemove}
             disabled={disabled}
             aria-label={`Remove ${label}`}
+            title={`Remove ${label}`}
+            className="shrink-0 text-muted-foreground hover:text-red-600"
           >
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -168,10 +139,16 @@ function SecretField({
   );
 }
 
+/**
+ * Workspace + provider configuration: workspace name, Gemini key and models,
+ * CRM webhook, Exotel account credentials and Exotel routing. Secrets are only
+ * ever sent one way — the API returns masked suffixes, never values.
+ */
 export function ProviderSettings() {
+  const { toast } = useToast();
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
   const [tenant, setTenant] = useState<TenantInfo | null>(null);
   const [tenants, setTenants] = useState<TenantSummary[]>([]);
@@ -194,17 +171,9 @@ export function ProviderSettings() {
 
   const [exotel, setExotel] = useState<ExotelState | null>(null);
   const [rotating, setRotating] = useState(false);
-  const [freshExotel, setFreshExotel] = useState<{
-    token: string;
-    wsUrl: string;
-  } | null>(null);
+  const [freshExotel, setFreshExotel] = useState<{ token: string; wsUrl: string } | null>(null);
 
-  const [exotelForm, setExotelForm] = useState({
-    accountSid: "",
-    apiKey: "",
-    apiToken: "",
-    appId: "",
-  });
+  const [exotelForm, setExotelForm] = useState({ accountSid: "", apiKey: "", apiToken: "", appId: "" });
   const [exotelSubdomain, setExotelSubdomain] = useState<string>("api.exotel.com");
   const [exotelPhone, setExotelPhone] = useState("");
   const [savingExotelAccount, setSavingExotelAccount] = useState(false);
@@ -214,6 +183,9 @@ export function ProviderSettings() {
   const [claiming, setClaiming] = useState(false);
   const [claimMessage, setClaimMessage] = useState<string | null>(null);
   const [claimToken, setClaimToken] = useState("");
+
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const canManage = role === "owner" || role === "admin";
 
@@ -242,9 +214,7 @@ export function ProviderSettings() {
         setCrmProvider(value[SETTING.crmProvider] === "webhook" ? "webhook" : "none");
         setCrmWebhookUrl(asString(value[SETTING.crmWebhookUrl]));
         setExotelSubdomain(
-          value[SETTING.exotelSubdomain] === "api.in.exotel.com"
-            ? "api.in.exotel.com"
-            : "api.exotel.com",
+          value[SETTING.exotelSubdomain] === "api.in.exotel.com" ? "api.in.exotel.com" : "api.exotel.com",
         );
         setExotelPhone(asString(value[SETTING.exotelPhoneNumber]));
       }
@@ -252,7 +222,7 @@ export function ProviderSettings() {
       setExotel(exotelRes?.error ? null : exotelRes);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load settings");
+      setError(err instanceof Error ? err.message : "Failed to load provider settings");
     } finally {
       setLoading(false);
     }
@@ -261,11 +231,6 @@ export function ProviderSettings() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  const flash = (message: string) => {
-    setNotice(message);
-    window.setTimeout(() => setNotice((current) => (current === message ? null : current)), 4000);
-  };
 
   const saveWorkspace = async () => {
     if (!workspaceName.trim()) return;
@@ -279,9 +244,9 @@ export function ProviderSettings() {
       const data = (await response.json()) as { error?: string; tenant?: TenantInfo };
       if (!response.ok || data.error) throw new Error(data.error || "Failed to save workspace");
       if (data.tenant) setTenant(data.tenant);
-      flash("Workspace name saved.");
+      toast({ message: "Workspace name saved.", tone: "success" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save workspace");
+      toast({ message: err instanceof Error ? err.message : "Failed to save workspace", tone: "error" });
     } finally {
       setSavingWorkspace(false);
     }
@@ -295,14 +260,24 @@ export function ProviderSettings() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key, value: value.trim() || null }),
       });
-      const data = (await response.json()) as { error?: string; settings?: Record<string, unknown> };
+      const data = (await response.json()) as { error?: string };
       if (!response.ok || data.error) throw new Error(data.error || "Failed to save model");
-      flash("Model setting saved.");
+      toast({ message: "Model setting saved.", tone: "success" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save model");
+      toast({ message: err instanceof Error ? err.message : "Failed to save model", tone: "error" });
     } finally {
       setSavingModels(false);
     }
+  };
+
+  const saveSetting = async (key: string, value: unknown) => {
+    const response = await fetch("/api/tenant/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    const data = (await response.json()) as { error?: string };
+    if (!response.ok || data.error) throw new Error(data.error || "Failed to save setting");
   };
 
   const saveSecret = async (provider: string, keyName: string, value: string) => {
@@ -328,129 +303,98 @@ export function ProviderSettings() {
   const saveGeminiKey = async () => {
     if (!geminiKey.trim()) return;
     setSavingGemini(true);
-    setError(null);
     try {
       await saveSecret("gemini", "api_key", geminiKey.trim());
       setGeminiKey("");
       await load();
-      flash("Gemini API key saved.");
+      toast({ message: "Gemini API key saved.", tone: "success" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save Gemini key");
+      toast({ message: err instanceof Error ? err.message : "Failed to save Gemini key", tone: "error" });
     } finally {
       setSavingGemini(false);
     }
   };
 
-  const removeSecret = async (provider: string, keyName: string) => {
-    try {
-      await deleteSecret(provider, keyName);
-      await load();
-      flash("Credential removed.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove credential");
-    }
+  const removeSecret = (provider: string, keyName: string) => {
+    const label = `${provider} ${keyName}`.replace(/_/g, " ");
+    setConfirm({
+      title: "Remove credential?",
+      description: `Removing the ${label} credential will disable anything that depends on it until you add a new one.`,
+      confirmLabel: "Remove credential",
+      destructive: true,
+      onConfirm: async () => {
+        await deleteSecret(provider, keyName);
+        await load();
+        toast({ message: "Credential removed.", tone: "success" });
+      },
+    });
   };
 
   const saveCrm = async () => {
     setSavingCrm(true);
-    setError(null);
     try {
-      const providerResponse = await fetch("/api/tenant/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: SETTING.crmProvider, value: crmProvider }),
-      });
-      const providerData = (await providerResponse.json()) as { error?: string };
-      if (!providerResponse.ok || providerData.error) {
-        throw new Error(providerData.error || "Failed to save CRM provider");
-      }
-
+      await saveSetting(SETTING.crmProvider, crmProvider);
       if (crmProvider === "webhook" && crmWebhookUrl.trim()) {
-        const urlResponse = await fetch("/api/tenant/settings", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: SETTING.crmWebhookUrl, value: crmWebhookUrl.trim() }),
-        });
-        const urlData = (await urlResponse.json()) as { error?: string };
-        if (!urlResponse.ok || urlData.error) {
-          throw new Error(urlData.error || "Failed to save webhook URL");
-        }
+        await saveSetting(SETTING.crmWebhookUrl, crmWebhookUrl.trim());
       }
-
       if (crmSecretInput.trim()) {
         await saveSecret("crm", "webhook_secret", crmSecretInput.trim());
         setCrmSecretInput("");
       }
-
       await load();
-      flash("CRM settings saved.");
+      toast({ message: "CRM settings saved.", tone: "success" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save CRM settings");
+      toast({ message: err instanceof Error ? err.message : "Failed to save CRM settings", tone: "error" });
     } finally {
       setSavingCrm(false);
     }
   };
 
-  const rotateExotel = async () => {
-    setRotating(true);
-    setError(null);
-    try {
-      const response = await fetch("/api/tenant/exotel", { method: "POST" });
-      const data = (await response.json()) as {
-        error?: string;
-        token?: string;
-        wsUrl?: string;
-      };
-      if (!response.ok || data.error || !data.token) {
-        throw new Error(data.error || "Failed to rotate Exotel token");
-      }
-      setFreshExotel({
-        token: data.token,
-        wsUrl: data.wsUrl ?? "",
-      });
-      await load();
-      flash("Exotel token rotated. Copy the URL now — it is shown once.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to rotate Exotel token");
-    } finally {
-      setRotating(false);
-    }
-  };
-
-  const saveSetting = async (key: string, value: unknown) => {
-    const response = await fetch("/api/tenant/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
+  const rotateExotel = () => {
+    setConfirm({
+      title: "Rotate routing token?",
+      description:
+        "Rotating immediately invalidates the current token. Calls using the old URL stop reaching your assistant until you update the Exotel applet.",
+      confirmLabel: "Rotate token",
+      destructive: true,
+      onConfirm: async () => {
+        setRotating(true);
+        try {
+          const response = await fetch("/api/tenant/exotel", { method: "POST" });
+          const data = (await response.json()) as { error?: string; token?: string; wsUrl?: string };
+          if (!response.ok || data.error || !data.token) {
+            throw new Error(data.error || "Failed to rotate Exotel token");
+          }
+          setFreshExotel({ token: data.token, wsUrl: data.wsUrl ?? "" });
+          await load();
+          toast({
+            message: "Token rotated — copy the new URL now, it is shown once.",
+            tone: "warning",
+          });
+        } catch (err) {
+          toast({ message: err instanceof Error ? err.message : "Failed to rotate token", tone: "error" });
+          throw err;
+        } finally {
+          setRotating(false);
+        }
+      },
     });
-    const data = (await response.json()) as { error?: string };
-    if (!response.ok || data.error) throw new Error(data.error || "Failed to save setting");
   };
 
   const saveExotelAccount = async () => {
     setSavingExotelAccount(true);
-    setError(null);
     try {
-      // Only overwrite fields the user actually filled in, so partial edits are safe.
-      if (exotelForm.accountSid.trim()) {
-        await saveSecret("exotel", "account_sid", exotelForm.accountSid.trim());
-      }
-      if (exotelForm.apiKey.trim()) {
-        await saveSecret("exotel", "api_key", exotelForm.apiKey.trim());
-      }
-      if (exotelForm.apiToken.trim()) {
-        await saveSecret("exotel", "api_token", exotelForm.apiToken.trim());
-      }
-      if (exotelForm.appId.trim()) {
-        await saveSecret("exotel", "app_id", exotelForm.appId.trim());
-      }
+      if (exotelForm.accountSid.trim()) await saveSecret("exotel", "account_sid", exotelForm.accountSid.trim());
+      if (exotelForm.apiKey.trim()) await saveSecret("exotel", "api_key", exotelForm.apiKey.trim());
+      if (exotelForm.apiToken.trim()) await saveSecret("exotel", "api_token", exotelForm.apiToken.trim());
+      if (exotelForm.appId.trim()) await saveSecret("exotel", "app_id", exotelForm.appId.trim());
       await saveSetting(SETTING.exotelSubdomain, exotelSubdomain);
       await saveSetting(SETTING.exotelPhoneNumber, exotelPhone.trim() || null);
       setExotelForm({ accountSid: "", apiKey: "", apiToken: "", appId: "" });
       await load();
-      flash("Exotel account saved.");
+      toast({ message: "Exotel account saved.", tone: "success" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save Exotel account");
+      toast({ message: err instanceof Error ? err.message : "Failed to save Exotel account", tone: "error" });
     } finally {
       setSavingExotelAccount(false);
     }
@@ -459,7 +403,6 @@ export function ProviderSettings() {
   const verifyExotelAccount = async () => {
     setVerifyingExotel(true);
     setExotelVerify(null);
-    setError(null);
     try {
       const response = await fetch("/api/tenant/exotel/verify", { method: "POST" });
       const data = (await response.json()) as {
@@ -491,9 +434,9 @@ export function ProviderSettings() {
   const copy = async (value: string) => {
     try {
       await navigator.clipboard.writeText(value);
-      flash("Copied to clipboard.");
+      toast({ message: "Copied to clipboard.", tone: "success" });
     } catch {
-      setError("Could not copy. Select the text and copy it manually.");
+      toast({ message: "Could not copy. Select the text and copy it manually.", tone: "error" });
     }
   };
 
@@ -528,178 +471,220 @@ export function ProviderSettings() {
   const exotelApiKeySecret = exotelSecret("api_key");
   const exotelApiTokenSecret = exotelSecret("api_token");
   const exotelAppIdSecret = exotelSecret("app_id");
-  const exotelAccountReady = Boolean(
-    exotelAccountSecret && exotelApiKeySecret && exotelApiTokenSecret,
-  );
+  const exotelAccountReady = Boolean(exotelAccountSecret && exotelApiKeySecret && exotelApiTokenSecret);
   const hasLegacyMembership = tenants.some((item) => item.isLegacy);
+
+  const runConfirm = async () => {
+    if (!confirm) return;
+    setConfirmBusy(true);
+    try {
+      await confirm.onConfirm();
+      setConfirm(null);
+    } catch {
+      // The action surfaces its own error toast.
+    } finally {
+      setConfirmBusy(false);
+    }
+  };
 
   if (loading) {
     return (
-      <div className="flex h-40 items-center justify-center text-slate-500">
-        <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading workspace and providers…
+      <div className="space-y-6">
+        <Skeleton className="h-44 rounded-2xl" />
+        <Skeleton className="h-56 rounded-2xl" />
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      {error && <Notice tone="warn">{error}</Notice>}
-      {notice && !error && <Notice tone="ok">{notice}</Notice>}
+      {error && <Notice tone="error">{error}</Notice>}
 
       {/* Workspace */}
-      <Section
+      <SettingsSection
         icon={Building2}
         title="Workspace"
-        description="Your account is isolated to this workspace. Only you (and later, invited teammates) can see its data."
+        description="Your account is isolated to this workspace. Only you — and later, invited teammates — can see its data."
+        status={
+          <>
+            <Badge variant="outline" className="capitalize">{role}</Badge>
+            {tenant?.isLegacy && <Badge variant="secondary">Legacy workspace</Badge>}
+          </>
+        }
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">{role}</Badge>
-          {tenant?.isLegacy && <Badge variant="secondary">Legacy workspace</Badge>}
-          <span className="text-xs text-slate-500">Slug: {tenant?.slug || "—"}</span>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            value={workspaceName}
-            onChange={(event) => setWorkspaceName(event.target.value)}
-            placeholder="Workspace name"
-            maxLength={120}
-            disabled={!canManage}
-          />
-          <Button
-            onClick={saveWorkspace}
-            disabled={!canManage || savingWorkspace || !workspaceName.trim() || workspaceName.trim() === tenant?.name}
-            className="gap-2 sm:w-auto"
-          >
-            {savingWorkspace ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            Save
-          </Button>
-        </div>
+        <Field label="Workspace name" hint={tenant?.slug ? `Slug: ${tenant.slug}` : undefined}>
+          {({ id, ...aria }) => (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                id={id}
+                value={workspaceName}
+                onChange={(event) => setWorkspaceName(event.target.value)}
+                placeholder="Workspace name"
+                maxLength={120}
+                disabled={!canManage}
+                {...aria}
+              />
+              <Button
+                onClick={saveWorkspace}
+                disabled={!canManage || savingWorkspace || !workspaceName.trim() || workspaceName.trim() === tenant?.name}
+                className="gap-2 sm:w-auto"
+                loading={savingWorkspace}
+              >
+                {!savingWorkspace && <Save className="h-4 w-4" aria-hidden />}
+                Save
+              </Button>
+            </div>
+          )}
+        </Field>
         {!canManage && (
-          <p className="text-xs text-slate-500">Only owners and admins can change workspace settings.</p>
+          <p className="text-xs text-muted-foreground">Only owners and admins can change workspace settings.</p>
         )}
-      </Section>
+      </SettingsSection>
 
       {/* Gemini */}
-      <Section
+      <SettingsSection
         icon={Sparkles}
         title="Gemini"
         description="Your workspace uses its own Gemini API key. It is encrypted at rest and never shown again after saving."
+        status={
+          geminiSecret ? (
+            <Badge variant="success" className="gap-1">
+              <BadgeCheck className="h-3 w-3" aria-hidden /> Configured
+            </Badge>
+          ) : (
+            <Badge variant="warning">Not configured</Badge>
+          )
+        }
       >
-        {geminiSecret ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2">
-            <span className="flex items-center gap-2 text-sm text-slate-700">
-              <BadgeCheck className="h-4 w-4 text-emerald-600" />
-              Configured {geminiSecret.maskedSuffix ? `(${geminiSecret.maskedSuffix})` : ""}
-            </span>
-            <Button variant="ghost" size="sm" className="gap-1.5 text-slate-600" onClick={() => removeSecret("gemini", "api_key")}>
-              <Trash2 className="h-4 w-4" /> Remove
-            </Button>
-          </div>
-        ) : (
-          <Notice tone="warn">
+        {!geminiSecret && (
+          <Notice tone="warning">
             No Gemini key yet. Calls and knowledge search stay unavailable until you add one.
           </Notice>
         )}
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            type="password"
-            value={geminiKey}
-            onChange={(event) => setGeminiKey(event.target.value)}
-            placeholder="Paste your Gemini API key"
-            autoComplete="off"
-            disabled={!canManage}
-          />
-          <Button
-            onClick={saveGeminiKey}
-            disabled={!canManage || savingGemini || !geminiKey.trim()}
-            className="gap-2 sm:w-auto"
-          >
-            {savingGemini ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
-            {geminiSecret ? "Replace key" : "Save key"}
-          </Button>
-        </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          {[
-            { key: SETTING.textModel, label: "Text model", value: models.text, placeholder: "gemini-flash-lite-latest" },
-            { key: SETTING.liveModel, label: "Live model", value: models.live, placeholder: "gemini-3.8-live" },
-            { key: SETTING.embeddingModel, label: "Embedding model", value: models.embedding, placeholder: "gemini-embedding-2" },
-          ].map((field) => (
-            <div key={field.key} className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-600">{field.label}</label>
-              <div className="flex gap-2">
-                <Input
-                  value={field.value}
-                  placeholder={field.placeholder}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setModels((prev) => ({
-                      ...prev,
-                      [field.key === SETTING.textModel
-                        ? "text"
-                        : field.key === SETTING.liveModel
-                          ? "live"
-                          : "embedding"]: value,
-                    }));
-                  }}
-                  disabled={!canManage}
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => saveModel(field.key, field.value)}
-                  disabled={!canManage || savingModels}
-                  aria-label={`Save ${field.label}`}
-                >
-                  <Save className="h-4 w-4" />
-                </Button>
-              </div>
-              <p className="text-[11px] text-slate-400">Leave blank to use the default.</p>
+        {geminiSecret && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface-2 px-3.5 py-2.5">
+            <span className="flex items-center gap-2 text-sm text-foreground">
+              <BadgeCheck className="h-4 w-4 text-emerald-600" aria-hidden />
+              Configured{geminiSecret.maskedSuffix ? ` (${geminiSecret.maskedSuffix})` : ""}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-muted-foreground hover:text-red-600"
+              onClick={() => removeSecret("gemini", "api_key")}
+              disabled={!canManage}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden /> Remove
+            </Button>
+          </div>
+        )}
+
+        <Field label="Gemini API key" hint="Paste a key from Google AI Studio. It is stored encrypted per workspace.">
+          {({ id, ...aria }) => (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                id={id}
+                type="password"
+                value={geminiKey}
+                onChange={(event) => setGeminiKey(event.target.value)}
+                placeholder={geminiSecret ? "Enter a new key to replace" : "Paste your Gemini API key"}
+                autoComplete="off"
+                disabled={!canManage}
+                {...aria}
+              />
+              <Button
+                onClick={saveGeminiKey}
+                disabled={!canManage || savingGemini || !geminiKey.trim()}
+                className="gap-2 sm:w-auto"
+                loading={savingGemini}
+              >
+                {!savingGemini && <KeyRound className="h-4 w-4" aria-hidden />}
+                {geminiSecret ? "Replace key" : "Save key"}
+              </Button>
             </div>
+          )}
+        </Field>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          {[
+            { key: SETTING.textModel, label: "Text model", field: "text" as const, value: models.text, placeholder: "gemini-flash-lite-latest" },
+            { key: SETTING.liveModel, label: "Live model", field: "live" as const, value: models.live, placeholder: "gemini-3.8-live" },
+            { key: SETTING.embeddingModel, label: "Embedding model", field: "embedding" as const, value: models.embedding, placeholder: "gemini-embedding-2" },
+          ].map((item) => (
+            <Field key={item.key} label={item.label} hint="Leave blank to use the default.">
+              {({ id, ...aria }) => (
+                <div className="flex gap-2">
+                  <Input
+                    id={id}
+                    value={item.value}
+                    placeholder={item.placeholder}
+                    onChange={(event) =>
+                      setModels((prev) => ({ ...prev, [item.field]: event.target.value }))
+                    }
+                    disabled={!canManage}
+                    {...aria}
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => saveModel(item.key, item.value)}
+                    disabled={!canManage || savingModels}
+                    aria-label={`Save ${item.label}`}
+                  >
+                    <Save className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+            </Field>
           ))}
         </div>
-      </Section>
+      </SettingsSection>
 
       {/* CRM */}
-      <Section
+      <SettingsSection
         icon={Webhook}
         title="CRM / webhook"
         description="Send completed calls and bookings to your own automation. Failures never interrupt a live call."
       >
-        <div className="flex flex-wrap gap-2">
-          {(["none", "webhook"] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              disabled={!canManage}
-              onClick={() => setCrmProvider(option)}
-              className={cn(
-                "min-h-[44px] rounded-xl border px-4 text-sm font-semibold transition disabled:opacity-60",
-                crmProvider === option
-                  ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-              )}
-            >
-              {option === "none" ? "No CRM" : "Webhook"}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          value={crmProvider}
+          onValueChange={(value) => canManage && setCrmProvider(value)}
+          disabled={!canManage}
+          aria-label="CRM provider"
+          className="max-w-xs"
+          options={[
+            { value: "none", label: "No CRM" },
+            { value: "webhook", label: "Webhook" },
+          ]}
+        />
 
         {crmProvider === "webhook" && (
-          <div className="space-y-3">
+          <div className="space-y-4">
+            <Field label="Webhook URL">
+              {({ id, ...aria }) => (
+                <Input
+                  id={id}
+                  value={crmWebhookUrl}
+                  onChange={(event) => setCrmWebhookUrl(event.target.value)}
+                  placeholder="https://your-endpoint.example/hooks/keralai"
+                  disabled={!canManage}
+                  {...aria}
+                />
+              )}
+            </Field>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-600">Webhook URL</label>
-              <Input
-                value={crmWebhookUrl}
-                onChange={(event) => setCrmWebhookUrl(event.target.value)}
-                placeholder="https://your-endpoint.example/hooks/keralai"
-                disabled={!canManage}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-600">
-                Signing secret {crmSecret ? `(configured${crmSecret.maskedSuffix ? ` ${crmSecret.maskedSuffix}` : ""})` : "(optional)"}
-              </label>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-foreground">
+                  Signing secret <span className="font-normal text-muted-foreground">(optional)</span>
+                </span>
+                {crmSecret && (
+                  <Badge variant="success" className="gap-1">
+                    <BadgeCheck className="h-3 w-3" aria-hidden />
+                    Configured{crmSecret.maskedSuffix ? ` ${crmSecret.maskedSuffix}` : ""}
+                  </Badge>
+                )}
+              </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Input
                   type="password"
@@ -710,8 +695,13 @@ export function ProviderSettings() {
                   disabled={!canManage}
                 />
                 {crmSecret && (
-                  <Button variant="ghost" className="gap-1.5" onClick={() => removeSecret("crm", "webhook_secret")} disabled={!canManage}>
-                    <Trash2 className="h-4 w-4" /> Remove
+                  <Button
+                    variant="ghost"
+                    className="gap-1.5 text-muted-foreground hover:text-red-600"
+                    onClick={() => removeSecret("crm", "webhook_secret")}
+                    disabled={!canManage}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden /> Remove
                   </Button>
                 )}
               </div>
@@ -719,39 +709,31 @@ export function ProviderSettings() {
           </div>
         )}
 
-        <Button onClick={saveCrm} disabled={!canManage || savingCrm} className="gap-2">
-          {savingCrm ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+        <Button onClick={saveCrm} disabled={!canManage || savingCrm} className="gap-2" loading={savingCrm}>
+          {!savingCrm && <Save className="h-4 w-4" aria-hidden />}
           Save CRM settings
         </Button>
-      </Section>
+      </SettingsSection>
 
       {/* Exotel account */}
-      <Section
+      <SettingsSection
         icon={Phone}
-        title="Exotel account (bring your own number)"
+        title="Exotel account"
         description="Add your own Exotel API credentials. They are encrypted per workspace and used only for your account — never a shared platform account or server environment variable."
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          {exotelAccountReady ? (
-            <Badge variant="default">Account configured</Badge>
+        status={
+          exotelAccountReady ? (
+            <Badge variant="success">Account configured</Badge>
           ) : (
-            <Badge variant="secondary">Not configured</Badge>
-          )}
-          <span className="text-xs text-slate-500">
-            Region:{" "}
-            {exotelSubdomain === "api.in.exotel.com"
-              ? "Mumbai (api.in.exotel.com)"
-              : "Singapore (api.exotel.com)"}
-          </span>
-        </div>
-
-        <p className="text-xs text-slate-500">
-          In the Exotel dashboard go to <span className="font-medium">Settings → API Settings</span> and copy
-          your Account SID, API key and API token. Every tester can create their own Exotel account, which
-          gives them their own trial number isolated from every other workspace.
+            <Badge variant="warning">Not configured</Badge>
+          )
+        }
+      >
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          In the Exotel dashboard go to <span className="font-medium text-foreground">Settings → API Settings</span>{" "}
+          and copy your Account SID, API key and API token. Each workspace uses its own Exotel account.
         </p>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           <SecretField
             label="Account SID"
             placeholder="Your Exotel Account SID"
@@ -790,40 +772,34 @@ export function ProviderSettings() {
           />
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-600">Region</label>
-            <select
+            <p className="text-sm font-medium text-foreground">Region</p>
+            <Segmented
               value={exotelSubdomain}
-              onChange={(event) => setExotelSubdomain(event.target.value)}
+              onValueChange={(value) => canManage && setExotelSubdomain(value)}
               disabled={!canManage}
-              className="h-11 w-full rounded-xl border border-input bg-white px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {EXOTEL_SUBDOMAIN_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-600">Your ExoPhone number (optional)</label>
-            <Input
-              value={exotelPhone}
-              onChange={(event) => setExotelPhone(event.target.value)}
-              placeholder="+91…"
-              disabled={!canManage}
+              aria-label="Exotel region"
+              options={EXOTEL_SUBDOMAIN_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
             />
           </div>
+          <Field label="Your ExoPhone number" hint="Optional. Shown to callers when relevant.">
+            {({ id, ...aria }) => (
+              <Input
+                id={id}
+                value={exotelPhone}
+                onChange={(event) => setExotelPhone(event.target.value)}
+                placeholder="+91…"
+                disabled={!canManage}
+                {...aria}
+              />
+            )}
+          </Field>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button
-            onClick={saveExotelAccount}
-            disabled={!canManage || savingExotelAccount}
-            className="gap-2"
-          >
-            {savingExotelAccount ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          <Button onClick={saveExotelAccount} disabled={!canManage || savingExotelAccount} className="gap-2" loading={savingExotelAccount}>
+            {!savingExotelAccount && <Save className="h-4 w-4" aria-hidden />}
             Save Exotel account
           </Button>
           <Button
@@ -831,121 +807,147 @@ export function ProviderSettings() {
             onClick={verifyExotelAccount}
             disabled={!canManage || verifyingExotel || !exotelAccountReady}
             className="gap-2"
+            loading={verifyingExotel}
           >
-            {verifyingExotel ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+            {!verifyingExotel && <ShieldCheck className="h-4 w-4" aria-hidden />}
             Test connection
           </Button>
         </div>
-        {exotelVerify && <Notice tone={exotelVerify.ok ? "ok" : "warn"}>{exotelVerify.message}</Notice>}
-      </Section>
+        {exotelVerify && <Notice tone={exotelVerify.ok ? "success" : "error"}>{exotelVerify.message}</Notice>}
+      </SettingsSection>
 
       {/* Exotel routing */}
-      <Section
+      <SettingsSection
         icon={PhoneOutgoing}
-        title="Phone number routing (Exotel)"
-        description="Point your Exotel Voicebot applet at this workspace's WebSocket URL so calls to your number reach your assistant. The token is shown only once, when rotated."
+        title="Phone number routing"
+        description="Point your Exotel Voicebot applet at this workspace's WebSocket URL so calls to your number reach your assistant."
+        status={
+          exotel?.credential.configured ? (
+            <Badge variant="success">
+              Configured {exotel.credential.tokenLast4 ? `(…${exotel.credential.tokenLast4})` : ""}
+            </Badge>
+          ) : (
+            <Badge variant="warning">No token yet</Badge>
+          )
+        }
       >
-        <div className="space-y-2 text-sm">
-          <div className="flex flex-wrap items-center gap-2 text-slate-600">
-            <span className="font-medium text-slate-700">Status:</span>
-            {exotel?.credential.configured ? (
-              <Badge variant="default">
-                Configured {exotel.credential.tokenLast4 ? `(…${exotel.credential.tokenLast4})` : ""}
-              </Badge>
-            ) : (
-              <Badge variant="secondary">No token yet</Badge>
-            )}
-            {exotel?.credential.rotatedAt && (
-              <span className="text-xs text-slate-400">
-                Rotated {new Date(exotel.credential.rotatedAt).toLocaleString()}
-              </span>
-            )}
-          </div>
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-slate-500">
-              Your bridge URL (Basic auth)
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Your bridge URL (Basic auth)</p>
+          <p className="break-all rounded-xl bg-surface-2 px-3.5 py-2.5 font-mono text-xs text-muted-foreground">
+            {exotel?.wsUrl ?? "wss://tenant:REPLACE_ME@your-bridge-host/ws/exotel/<slug>"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Paste this into your Exotel Voicebot applet. The token is shown only once, when generated or rotated.
+          </p>
+          {exotel?.credential.rotatedAt && (
+            <p className="text-xs text-muted-foreground">
+              Last rotated {new Date(exotel.credential.rotatedAt).toLocaleString()}
             </p>
-            <p className="break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600">
-              {exotel?.wsUrl ?? "wss://tenant:REPLACE_ME@your-bridge-host/ws/exotel/<slug>"}
-            </p>
-            <p className="text-xs text-slate-400">
-              Paste this into your Exotel Voicebot applet. The token is only shown once, when generated or rotated.
-            </p>
-          </div>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button onClick={rotateExotel} disabled={!canManage || rotating} className="gap-2">
-            {rotating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          <Button onClick={rotateExotel} disabled={!canManage || rotating} className="gap-2" loading={rotating}>
+            {!rotating && <RefreshCw className="h-4 w-4" aria-hidden />}
             {exotel?.credential.configured ? "Rotate token" : "Generate token"}
           </Button>
           {freshExotel?.wsUrl && (
             <Button variant="outline" className="gap-2" onClick={() => copy(freshExotel.wsUrl)}>
-              <Copy className="h-4 w-4" /> Copy new URL
+              <Copy className="h-4 w-4" aria-hidden /> Copy new URL
             </Button>
           )}
         </div>
 
         {freshExotel?.wsUrl && (
-          <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
-            <p className="text-sm font-semibold text-emerald-800">
-              Copy this URL into your Exotel applet now. It won&apos;t be shown again.
-            </p>
-            <p className="break-all font-mono text-xs text-emerald-900">{freshExotel.wsUrl}</p>
-          </div>
+          <Notice tone="warning">
+            <p className="font-semibold">Copy this URL into your Exotel applet now — it won&apos;t be shown again.</p>
+            <p className="mt-1 break-all font-mono text-xs">{freshExotel.wsUrl}</p>
+          </Notice>
         )}
-      </Section>
+      </SettingsSection>
 
       {/* Legacy claim */}
       {canManage && (
-        <Section
+        <SettingsSection
           icon={ShieldCheck}
           title="Legacy data"
           description="If this account is the original installation owner, you can claim the pre-existing data once."
         >
           {hasLegacyMembership ? (
-            <Notice tone="ok">This account already has access to the legacy workspace.</Notice>
+            <Notice tone="success">This account already has access to the legacy workspace.</Notice>
           ) : (
             <div className="space-y-3">
-              <Input
-                type="password"
-                value={claimToken}
-                placeholder="Claim token"
-                autoComplete="off"
-                onChange={(event) => setClaimToken(event.target.value)}
-              />
+              <Field label="Claim token">
+                {({ id, ...aria }) => (
+                  <Input
+                    id={id}
+                    type="password"
+                    value={claimToken}
+                    placeholder="Claim token"
+                    autoComplete="off"
+                    onChange={(event) => setClaimToken(event.target.value)}
+                    {...aria}
+                  />
+                )}
+              </Field>
               <div className="flex flex-wrap items-center gap-3">
                 <Button
                   variant="outline"
                   className="gap-2"
                   onClick={claimLegacy}
                   disabled={claiming || !claimToken.trim()}
+                  loading={claiming}
                 >
-                  {claiming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                  {!claiming && <ShieldCheck className="h-4 w-4" aria-hidden />}
                   Claim legacy data
                 </Button>
-                <span className="text-xs text-slate-500">
-                  Requires the owner email and the server claim token.
-                </span>
+                <span className="text-xs text-muted-foreground">Requires the owner email and the server claim token.</span>
               </div>
             </div>
           )}
           {claimMessage && (
-            <Notice tone={claimMessage.includes("claimed") ? "ok" : "warn"}>{claimMessage}</Notice>
+            <Notice tone={claimMessage.includes("claimed") ? "success" : "error"}>{claimMessage}</Notice>
           )}
-        </Section>
+        </SettingsSection>
       )}
 
-      <p className="flex items-center gap-1.5 pb-2 text-xs text-slate-400">
-        <Globe className="h-3.5 w-3.5" /> Provider credentials are encrypted per workspace and never returned to the browser.
+      <p className="flex items-center gap-1.5 pb-2 text-xs text-muted-foreground">
+        <Globe className="h-3.5 w-3.5" aria-hidden /> Provider credentials are encrypted per workspace and never
+        returned to the browser.
       </p>
+
+      {/* Destructive confirmation */}
+      <Dialog
+        open={Boolean(confirm)}
+        onOpenChange={(open) => !open && !confirmBusy && setConfirm(null)}
+        title={confirm?.title ?? ""}
+        description={confirm?.description}
+        size="sm"
+        footer={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => setConfirm(null)}
+              disabled={confirmBusy}
+              className="w-full sm:w-auto"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={confirm?.destructive ? "destructive" : "default"}
+              onClick={runConfirm}
+              loading={confirmBusy}
+              className="w-full sm:w-auto"
+            >
+              {confirm?.confirmLabel ?? "Confirm"}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-muted-foreground">This action takes effect immediately.</p>
+      </Dialog>
     </div>
   );
 }
 
-/**
- * Provider settings: workspace, Gemini models/key, CRM webhook, Exotel account
- * credentials, Exotel routing, and the one-time legacy-data claim. All tenant
- * resolution happens server-side.
- */
 export default ProviderSettings;

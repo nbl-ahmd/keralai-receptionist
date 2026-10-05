@@ -1,24 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import {
-  Activity,
-  ArrowLeft,
-  Gauge,
-  Loader2,
-  RefreshCw,
-  Timer,
-  TriangleAlert,
-  Waypoints,
-  Zap,
-} from "lucide-react";
+import { Activity, Gauge, Timer, Waypoints, Zap } from "lucide-react";
 
+import AppShell from "@/components/app/AppShell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Notice } from "@/components/ui/notice";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
+import { Sheet } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useIsDesktop } from "@/components/ui/use-media-query";
 import { cn } from "@/lib/utils";
 import type { CallMetric, CallMetricsSummary } from "@/types";
 
@@ -48,7 +41,67 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+function CallMetricDetail({ call }: { call: CallMetric }) {
+  return (
+    <div className="space-y-5">
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {[
+          { label: "Avg turn", value: formatMs(call.turnAvgMs) },
+          { label: "P95 turn", value: formatMs(call.turnP95Ms) },
+          { label: "Turns", value: call.turnCount.toString() },
+          { label: "Gemini connect", value: formatMs(call.geminiConnectMs) },
+          { label: "In proc / p95", value: `${formatMs(call.inProcAvgMs)} / ${formatMs(call.inProcP95Ms)}` },
+          { label: "Out proc / p95", value: `${formatMs(call.outProcAvgMs)} / ${formatMs(call.outProcP95Ms)}` },
+          { label: "Audio in", value: `${formatKb(call.inBytes)} · ${call.inChunks} chunks` },
+          { label: "Audio out", value: `${formatKb(call.outBytes)} · ${call.outFrames} frames` },
+          { label: "Barge-ins", value: call.interrupts.toString() },
+        ].map((stat) => (
+          <div key={stat.label} className="rounded-xl border border-border bg-surface-2 p-3">
+            <dt className="text-2xs uppercase tracking-wide text-muted-foreground">{stat.label}</dt>
+            <dd className="mt-0.5 text-sm font-semibold text-foreground">{stat.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <div>
+        <p className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Tool timings</p>
+        {Object.keys(call.tools).length === 0 ? (
+          <p className="rounded-xl border border-border bg-surface-2 p-4 text-sm text-muted-foreground">
+            No tools were called during this call.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-border">
+            <table className="w-full min-w-[420px] text-sm">
+              <thead className="bg-surface-2 text-left text-2xs uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2">Tool</th>
+                  <th className="px-3 py-2">Calls</th>
+                  <th className="px-3 py-2">Avg</th>
+                  <th className="px-3 py-2">P95</th>
+                  <th className="px-3 py-2">Failed</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {Object.entries(call.tools).map(([name, tool]) => (
+                  <tr key={name}>
+                    <td className="px-3 py-2 font-medium text-foreground">{name}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{tool.count}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{formatMs(tool.avg)}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{formatMs(tool.p95)}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{tool.failed}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function PerformancePage() {
+  const isDesktop = useIsDesktop();
   const [summary, setSummary] = useState<CallMetricsSummary | null>(null);
   const [calls, setCalls] = useState<CallMetric[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -126,80 +179,50 @@ export default function PerformancePage() {
   const hasData = (summary?.samples ?? 0) > 0;
 
   return (
-    <div className="min-h-screen bg-[hsl(var(--background))]">
-      <header className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:pt-[calc(env(safe-area-inset-top)+2rem)]">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-            title="Back to dashboard"
-            aria-label="Back to dashboard"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          <div className="min-w-0">
-            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">KeralAI</p>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900">Performance</h1>
-            <p className="mt-0.5 text-sm text-slate-500">
-              Per-call latency and throughput, saved at the end of every call.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="hidden text-xs text-slate-500 sm:block">
-            {lastSynced
-              ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-              : "Syncing…"}
-          </span>
-          <Button variant="ghost" size="sm" className="gap-1.5 text-slate-600" onClick={() => load()} disabled={isRefreshing}>
-            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl space-y-6 px-4 pb-28 sm:px-6 lg:pb-14">
-        {error && (
-          <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            <TriangleAlert className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
+    <AppShell
+      eyebrow="Manage"
+      title="Performance"
+      description="Per-call latency and throughput, recorded at the end of every call."
+      activeRoute="performance"
+      routeMode
+      onRefresh={() => load()}
+      refreshing={isRefreshing}
+      lastSynced={lastSynced}
+    >
+      <div className="space-y-6">
+        {error && <Notice tone="error">{error}</Notice>}
 
         {isLoading ? (
-          <div className="flex h-64 items-center justify-center text-slate-500">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading performance data…
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-28 rounded-2xl" />
+              ))}
+            </div>
+            <Skeleton className="h-72 rounded-2xl" />
           </div>
         ) : !hasData ? (
-          <Card className="shadow-card">
-            <CardContent className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-100">
-                <Waypoints className="h-7 w-7 text-slate-400" />
-              </div>
-              <p className="text-sm font-semibold text-slate-700">No call performance data yet</p>
-              <p className="max-w-md text-sm text-slate-500">
-                Metrics are recorded automatically when a call (phone or browser) ends. Once the first
-                call completes, its latency and throughput appear here.
-              </p>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={<Waypoints className="h-6 w-6" />}
+            title="No call performance data yet"
+            description="Metrics are recorded automatically when a call (phone or browser) ends. Once the first call completes, its latency and throughput appear here."
+            className="py-20"
+          />
         ) : (
           <>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               {kpis.map((kpi) => (
-                <Card key={kpi.label} className="shadow-card">
-                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <CardDescription className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                      {kpi.label}
-                    </CardDescription>
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                <Card key={kpi.label}>
+                  <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
+                    <CardDescription className="text-2xs uppercase tracking-[0.14em]">{kpi.label}</CardDescription>
+                    <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary-soft text-primary">
                       {kpi.icon}
-                    </div>
+                    </span>
                   </CardHeader>
                   <CardContent>
                     <div className="flex items-baseline gap-2">
-                      <span className="text-3xl font-semibold text-slate-900">{kpi.value}</span>
-                      <span className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">
+                      <span className="font-display text-2xl font-semibold text-foreground">{kpi.value}</span>
+                      <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
                         {kpi.helper}
                       </span>
                     </div>
@@ -211,43 +234,37 @@ export default function PerformancePage() {
             <div className="grid gap-4 sm:grid-cols-3">
               <Card>
                 <CardHeader className="pb-2">
-                  <CardDescription className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                    Calls measured
-                  </CardDescription>
+                  <CardDescription className="text-2xs uppercase tracking-[0.14em]">Calls measured</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-2xl font-semibold text-slate-900">{summary?.samples ?? 0}</p>
-                  <p className="text-sm text-slate-500">avg {formatDuration(summary?.avgDurationSec ?? 0)}</p>
+                  <p className="font-display text-2xl font-semibold text-foreground">{summary?.samples ?? 0}</p>
+                  <p className="text-sm text-muted-foreground">avg {formatDuration(summary?.avgDurationSec ?? 0)}</p>
                 </CardContent>
               </Card>
               <Card>
                 <CardHeader className="pb-2">
-                  <CardDescription className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                    Barge-ins
-                  </CardDescription>
+                  <CardDescription className="text-2xs uppercase tracking-[0.14em]">Barge-ins</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-2xl font-semibold text-slate-900">{summary?.totalInterrupts ?? 0}</p>
-                  <p className="text-sm text-slate-500">caller interruptions handled</p>
+                  <p className="font-display text-2xl font-semibold text-foreground">{summary?.totalInterrupts ?? 0}</p>
+                  <p className="text-sm text-muted-foreground">caller interruptions handled</p>
                 </CardContent>
               </Card>
               <Card>
                 <CardHeader className="pb-2">
-                  <CardDescription className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                    Audio throughput
-                  </CardDescription>
+                  <CardDescription className="text-2xs uppercase tracking-[0.14em]">Audio throughput</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-2xl font-semibold text-slate-900">{formatKb(summary?.totalInBytes)}</p>
-                  <p className="text-sm text-slate-500">in · {formatKb(summary?.totalOutBytes)} out</p>
+                  <p className="font-display text-2xl font-semibold text-foreground">{formatKb(summary?.totalInBytes)}</p>
+                  <p className="text-sm text-muted-foreground">in · {formatKb(summary?.totalOutBytes)} out</p>
                 </CardContent>
               </Card>
             </div>
 
             <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
-              <Card className="shadow-card">
+              <Card>
                 <CardHeader>
-                  <CardTitle>Recent calls</CardTitle>
+                  <CardTitle className="font-display">Recent calls</CardTitle>
                   <CardDescription>{calls.length} measured calls · newest first</CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -256,37 +273,32 @@ export default function PerformancePage() {
                       {calls.map((call) => (
                         <button
                           key={call.callId}
+                          type="button"
                           onClick={() => setSelectedCallId(call.callId)}
+                          aria-pressed={selectedCallId === call.callId}
                           className={cn(
-                            "w-full rounded-2xl border p-3 text-left transition",
+                            "w-full rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             selectedCallId === call.callId
-                              ? "border-emerald-300 bg-emerald-50/50 shadow-sm"
-                              : "border-slate-100 bg-white hover:border-emerald-200",
+                              ? "border-primary/30 bg-primary-soft/50"
+                              : "border-border bg-card hover:border-primary/20",
                           )}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className="truncate text-sm font-semibold text-slate-900">
+                            <span className="truncate text-sm font-semibold text-foreground">
                               {call.caller || "Unknown caller"}
                             </span>
-                            <span className="shrink-0 text-xs text-slate-500">{formatWhen(call.startedAt)}</span>
+                            <span className="shrink-0 text-xs text-muted-foreground">{formatWhen(call.startedAt)}</span>
                           </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                            <Badge variant="secondary" className="capitalize">
-                              {call.channel}
-                            </Badge>
-                            {call.outcome && (
-                              <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold capitalize text-slate-700">
-                                {call.outcome}
-                              </span>
-                            )}
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            <Badge variant="secondary" className="capitalize">{call.channel}</Badge>
+                            {call.outcome && <Badge variant="outline" className="capitalize">{call.outcome}</Badge>}
                             <span className="flex items-center gap-1">
-                              <Timer className="h-3 w-3" /> {formatMs(call.turnAvgMs)} avg turn
+                              <Timer className="h-3 w-3" aria-hidden /> {formatMs(call.turnAvgMs)} avg turn
                             </span>
                             <span className="flex items-center gap-1">
-                              <Zap className="h-3 w-3" /> {formatMs(call.geminiConnectMs)} connect
+                              <Zap className="h-3 w-3" aria-hidden /> {formatMs(call.geminiConnectMs)} connect
                             </span>
                             <span>{formatDuration(call.durationSec)}</span>
-                            {call.interrupts > 0 && <span>{call.interrupts} barge-in(s)</span>}
                           </div>
                         </button>
                       ))}
@@ -295,77 +307,23 @@ export default function PerformancePage() {
                 </CardContent>
               </Card>
 
-              <Card className="shadow-card">
+              <Card className="hidden lg:sticky lg:top-24 lg:block lg:h-fit">
                 <CardHeader>
-                  <CardTitle>Call detail</CardTitle>
+                  <CardTitle className="font-display">Call detail</CardTitle>
                   <CardDescription>
                     {selectedCall ? `Call ${selectedCall.callSid}` : "Select a call to inspect its metrics."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {!selectedCall ? (
-                    <div className="flex h-[320px] flex-col items-center justify-center text-center lg:h-[520px]">
-                      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-slate-100">
-                        <Activity className="h-7 w-7 text-slate-400" />
-                      </div>
-                      <p className="text-sm text-slate-500">
-                        Choose a call from the list to see audio throughput, turn latency, and tool timings.
-                      </p>
-                    </div>
+                  {selectedCall ? (
+                    <CallMetricDetail call={selectedCall} />
                   ) : (
-                    <div className="space-y-5">
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                        {[
-                          { label: "Avg turn", value: formatMs(selectedCall.turnAvgMs) },
-                          { label: "P95 turn", value: formatMs(selectedCall.turnP95Ms) },
-                          { label: "Turns", value: selectedCall.turnCount.toString() },
-                          { label: "Gemini connect", value: formatMs(selectedCall.geminiConnectMs) },
-                          { label: "In proc / p95", value: `${formatMs(selectedCall.inProcAvgMs)} / ${formatMs(selectedCall.inProcP95Ms)}` },
-                          { label: "Out proc / p95", value: `${formatMs(selectedCall.outProcAvgMs)} / ${formatMs(selectedCall.outProcP95Ms)}` },
-                          { label: "Audio in", value: `${formatKb(selectedCall.inBytes)} · ${selectedCall.inChunks} chunks` },
-                          { label: "Audio out", value: `${formatKb(selectedCall.outBytes)} · ${selectedCall.outFrames} frames` },
-                          { label: "Barge-ins", value: selectedCall.interrupts.toString() },
-                        ].map((stat) => (
-                          <div key={stat.label} className="rounded-2xl border border-slate-100 p-3">
-                            <p className="text-xs uppercase tracking-[0.12em] text-slate-500">{stat.label}</p>
-                            <p className="mt-1 text-sm font-semibold text-slate-900">{stat.value}</p>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div>
-                        <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">Tool timings</p>
-                        {Object.keys(selectedCall.tools).length === 0 ? (
-                          <p className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-500">
-                            No tools were called during this call.
-                          </p>
-                        ) : (
-                          <div className="overflow-x-auto rounded-2xl border border-slate-100">
-                            <table className="w-full min-w-[420px] text-sm">
-                              <thead className="bg-slate-50 text-left text-xs uppercase tracking-[0.12em] text-slate-500">
-                                <tr>
-                                  <th className="px-3 py-2">Tool</th>
-                                  <th className="px-3 py-2">Calls</th>
-                                  <th className="px-3 py-2">Avg</th>
-                                  <th className="px-3 py-2">P95</th>
-                                  <th className="px-3 py-2">Failed</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-100">
-                                {Object.entries(selectedCall.tools).map(([name, tool]) => (
-                                  <tr key={name}>
-                                    <td className="px-3 py-2 font-medium text-slate-800">{name}</td>
-                                    <td className="px-3 py-2 text-slate-600">{tool.count}</td>
-                                    <td className="px-3 py-2 text-slate-600">{formatMs(tool.avg)}</td>
-                                    <td className="px-3 py-2 text-slate-600">{formatMs(tool.p95)}</td>
-                                    <td className="px-3 py-2 text-slate-600">{tool.failed}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-                      </div>
+                    <div className="flex h-[420px] items-center justify-center">
+                      <EmptyState
+                        icon={<Activity className="h-5 w-5" />}
+                        title="No call selected"
+                        description="Choose a call from the list to see audio throughput, turn latency and tool timings."
+                      />
                     </div>
                   )}
                 </CardContent>
@@ -373,8 +331,19 @@ export default function PerformancePage() {
             </div>
           </>
         )}
-      </main>
-      <MobileBottomNav linkMode />
-    </div>
+      </div>
+
+      {!isDesktop && (
+        <Sheet
+          open={Boolean(selectedCall)}
+          onOpenChange={(open) => !open && setSelectedCallId(null)}
+          side="bottom"
+          title={selectedCall?.caller || "Call metrics"}
+          description={selectedCall ? `Call ${selectedCall.callSid}` : undefined}
+        >
+          {selectedCall && <CallMetricDetail call={selectedCall} />}
+        </Sheet>
+      )}
+    </AppShell>
   );
 }

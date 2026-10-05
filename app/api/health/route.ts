@@ -28,8 +28,13 @@ export async function GET() {
       bridgeAuth: process.env.BRIDGE_AUTH_SECRET ? 'configured' : 'missing',
       secretsEncryption: process.env.TENANT_SECRETS_ENCRYPTION_KEY ? 'configured' : 'missing',
       // Non-secret: compare with the bridge's /health to confirm both processes
-      // derived the same TENANT_SECRETS_ENCRYPTION_KEY.
-      secretsKeyFingerprint: getEncryptionKeyFingerprint(),
+      // derived the same TENANT_SECRETS_ENCRYPTION_KEY. Exposed outside
+      // production, or in production when EXPOSE_SECRETS_FINGERPRINT=1 is set
+      // temporarily for key-alignment debugging. It is an offline brute-force
+      // oracle for weak passphrases, so it must not be on by default.
+      ...(process.env.NODE_ENV !== 'production' || process.env.EXPOSE_SECRETS_FINGERPRINT === '1'
+        ? { secretsKeyFingerprint: getEncryptionKeyFingerprint() }
+        : {}),
     },
     latencyMs: Date.now() - startedAt,
     // Never expose the raw database error outside development.

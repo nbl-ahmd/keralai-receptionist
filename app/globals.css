@@ -2,77 +2,243 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: 40 20% 98%;
-  --foreground: 222 24% 11%;
-  --card: 0 0% 100%;
-  --card-foreground: 222 24% 11%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 222 24% 11%;
-  --primary: 160 62% 35%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 220 16% 96%;
-  --secondary-foreground: 222 24% 11%;
-  --muted: 220 16% 94%;
-  --muted-foreground: 220 10% 42%;
-  --accent: 160 62% 35%;
-  --accent-foreground: 0 0% 100%;
-  --destructive: 0 72% 51%;
-  --destructive-foreground: 0 0% 100%;
-  --border: 220 16% 90%;
-  --input: 220 16% 88%;
-  --ring: 160 62% 35%;
-  --radius: 14px;
+/*
+ * KeralAI design tokens
+ * ---------------------
+ * "Calm product SaaS": a single emerald brand accent over a disciplined neutral
+ * scale, low elevation, generous spacing. Every colour, radius, shadow and
+ * motion value used by the product resolves to a token here so the interface
+ * stays coherent as it grows. Values are HSL channels so Tailwind can compose
+ * them with opacity (`bg-primary/10`).
+ */
+
+@layer base {
+  :root {
+    color-scheme: light;
+
+    /* Surfaces */
+    --background: 40 24% 98%;
+    --foreground: 222 30% 12%;
+
+    --surface-1: 0 0% 100%;
+    --surface-2: 40 20% 97.5%;
+    --surface-3: 40 16% 95%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 30% 12%;
+
+    /* Brand */
+    --primary: 160 84% 30%;
+    --primary-foreground: 0 0% 100%;
+    --primary-soft: 152 58% 95%;
+    --primary-soft-foreground: 163 74% 24%;
+
+    /* Neutrals */
+    --secondary: 210 20% 96%;
+    --secondary-foreground: 222 30% 18%;
+    --muted: 40 18% 95%;
+    --muted-foreground: 220 9% 45%;
+    --accent: 210 20% 95%;
+    --accent-foreground: 222 30% 16%;
+
+    /* Semantic */
+    --destructive: 0 72% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-soft: 0 86% 97%;
+    --success: 160 84% 30%;
+    --success-soft: 152 58% 95%;
+    --warning: 30 92% 42%;
+    --warning-soft: 42 100% 95%;
+    --info: 201 90% 40%;
+    --info-soft: 202 96% 96%;
+
+    /* Lines */
+    --border: 220 14% 91%;
+    --border-strong: 220 12% 85%;
+    --input: 220 14% 89%;
+    --ring: 160 84% 34%;
+
+    /* Shape */
+    --radius: 0.75rem;
+
+    /* Elevation */
+    --shadow-xs: 0 1px 2px 0 rgb(15 23 42 / 0.05);
+    --shadow-sm: 0 1px 2px -1px rgb(15 23 42 / 0.08), 0 2px 6px -3px rgb(15 23 42 / 0.07);
+    --shadow-md: 0 2px 4px -2px rgb(15 23 42 / 0.08), 0 10px 24px -12px rgb(15 23 42 / 0.16);
+    --shadow-lg: 0 6px 12px -6px rgb(15 23 42 / 0.1), 0 28px 56px -28px rgb(15 23 42 / 0.26);
+
+    /* Layout */
+    --header-h: 3.5rem;
+    --bottom-nav-h: 3.75rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    scroll-behavior: smooth;
+    /* Anchor targets clear the sticky header. */
+    scroll-padding-top: calc(var(--header-h) + 1rem);
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    text-rendering: optimizeLegibility;
+    /* Kill the grey flash on tap on iOS/Android. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Only show focus rings for keyboard users, but never remove them. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  /* iOS zooms the page when a control smaller than 16px gains focus. Shared
+     inputs render at 16px on phones and drop to 14px from `sm` up. */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  @media (min-width: 640px) {
+    input,
+    select,
+    textarea {
+      font-size: 0.875rem;
+    }
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.2);
+  }
+
+  /* Respect the user's motion preference. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
 }
 
-* {
-  @apply border-border;
+@layer components {
+  /* Low-elevation surface used by every card-like region. */
+  .surface {
+    @apply rounded-2xl border border-border bg-card shadow-[var(--shadow-sm)];
+  }
+
+  /* Skeleton shimmer used by loading placeholders. */
+  .skeleton {
+    @apply relative overflow-hidden rounded-xl bg-slate-200/60;
+  }
+
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(255 255 255 / 0.65),
+      transparent
+    );
+    transform: translateX(-100%);
+    animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  }
+
+  /* Hidden but available to assistive technology. */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
 }
 
-html {
-  scroll-behavior: smooth;
+@layer utilities {
+  /* Safe-area helpers for installed / notched devices. */
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .pl-safe {
+    padding-left: env(safe-area-inset-left);
+  }
+
+  .pr-safe {
+    padding-right: env(safe-area-inset-right);
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* One-handed reach for fixed action bars on phones. */
+  .h-app {
+    height: 100dvh;
+  }
 }
 
-body {
-  @apply bg-[hsl(var(--background))] text-slate-900 antialiased;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
 }
 
-/* Consistent, subtle elevation for cards and panels. */
-.shadow-card {
-  box-shadow: 0 1px 2px -1px rgba(15, 23, 42, 0.08), 0 12px 32px -24px rgba(15, 23, 42, 0.35);
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
 }
 
-.glass-panel {
-  @apply rounded-2xl border border-slate-200/80 bg-white;
-  box-shadow: 0 1px 2px -1px rgba(15, 23, 42, 0.08), 0 12px 32px -24px rgba(15, 23, 42, 0.28);
-}
-
-/* Balance short headings so they don't leave orphan words. */
-h1,
-h2,
-h3 {
-  text-wrap: balance;
-}
-
-::selection {
-  background: rgba(16, 185, 129, 0.22);
-}
-
-/* Skeleton shimmer used by loading placeholders. */
-.skeleton {
-  @apply animate-pulse rounded-lg bg-slate-200/70;
-}
-
-/* PWA safe areas — keep content clear of notches and home indicators. */
-.pt-safe {
-  padding-top: env(safe-area-inset-top);
-}
-
-.pb-safe {
-  padding-bottom: env(safe-area-inset-bottom);
-}
-
+/* When launched as an installed app, avoid rubber-band scrolling the chrome. */
 @media (display-mode: standalone) {
   body {
     overscroll-behavior-y: none;

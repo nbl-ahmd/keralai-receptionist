@@ -109,7 +109,8 @@ see where time is spent without logging per audio chunk:
   in/out throughput, audio processing avg/p95, turn latency avg/p95, interrupts, and per-tool stats.
 - `[bridge][db] slow query <ms>ms: …` for queries over `SLOW_DB_MS` (default 250).
 - `GET /metrics` returns a JSON snapshot (counters + latency percentiles) for benchmarking;
-  protect it with `METRICS_TOKEN` or disable with `METRICS_ENABLED=0`.
+  protect it with `METRICS_TOKEN` or disable with `METRICS_ENABLED=0`. In production it is
+  disabled unless `METRICS_TOKEN` is set.
 - Set `LATENCY_LOG=0` to silence perf logs, or `VERBOSE_AUDIO_LOG=1` for per-chunk tracing.
 
 **Persisted history:** the bridge also writes one `call_metrics` row per completed call (phone and

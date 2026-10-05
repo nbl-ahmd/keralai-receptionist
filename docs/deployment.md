@@ -123,10 +123,13 @@ per session.
 > match Vercel (do **not** regenerate), then re-save the affected credentials.
 >
 > To confirm both sides derived the same key before re-saving credentials,
-> compare the non-secret `secretsKeyFingerprint` from the dashboard's
-> `GET /api/health` with the bridge's `GET /health`, e.g.
+> set `EXPOSE_SECRETS_FINGERPRINT=1` and redeploy **both** services, then compare
+> the non-secret `secretsKeyFingerprint` from the dashboard's `GET /api/health`
+> with the bridge's `GET /health`, e.g.
 > `curl https://keralai-bridge.onrender.com/health`. The two 8-character
-> hashes must match; the fingerprint never reveals the key itself.
+> hashes must match; the fingerprint never reveals the key itself. Unset
+> `EXPOSE_SECRETS_FINGERPRINT` afterwards — it is off by default in production
+> because a fingerprint of a weak passphrase could be brute-forced offline.
 >
 > If `LEGACY_GEMINI_API_KEY` is set on the bridge, the pre-multitenancy Gemini
 > key is imported into the legacy tenant exactly once, encrypted at rest, so

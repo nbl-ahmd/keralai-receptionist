@@ -1,0 +1,15 @@
+# Closed alpha
+
+Invited testers receive a private workspace, the free Alpha plan and one promotional wallet credit. They configure their assistant and can test browser voice before phone KYC. They do not need their own Gemini key. Existing workspaces retain BYOK and the Internal plan; optional explicit BYOK remains in Advanced.
+
+There are **two local environment files**: app `.env.local` and `bridge/.env.local`. Next.js loads the app file. `bridge/env.mjs` loads the bridge file for plain Node, with hosting process variables taking precedence. It is a loader, not a third environment file. Vercel and Render each receive their own environment settings; neither reads your laptop files.
+
+Configure the same server-only `PLATFORM_GEMINI_API_KEY`, `AI_ENVIRONMENT`, AI estimate/daily limits, database, signing and existing encryption keys on both services. Use separate Google projects/keys for development, alpha and production. Fill an actual platform key yourself; no key was invented or copied from a customer. Set app-only `PLATFORM_ADMIN_USER_IDS` to the operator's Better Auth user ID, then explicitly enable `ALPHA_INVITE_ISSUANCE_ENABLED=1`. Start both services with migrations 001–015 applied. Public signup always requires a valid DB invitation; obsolete shared-code/email-allowlist variables no longer control access.
+
+Create an invitation in Dashboard → Admin → Alpha operations with an email and reason. The raw link is returned once; only its hash is stored. Send it privately yourself. It expires after seven days by default and is consumed atomically with account/workspace/plan/credit creation. Revocation stops unused redemption; suspend a workspace to revoke an existing tester's usage. Email binding is not verified ownership: this cohort still uses password authentication without verified-email delivery.
+
+The Alpha plan defaults to 60 included phone minutes, 60 browser minutes/month, 15 browser minutes/day, one session per channel, ten-minute maximum duration, ₹250 promotional credit, ₹500 monthly customer spend cap and ₹100 estimated monthly AI budget. These are editable plan data, not a paid subscription or a provider quote. Pending sessions reserve their maximum allowance; phone quota and customer debit settle from authoritative CDRs. Current sessions retain pricing/plan snapshots. Periods roll by UTC calendar month. Promo credit does not refill each month. Payments are disabled.
+
+Phone testing has additional gates. Keep app/bridge `VOBIZ_CALLBACK_SIGNATURES_VERIFIED=0`, `PLATFORM_NEW_PHONE_CALLS_ENABLED=0` and `PLATFORM_NUMBER_PURCHASE_ENABLED=0` until separately approved live sign-off. DB phone/purchase controls default disabled too. Read [Vobiz sign-off](./live-vobiz-signoff.md) before real KYC, provisioning or calls. Browser voice does not attest phone readiness.
+
+See [architecture](./alpha-architecture.md), [billing](./alpha-billing.md), [operations](./alpha-operations.md), [onboarding](./alpha-onboarding.md) and [implementation report](./alpha-implementation-report.md) for validation and remaining staging checks.

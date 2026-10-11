@@ -3,10 +3,18 @@
 > **KeralAI Receptionist** — a multitenant AI voice receptionist that answers calls, answers from
 > your own knowledge base, books appointments, syncs to your CRM, and reports every call.
 
-The platform pairs the **Gemini 2.5 Live API** (real-time speech in/out) with **Neon Postgres**
-(durable state + pgvector retrieval) and an **Exotel** phone bridge.
+The platform pairs the **Gemini Live API** (real-time speech in/out) with **Neon Postgres**
+(durable state + pgvector retrieval) and **managed Vobiz telephony**. Legacy Exotel installations retain a deprecated adapter.
 
 ---
+
+## Managed beta
+
+Signup now resumes assistant onboarding, browser testing and Phone setup. Hosted individual KYC, real number inventory, retry-safe purchase/binding, signed DID routing, immutable KeralAI balance/usage and an allowlisted operator page are implemented. Customers do not enter telephony credentials or copy routing URLs.
+
+**Live release is gated:** configure platform Vobiz credentials, prices, callbacks and reconciliation, then complete the two-tenant provider/audio acceptance test. Online payments and customer outbound calls are not enabled. Missing credentials never produce fake inventory, fake KYC or fake payments.
+
+Read [voice architecture](docs/vobiz-architecture.md), [phone recovery](docs/telephony-provisioning.md), [hosted KYC](docs/kyc-flow.md), [billing](docs/billing-architecture.md), [deployment](docs/deployment.md) and [beta acceptance](docs/manual-testing.md). `.env.local.example` and `bridge/.env.example` cover configuration. Use `npm test`, `npm run test:integration` and `npm run test:ui` after `npm run build`.
 
 ## Architecture & Deployment
 
@@ -33,25 +41,27 @@ The application is architected into two decoupled, independently deployable serv
 
 | Component | Host | Runtime | DB Driver |
 | --- | --- | --- | --- |
-| Dashboard & UI | **Vercel** | Next.js 14 App Router | `@neondatabase/serverless` (HTTP fetch) |
+| Dashboard & UI | **Vercel** | Next.js 16 App Router | `@neondatabase/serverless` (HTTP fetch) |
 | Phone / Audio Bridge | **Render** | Node.js (`bridge/server.mjs`) | `pg` Pool (TCP with PgBouncer) |
 
 ---
 
 ## Quick start
 
-**Prerequisites:** Node.js ≥ 18 and a Neon Postgres database.
+**Prerequisites:** Node.js ≥ 22 and a Neon Postgres database.
 
 ```bash
 npm install
-cp .env.local.example .env.local     # fill in DATABASE_URL + Gemini keys
+cp .env.local.example .env.local     # Next.js app configuration
+cp bridge/.env.example bridge/.env.local # bridge configuration; copy shared secrets exactly
+npm ci --prefix bridge
 npm run migrate                      # create the schema
 npm run seed                         # seed profile + knowledge into the "legacy" tenant (set SEED_TENANT_SLUG to target another)
 npm run dev                          # start Next.js dashboard (http://localhost:3000)
 npm run dev:bridge                   # start standalone audio bridge (http://localhost:3001)
 ```
 
-Visit `http://localhost:3000/` for the landing page with voice demo, and `/dashboard` for the management console.
+Visit `http://localhost:3000/` for the landing page and `/dashboard` for the authenticated management console. New testers need an operator-issued, email-bound invitation before registering. Follow the [alpha operations runbook](docs/alpha-operations.md) to configure managed AI and issue the first invitation; the legacy seed is optional and does not grant alpha access.
 
 ### Environment
 
@@ -60,10 +70,13 @@ Everything is documented in `.env.local.example` and `bridge/.env.example`. The 
 | Variable | Target | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | Vercel & Render | **Required.** Neon pooled connection string (`sslmode=require`). |
-| `GEMINI_API_KEY` | Vercel & Render | **Required** server-side. Used by bridge, embeddings, knowledge chat. |
+| `BRIDGE_AUTH_SECRET` / `TENANT_SECRETS_ENCRYPTION_KEY` | Vercel & Render | Required; identical in both services. |
+| `VOBIZ_AUTH_ID` / `VOBIZ_AUTH_TOKEN` | Vercel only | Parent Vobiz credentials; never put them on the bridge/browser. |
+| `VOBIZ_CALLBACK_SIGNATURES_VERIFIED` | Vercel & Render | Keep 0 until explicit live-provider sign-off. |
+| Gemini credential | Closed alpha: `PLATFORM_GEMINI_API_KEY` on both services; personal-key mode: Dashboard → Advanced | See [closed-alpha setup](docs/closed-alpha.md). Credentials never reach the browser. |
 | `NEXT_PUBLIC_BRIDGE_WS_URL` | Vercel | **Required in production.** Public WebSocket origin of the Render bridge, e.g. `wss://keralai-bridge.onrender.com`. The browser demo connects here (the dashboard and bridge are different hosts). |
-| `PUBLIC_APP_ORIGIN` | Render bridge | Optional origin allow-list for the browser WebSocket relay. Comma-separated, e.g. `https://keralai-receptionist.vercel.app`. Trailing slashes/casing ignored; if unset, any origin is allowed. A mismatch returns HTTP 403 on the `/ws/browser` handshake. |
-| `CRM_PROVIDER` / `CRM_WEBHOOK_URL` | Vercel & Render | Optional CRM mirroring. |
+| `PUBLIC_APP_ORIGIN` | Render bridge | Required origin allow-list for the browser WebSocket relay. Comma-separated, e.g. `http://localhost:3000` locally or `https://keralai-receptionist.vercel.app` when hosted. Trailing slashes/casing are normalized; unset or mismatched origins are denied on the `/ws/browser` handshake. |
+| Tenant CRM configuration | Dashboard → Advanced | Stored per tenant, not global environment credentials. |
 
 > The browser demo cannot derive the relay URL from `window.location` because the
 > dashboard (Vercel) and the bridge (Render) are separate services. Set
@@ -73,7 +86,7 @@ Everything is documented in `.env.local.example` and `bridge/.env.example`. The 
 
 ---
 
-## Phone bridge (Exotel on Render)
+## Legacy phone bridge (deprecated Exotel on Render)
 
 ```bash
 npm run dev:bridge         # local development bridge
@@ -93,7 +106,7 @@ The bridge is configured via `render.yaml` for Render Web Service deployment (Ro
 - Shuts down gracefully on `SIGTERM`/`SIGINT`.
 
 Point your Exotel Voicebot applet's WebSocket URL at the tenant URL shown in
-Dashboard → Settings → Providers → Exotel routing, e.g.
+Dashboard → Advanced → Legacy Exotel routing, e.g.
 `wss://<render-service-name>.onrender.com/ws/exotel/<tenant-slug>` with the
 tenant token supplied via Basic auth or `?token=`. The bare path `/ws/exotel`
 is rejected; there is no default tenant.

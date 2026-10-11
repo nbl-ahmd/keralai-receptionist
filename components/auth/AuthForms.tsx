@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -104,10 +104,13 @@ export function LoginForm() {
   );
 }
 
-export function RegisterForm() {
+export function RegisterForm({ alpha = false }: { alpha?: boolean }) {
   const router = useRouter();
   const params = useSearchParams();
-  const next = safeNext(params.get("next"));
+  const next = params.get("next") ? safeNext(params.get("next")) : "/dashboard/onboarding";
+
+  const [inviteCode, setInviteCode] = useState(() => params.get("invite") || "");
+  const [inviteState, setInviteState] = useState<'checking'|'valid'|'invalid'>(alpha ? 'checking' : 'valid');
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -116,9 +119,19 @@ export function RegisterForm() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  useEffect(() => {
+    if (!alpha) return;
+    let cancelled=false;
+    void fetch('/api/alpha/invite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:inviteCode})})
+      .then(async response => { const body=await response.json(); if(cancelled)return;
+        setInviteState(response.ok?'valid':'invalid'); if(response.ok && body.email)setEmail(body.email);
+      }).catch(()=>{if(!cancelled)setInviteState('invalid');});
+    return ()=>{cancelled=true;};
+  },[alpha,inviteCode]);
+
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isSubmitting) return;
+    if (isSubmitting || inviteState !== 'valid') return;
     setError(null);
 
     if (password.length < 8) {
@@ -136,6 +149,7 @@ export function RegisterForm() {
         email: email.trim(),
         password,
         name: name.trim() || email.trim().split("@")[0],
+        fetchOptions: alpha ? { headers: { "x-alpha-invite-code": inviteCode } } : undefined,
       });
       if (result.error) {
         setError(result.error.message || "Could not create your account. Try a different email.");
@@ -217,7 +231,14 @@ export function RegisterForm() {
         />
       </div>
 
-      <Button type="submit" className="w-full gap-2" disabled={isSubmitting} size="lg">
+      {alpha && inviteState !== 'valid' && <Notice tone="info">{inviteState === 'checking' ? 'Checking your invitation…' : 'An active invitation from your test organiser is required.'}</Notice>}
+      {alpha && !params.get('invite') && <div className="space-y-1.5">
+        <Label htmlFor="register-invite">Alpha invitation code</Label>
+        <Input id="register-invite" type="password" autoComplete="off" required value={inviteCode}
+          onChange={event => setInviteCode(event.target.value)} placeholder="Code from your test organiser" />
+      </div>}
+
+      <Button type="submit" className="w-full gap-2" disabled={isSubmitting || inviteState !== 'valid'} size="lg">
         {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
         {isSubmitting ? "Creating workspace…" : "Create workspace"}
       </Button>

@@ -1,9 +1,11 @@
+
 import { Suspense } from "react";
 
 import { AuthShell } from "@/components/auth/AuthShell";
 import { RegisterForm } from "@/components/auth/AuthForms";
 
 export const metadata = {
+  referrer: "no-referrer" as const,
   title: "Create your workspace — KeralAI",
   description: "Create a KeralAI workspace and start handling calls.",
 };
@@ -15,9 +17,9 @@ function RegisterFallback() {
 export default function RegisterPage() {
   return (
     <AuthShell
-      eyebrow="Get started"
+      eyebrow={"Closed alpha"}
       title="Create your workspace"
-      description="Each account gets its own private workspace. Your assistant, knowledge, and provider keys stay isolated."
+      description="Each account gets its own private workspace. Configure your assistant and try it in your browser."
       footer={
         <span>
           By continuing you agree to use the assistant responsibly and to keep your own callers informed.
@@ -25,7 +27,7 @@ export default function RegisterPage() {
       }
     >
       <Suspense fallback={<RegisterFallback />}>
-        <RegisterForm />
+        <RegisterForm alpha />
       </Suspense>
     </AuthShell>
   );

@@ -158,6 +158,8 @@ export function ProviderSettings() {
 
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
 
+  const [managedAi, setManagedAi] = useState(false);
+  const [managedAiConfigured, setManagedAiConfigured] = useState(false);
   const [geminiKey, setGeminiKey] = useState("");
   const [savingGemini, setSavingGemini] = useState(false);
 
@@ -219,6 +221,8 @@ export function ProviderSettings() {
         setExotelPhone(asString(value[SETTING.exotelPhoneNumber]));
       }
       setSecrets(Array.isArray(secretsRes?.secrets) ? secretsRes.secrets : []);
+      setManagedAi(secretsRes?.ai?.mode === "platform");
+      setManagedAiConfigured(secretsRes?.ai?.configured === true);
       setExotel(exotelRes?.error ? null : exotelRes);
       setError(null);
     } catch (err) {
@@ -545,9 +549,9 @@ export function ProviderSettings() {
       <SettingsSection
         icon={Sparkles}
         title="Gemini"
-        description="Your workspace uses its own Gemini API key. It is encrypted at rest and never shown again after saving."
+        description={managedAi ? "AI is provided during the closed alpha. Your workspace data stays private; you do not need an API key." : "Your workspace uses its own Gemini API key. It is encrypted at rest and never shown again after saving."}
         status={
-          geminiSecret ? (
+          (managedAi ? managedAiConfigured : geminiSecret) ? (
             <Badge variant="success" className="gap-1">
               <BadgeCheck className="h-3 w-3" aria-hidden /> Configured
             </Badge>
@@ -556,6 +560,15 @@ export function ProviderSettings() {
           )
         }
       >
+        <div className="mb-4 flex flex-wrap gap-2">
+          <Button variant="outline" disabled={!canManage} onClick={async()=>{
+            try{const response=await fetch('/api/tenant/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:managedAi?'tenant_managed':'platform_managed'})});
+              if(!response.ok)throw new Error((await response.json()).error||'Could not switch AI mode');await load();
+            }catch(e){setError(e instanceof Error?e.message:'Could not switch AI mode');}
+          }}>{managedAi?'Use my own Gemini key':'Use KeralAI AI'}</Button>
+          <p className="w-full text-xs text-muted-foreground">Optional advanced choice. Your plan’s session and usage limits apply to either mode.</p>
+        </div>
+        {managedAi ? <Notice tone={managedAiConfigured ? "info" : "warning"}>{managedAiConfigured ? "AI access is included for invited testers. Daily testing allowances apply." : "Your organiser has not configured alpha AI yet. Contact them to enable testing."}</Notice> : <>
         {!geminiSecret && (
           <Notice tone="warning">
             No Gemini key yet. Calls and knowledge search stay unavailable until you add one.
@@ -639,6 +652,7 @@ export function ProviderSettings() {
             </Field>
           ))}
         </div>
+        </>}
       </SettingsSection>
 
       {/* CRM */}
@@ -716,7 +730,7 @@ export function ProviderSettings() {
       </SettingsSection>
 
       {/* Exotel account */}
-      <SettingsSection
+      <details className="rounded-xl border border-border p-4"><summary className="min-h-11 cursor-pointer text-sm font-semibold">Deprecated Exotel installation</summary><div className="mt-5 space-y-5">      <SettingsSection
         icon={Phone}
         title="Exotel account"
         description="Add your own Exotel API credentials. They are encrypted per workspace and used only for your account — never a shared platform account or server environment variable."
@@ -866,6 +880,7 @@ export function ProviderSettings() {
         )}
       </SettingsSection>
 
+</div></details>
       {/* Legacy claim */}
       {canManage && (
         <SettingsSection

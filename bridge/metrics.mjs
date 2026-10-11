@@ -1,3 +1,6 @@
+import {monitorEventLoopDelay} from 'node:perf_hooks';
+const loopDelay=monitorEventLoopDelay({resolution:20});
+loopDelay.enable();
 /**
  * bridge/metrics.mjs
  *
@@ -82,6 +85,7 @@ export class RollingStat {
 export const processMetrics = {
   startedAt: Date.now(),
   activeCalls: 0,
+  activeBrowserSessions: 0,
   totalCalls: 0,
   inboundChunks: 0,
   inboundBytes: 0,
@@ -149,6 +153,9 @@ export function logCallStats(kind, snapshot, extra = {}) {
 export function snapshotProcess() {
   return {
     ok: true,
+    browser: {active:processMetrics.activeBrowserSessions},
+    memory: {rssBytes:process.memoryUsage().rss,heapUsedBytes:process.memoryUsage().heapUsed},
+    eventLoop: {p95Ms:Number((loopDelay.percentile(95)/1e6).toFixed(2)),maxMs:Number((loopDelay.max/1e6).toFixed(2))},
     uptimeSec: Math.round((Date.now() - processMetrics.startedAt) / 1000),
     calls: { active: processMetrics.activeCalls, total: processMetrics.totalCalls },
     audio: {

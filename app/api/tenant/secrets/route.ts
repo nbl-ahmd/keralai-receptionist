@@ -1,10 +1,12 @@
+import { alphaMutation } from '@/lib/alpha/http';
+import { isPlatformManagedAi } from '@/lib/gemini';
 import { NextResponse } from 'next/server';
 import {
   deleteTenantSecret,
   listTenantSecrets,
   saveTenantSecret,
 } from '@/lib/tenant/secrets';
-import { invalidateTenantGeminiCache } from '@/lib/gemini';
+import { invalidateTenantGeminiCache, getTenantGeminiApiKey } from '@/lib/gemini';
 import { handleApiError, resolveTenantContext } from '@/lib/auth/context';
 
 export const dynamic = 'force-dynamic';
@@ -34,7 +36,10 @@ function normalizeKeyName(value: unknown, provider: string): string | null {
 export async function GET(request: Request) {
   try {
     const { tenantId } = await resolveTenantContext(request, { roles: ['owner', 'admin'] });
-    return NextResponse.json({ secrets: await listTenantSecrets(tenantId) });
+    const secrets = await listTenantSecrets(tenantId);
+    const managed = await isPlatformManagedAi(tenantId);
+    return NextResponse.json({ secrets: managed ? secrets.filter(s => s.provider !== 'gemini') : secrets,
+      ai: { mode:managed ? 'platform':'tenant', configured:managed ? !!await getTenantGeminiApiKey(tenantId) : secrets.some(s => s.provider==='gemini' && s.keyName==='api_key') } });
   } catch (error) {
     return handleApiError(error, 'Failed to load provider credentials');
   }
@@ -43,7 +48,7 @@ export async function GET(request: Request) {
 /** Saves (or replaces) an encrypted provider secret. Body: { provider, keyName?, value }. */
 export async function POST(request: Request) {
   try {
-    const { tenantId } = await resolveTenantContext(request, { roles: ['owner', 'admin'] });
+    const { tenantId } = await alphaMutation(request,'assistant_edit',16384);
     const body = (await request.json()) as { provider?: string; keyName?: string; value?: string };
     const provider = normalizeProvider(body?.provider);
     if (!provider) {
@@ -52,6 +57,8 @@ export async function POST(request: Request) {
     if (typeof body?.value !== 'string' || !body.value.trim()) {
       return NextResponse.json({ error: 'A credential value is required' }, { status: 400 });
     }
+    if (provider === 'gemini' && await isPlatformManagedAi(tenantId))
+      return NextResponse.json({ error:'AI is managed for this alpha. Personal keys are not required.' }, { status:409 });
     const keyName = normalizeKeyName(body?.keyName, provider);
     if (!keyName) {
       return NextResponse.json({ error: 'Invalid key name' }, { status: 400 });
@@ -71,12 +78,14 @@ export async function POST(request: Request) {
 /** Removes a provider secret. Query: provider, keyName?. */
 export async function DELETE(request: Request) {
   try {
-    const { tenantId } = await resolveTenantContext(request, { roles: ['owner', 'admin'] });
+    const { tenantId } = await alphaMutation(request,'assistant_edit',16384);
     const params = new URL(request.url).searchParams;
     const provider = normalizeProvider(params.get('provider'));
     if (!provider) {
       return NextResponse.json({ error: 'Unsupported provider' }, { status: 400 });
     }
+    if (provider === 'gemini' && await isPlatformManagedAi(tenantId))
+      return NextResponse.json({ error:'AI is managed for this alpha. Personal keys are not required.' }, { status:409 });
     const keyName = normalizeKeyName(params.get('keyName'), provider);
     if (!keyName) {
       return NextResponse.json({ error: 'Invalid key name' }, { status: 400 });

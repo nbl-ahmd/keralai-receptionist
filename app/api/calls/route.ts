@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { CallRecord } from '@/types';
-import { getCalls, removeCall, upsertCall } from '@/lib/store';
+import { getCalls, getCallPage, getCallById, removeCall, upsertCall } from '@/lib/store';
 import { CrmSyncResult, syncToCrm } from '@/lib/crm';
 import { getProfile, upsertContact } from '@/lib/store';
 import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
@@ -8,6 +8,20 @@ import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
 export async function GET(request: Request) {
   try {
     const { tenantId } = await resolveTenantContext(request);
+    const p=new URL(request.url).searchParams;
+    const id=p.get('id');
+    if(id){
+      if(!/^[a-f0-9-]{36}$/i.test(id)) return NextResponse.json({error:'Call not found'},{status:404});
+      const call=await getCallById(tenantId,id);
+      return call?NextResponse.json(call,{headers:{'Cache-Control':'no-store'}}):NextResponse.json({error:'Call not found'},{status:404});
+    }
+    if(p.get('paginated')==='1'){
+      const page=Math.min(10000,Math.max(1,Math.trunc(Number(p.get('page'))||1))),search=(p.get('search')??'').slice(0,120);
+      const outcome=p.get('outcome')??'all',channel=p.get('channel')??'all',date=p.get('date')??'';
+      if(!['all','answered','booked','escalated','missed'].includes(outcome)||!['all','phone','web'].includes(channel)||
+        (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(new Date(date).getTime())||new Date(date).toISOString().slice(0,10)!==date)))return NextResponse.json({error:'Invalid filters'},{status:400});
+      return NextResponse.json(await getCallPage(tenantId,{page,search,outcome,channel,date}),{headers:{'Cache-Control':'no-store'}});
+    }
     return NextResponse.json(await getCalls(tenantId));
   } catch (error) {
     return handleApiError(error, 'Failed to read calls');

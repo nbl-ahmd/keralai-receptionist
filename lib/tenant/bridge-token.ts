@@ -16,7 +16,7 @@
 import crypto from "node:crypto";
 import type { TenantContext } from "./types";
 
-export type BridgeScope = "browser" | "exotel";
+export type BridgeScope = "browser" | "exotel" | "phone";
 
 export interface BridgeTokenPayload {
   /** subject: user id */
@@ -30,6 +30,15 @@ export interface BridgeTokenPayload {
   iat: number;
   /** random nonce, to avoid identical tokens */
   nonce: string;
+  session_id?: string;
+  provider?: string;
+  phone_number_id?: string;
+  provider_call_id?: string;
+}
+
+export function createPhoneBridgeToken(input: { tenantId: string; phoneNumberId: string; providerCallId: string; sessionId?: string }) {
+  return signBridgeToken({ sub:'telephony',tid:input.tenantId,scope:'phone',provider:'vobiz',
+    phone_number_id:input.phoneNumberId,provider_call_id:input.providerCallId,session_id:input.sessionId,exp:Math.floor(Date.now()/1000)+90 });
 }
 
 function getSecret(): string {
@@ -65,7 +74,8 @@ export function signBridgeToken(
 
 export function createBrowserBridgeToken(
   context: Pick<TenantContext, "userId" | "tenantId">,
-  ttlSeconds = 300,
+  ttlSeconds = 90,
+  sessionId?: string,
 ): { token: string; expiresAt: number } {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + ttlSeconds;
@@ -73,6 +83,7 @@ export function createBrowserBridgeToken(
     sub: context.userId,
     tid: context.tenantId,
     scope: "browser",
+    session_id: sessionId,
     exp,
   });
   return { token, expiresAt: exp };
@@ -84,6 +95,7 @@ export type VerifyResult =
 
 export function verifyBridgeToken(token: string, expectedScope?: BridgeScope): VerifyResult {
   if (!token || typeof token !== "string") return { ok: false, reason: "malformed" };
+  if (token.split(".").length !== 2) return { ok: false, reason: "malformed" };
   const [body, signature] = token.split(".");
   if (!body || !signature) return { ok: false, reason: "malformed" };
 

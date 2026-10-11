@@ -1,3 +1,4 @@
+import { alphaMutation } from '@/lib/alpha/http';
 import { NextResponse } from 'next/server';
 import { KnowledgeItem } from '@/types';
 import {
@@ -28,8 +29,9 @@ const VALID_TYPES = new Set<KnowledgeItem['type']>([
 
 export async function POST(request: Request) {
   try {
-    const { tenantId } = await resolveTenantContext(request);
+    const { tenantId } = await alphaMutation(request,'knowledge_upload',32768);
     const item = (await request.json()) as KnowledgeItem;
+    if(typeof item?.title!=='string'||typeof item?.content!=='string'||item.title.length>160||item.content.length>12000)return NextResponse.json({error:'Use a title under 160 characters and content under 12,000 characters.'},{status:413});
     if (!item?.title || !item?.content) {
       return NextResponse.json({ error: 'Title and content are required' }, { status: 400 });
     }
@@ -72,7 +74,7 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const { tenantId } = await resolveTenantContext(request);
+    const { tenantId } = await alphaMutation(request,'knowledge_upload',32768);
     const id = new URL(request.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'Missing ID' }, { status: 400 });
     await removeKnowledgeItem(tenantId, id);

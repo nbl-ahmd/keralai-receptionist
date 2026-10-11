@@ -1,7 +1,7 @@
 /**
  * bridge/server.mjs
  *
- * Standalone Exotel ↔ Gemini Live WebSocket bridge.
+ * Standalone managed Vobiz / browser / legacy Exotel ↔ Gemini Live bridge.
  *
  * This is a plain Node.js HTTP + WebSocket server with ZERO Next.js dependency.
  * It is deployed to Render as its own web service, independent of the Next.js
@@ -11,6 +11,7 @@
  *   GET  /health          — Render health check, returns 200 {"ok":true}
  *   GET  /ping            — Lightweight keep-alive endpoint (no DB, HEAD/GET supported)
  *   GET  /metrics         — Aggregate latency/throughput snapshot (JSON, no PII)
+ *   WS   /ws/vobiz       — Signed one-use managed phone transport
  *   WS   /ws/exotel/:slug — Exotel phone bridge (PCM audio ↔ Gemini Live)
  *   WS   /ws/browser      — Browser voice relay (audio ↔ Gemini Live)
  *
@@ -32,7 +33,7 @@
  *                           Exotel greeting/IVR applet greets the caller). Default on.
  *   PUBLIC_APP_ORIGIN     — Exact browser origin allowed for /ws/browser
  *   BROWSER_MAX_SESSIONS_PER_IP — Per-IP limit for /ws/browser (default 3)
- *   BROWSER_SESSION_TTL_MS      — Max browser session duration in ms (default 900000)
+ *   Session duration is governed by the database plan, maximum 900 seconds.
  *   PG_POOL_MAX           — Postgres pool size (default 10)
  *   PG_QUERY_TIMEOUT_MS   — Per-query timeout in ms (default 15000)
  *   CRM_TIMEOUT_MS        — CRM webhook timeout in ms (default 8000)
@@ -47,7 +48,7 @@
  *   METRICS_TOKEN         — If set, /metrics requires ?token= or x-metrics-token
  */
 
-import 'dotenv/config';
+import './env.mjs';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 
@@ -56,6 +57,7 @@ import { Modality } from '@google/genai';
 
 import {
   closePool,
+  dbQuery,
   getLegacyTenant,
   getProfileVersion,
   getTenantBridgeCredential,
@@ -87,6 +89,12 @@ import {
 import { extractExotelToken, verifyBridgeToken, verifyExotelToken } from './bridge-token.mjs';
 import { auditTenantGeminiKeys, getSecretsKeyFingerprint } from './secrets.mjs';
 import { BrowserSession } from './browser-session.mjs';
+import { ExotelTransport } from './transports/exotel-legacy.mjs';
+import { VobizTransport } from './transports/vobiz.mjs';
+import { installVoiceGuard } from './voice-guard.mjs';
+import { admitVoiceSession, claimVoiceSession, rollingVoiceAuthorization, finishVoiceSession, recordVoiceTokens, emitAlpha } from './entitlements.mjs';
+import { withTransaction } from './db.mjs';
+import { authorizePhoneBridge, markPhoneConnection } from './telephony.mjs';
 import { buildRuntimeInstruction } from './shared/runtime-modes.mjs';
 import {
   CallMetrics,
@@ -375,6 +383,9 @@ class CallSession {
     this.streamSid = streamSid;
     this.streamKey = streamKey === 'stream_sid' ? 'stream_sid' : 'streamSid';
     this.exotelWs = exotelWs;
+    this.alphaSessionId = tenant.alphaSessionId;
+    this.transport = tenant.transport ?? new ExotelTransport(exotelWs);
+    this.phoneClaims = tenant.phoneClaims ?? null;
     this.ai = ai;
     this.companyProfile = companyProfile;
     this.tenantId = tenant.tenantId;
@@ -385,7 +396,7 @@ class CallSession {
     this.exotelRate = normalizeExotelRate(exotelRate) ?? DEFAULT_EXOTEL_RATE;
     this.toGeminiRatio = this.exotelRate / GEMINI_INPUT_SAMPLE_RATE;
     this.toExotelRatio = GEMINI_OUTPUT_SAMPLE_RATE / this.exotelRate;
-    this.chunkBytes = exotelChunkBytes(this.exotelRate);
+    this.chunkBytes = this.transport.chunkBytes ?? exotelChunkBytes(this.exotelRate);
     this.maxPendingInputBytes = this.exotelRate * 2 * 2; // ~2 s of 16-bit PCM
 
     /** @type {import('@google/genai').Session | null} */
@@ -649,6 +660,7 @@ class CallSession {
             .catch((e) => this.err('Gemini session promise rejected:', e));
         },
         onmessage: (message) => {
+          if(this.alphaSessionId && Number.isSafeInteger(message.usageMetadata?.totalTokenCount))void recordVoiceTokens(this.tenantId,this.alphaSessionId,message.usageMetadata.totalTokenCount,withTransaction).catch(()=>emitAlpha('gemini.usage.record_failed',this.tenantId));
           if (this.closed) return;
           this._handleGeminiMessage(message).catch((e) =>
             this.err('Error in _handleGeminiMessage:', e),
@@ -700,12 +712,12 @@ class CallSession {
    * Decodes base64 once, buffers to 100ms chunks, resamples, forwards to Gemini.
    * @param {string} base64Payload  Base64-encoded PCM16 @ EXOTEL_SAMPLE_RATE
    */
-  handleExotelMedia(base64Payload) {
+  handlePhoneMedia(base64Payload) {
     if (this.closed) return;
 
     let rawPcm;
     try {
-      rawPcm = Buffer.from(base64Payload, 'base64');
+      rawPcm = this.transport.decode(base64Payload);
     } catch (e) {
       this._mediaError('decode', e);
       return;
@@ -789,6 +801,7 @@ class CallSession {
       this.outputMuted = false; // interrupted turn is over — accept new audio
       this.interruptSent = false;
       this._flushOutputBuffer(true);
+      this.transport.checkpoint();
     }
 
     // Tool calls run off the audio path; each sends its own response when ready.
@@ -846,7 +859,7 @@ class CallSession {
     if (this.interruptSent) return;
     this.interruptSent = true;
     this.log('Barge-in — clearing Exotel playback buffer');
-    const sent = this._sendExotelFrame({ event: 'clear', [this.streamKey]: this.streamSid });
+    const sent = this.transport.clear(this.streamSid,this.streamKey);
     logPerf('barge-in', { call: this.callSid, clear_sent: sent ? 1 : 0, interrupts: this.metrics.interrupts });
   }
 
@@ -1069,9 +1082,9 @@ class CallSession {
       this._endCallTimer = null;
       if (this.closed) return;
       try {
-        if (this.exotelWs.readyState === 1) this.exotelWs.close(1000, 'Assistant ended call');
+        this.transport.stop();
       } catch { /* ignore */ }
-      this.close().catch((e) => this.err('Error closing after endCall:', e));
+      if(this.transport.name!=='vobiz') this.close().catch((e) => this.err('Error closing after endCall:', e));
     }, END_CALL_GRACE_MS);
     this._endCallTimer.unref?.();
   }
@@ -1081,7 +1094,7 @@ class CallSession {
     while (this.outputBuffer.length >= this.chunkBytes) {
       const chunk = this.outputBuffer.subarray(0, this.chunkBytes);
       this.outputBuffer = this.outputBuffer.subarray(this.chunkBytes);
-      this._sendMediaToExotel(chunk);
+      this._sendMediaToPhone(chunk);
     }
 
     if (force && this.outputBuffer.length > 0) {
@@ -1089,37 +1102,18 @@ class CallSession {
       const padded = remainder === 0
         ? this.outputBuffer
         : Buffer.concat([this.outputBuffer, Buffer.alloc(320 - remainder)]);
-      this._sendMediaToExotel(padded);
+      this._sendMediaToPhone(padded);
       this.outputBuffer = Buffer.alloc(0);
     }
   }
 
   /** @param {Buffer} pcm16Buf */
-  _sendMediaToExotel(pcm16Buf) {
+  _sendMediaToPhone(pcm16Buf) {
     const t0 = hrNow();
-    const sent = this._sendExotelFrame({
-      event: 'media',
-      [this.streamKey]: this.streamSid,
-      media: { payload: pcm16Buf.toString('base64') },
-    });
+    const sent = this.transport.media(pcm16Buf,this.streamSid,this.streamKey);
     const procMs = msSince(t0);
     if (sent) this.metrics.noteOutbound(procMs, pcm16Buf.length, 1);
     if (verboseAudio && sent) logPerf('audio-out', { call: this.callSid, bytes: pcm16Buf.length, ms: procMs.toFixed(2) });
-  }
-
-  /**
-   * @param {object} frame
-   * @returns {boolean} true if the frame was written to the Exotel socket
-   */
-  _sendExotelFrame(frame) {
-    if (this.exotelWs.readyState !== 1 /* OPEN */) return false;
-    try {
-      this.exotelWs.send(JSON.stringify(frame));
-      return true;
-    } catch (e) {
-      this.err('Error sending frame to Exotel:', e);
-      return false;
-    }
   }
 
   async close() {
@@ -1133,6 +1127,8 @@ class CallSession {
     if (this._endCallTimer) { clearTimeout(this._endCallTimer); this._endCallTimer = null; }
     this.pendingInput = Buffer.alloc(0);
     this.log('Closing call session');
+    this.transport.dispose();
+    if(this.phoneClaims) await markPhoneConnection(this.phoneClaims,'disconnected').catch(()=>{});
 
     this._flushOutputBuffer(true);
 
@@ -1402,14 +1398,14 @@ async function main() {
   });
 
   // ── WebSocket servers ──────────────────────────────────────────────────────
-  const wss = new WebSocketServer({ noServer: true });
-  const browserWss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 });
+  const browserWss = new WebSocketServer({ noServer: true, maxPayload: 65536 });
   const browserSessionsByIp = new Map();
   const maxBrowserSessionsPerIp = Number(process.env.BROWSER_MAX_SESSIONS_PER_IP ?? 3);
 
   // Comma-separated allow-list, normalised (trim, lowercase, no trailing "/")
   // so a trailing slash or casing difference can't cause a spurious 403.
-  // Unset/empty => allow any origin (previous behaviour).
+  // Unset/empty fails closed.
   const allowedBrowserOrigins = (process.env.PUBLIC_APP_ORIGIN ?? '')
     .split(',')
     .map((origin) => origin.trim().replace(/\/+$/, '').toLowerCase())
@@ -1418,7 +1414,7 @@ async function main() {
   let browserOriginRejects = 0;
   console.log(
     '[bridge] /ws/browser allowed origins:',
-    allowedBrowserOrigins.length ? allowedBrowserOrigins.join(', ') : 'any (PUBLIC_APP_ORIGIN unset)',
+    allowedBrowserOrigins.length ? allowedBrowserOrigins.join(', ') : 'none (PUBLIC_APP_ORIGIN unset)',
   );
 
   // ── Tenant resolution helpers ──────────────────────────────────────────────
@@ -1444,6 +1440,15 @@ async function main() {
     try {
       const url = new URL(req.url, 'http://localhost');
       const exotelMatch = url.pathname.match(/^\/ws\/exotel\/([^/]+)(?:\/([^/]+))?\/?$/);
+
+      if (url.pathname === '/ws/vobiz') {
+        const verified=verifyBridgeToken(url.searchParams.get('token') ?? '', 'phone');
+        if(!verified.ok) {socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');socket.destroy();return;}
+        const routing=await authorizePhoneBridge(verified.payload);
+        if(!routing) {socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');socket.destroy();return;}
+        req._tenant=routing.tenant;req._phoneClaims=verified.payload;req._phoneCaller=routing.from;req._phoneDurationMs=routing.maxDurationMs;req._voiceAuthorization=routing.authorization;
+        wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));return;
+      }
 
       if (exotelMatch) {
         const slug = decodeURIComponent(exotelMatch[1]);
@@ -1486,6 +1491,14 @@ async function main() {
           `[bridge][exotel-auth] accepted slug=${slug} tenant=${resolution.tenant.slug}`,
         );
         req._tenant = resolution.tenant;
+        // Legacy traffic is limited to grandfathered internal workspaces and
+        // consumes the same browser/AI allowance and independent phone kill switch.
+        const authorization=await withTransaction(async c=>{
+          const reservation=await admitVoiceSession(c,{tenantId:resolution.tenant.id,kind:'legacy'});
+          return claimVoiceSession({tid:resolution.tenant.id,session_id:reservation.id,nonce:randomUUID()},work=>work(c));
+        });
+        if(!authorization){socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');socket.destroy();return;}
+        req._voiceAuthorization=authorization;
         wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
         return;
       }
@@ -1519,7 +1532,7 @@ async function main() {
         const ip = req.socket.remoteAddress ?? 'unknown';
         const activeSessions = browserSessionsByIp.get(ip) ?? 0;
 
-        if (allowedBrowserOrigins.length && origin && !allowedBrowserOrigins.includes(normalizeOrigin(origin))) {
+        if (!origin || !allowedBrowserOrigins.includes(normalizeOrigin(origin))) {
           if (browserOriginRejects++ < 5) {
             console.warn(
               `[bridge] Rejected /ws/browser origin "${origin}" (allowed: ${allowedBrowserOrigins.join(', ')})`,
@@ -1535,6 +1548,9 @@ async function main() {
           return;
         }
 
+        const authorization=await claimVoiceSession(verified.payload,withTransaction);
+        if(!authorization){socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');socket.destroy();return;}
+        req._voiceAuthorization=authorization;
         req._bridge = verified.payload;
         browserSessionsByIp.set(ip, activeSessions + 1);
         browserWss.handleUpgrade(req, socket, head, (ws) => {
@@ -1544,7 +1560,7 @@ async function main() {
         return;
       }
 
-      console.warn(`[bridge] rejected WebSocket upgrade for unknown path=${url.pathname}`);
+      console.warn('[bridge] rejected WebSocket upgrade for unknown path');
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
     } catch (error) {
@@ -1555,18 +1571,26 @@ async function main() {
 
   // ── Browser relay handler ──────────────────────────────────────────────────
   browserWss.on('connection', (ws, req) => {
+    processMetrics.activeBrowserSessions++;
     // The tenant comes from the verified signed token, never from client input.
     const tenantId = req._bridge?.tid;
     console.log('[bridge] New browser voice session from', req.socket.remoteAddress, `(tenant ${tenantId})`);
 
     /** @type {BrowserSession | null} */
     let session = null;
-    let sessionTtl = null;
+    const authorization=req._voiceAuthorization;
+    const cancelGuard=installVoiceGuard({expiresAt:authorization.expires_at,
+      check:()=>rollingVoiceAuthorization(tenantId,authorization.id,withTransaction),
+      end:reason=>{session?.send({type:'error',message:'This voice session has ended. Check your usage or contact your organiser.'});
+        emitAlpha('gemini.session.denied',tenantId,reason,authorization.id);ws.terminate();}
+    });
 
     // Always release the per-IP slot and close the session, even if setup fails
     // before a BrowserSession exists.
     ws.on('close', () => {
-      if (sessionTtl) clearTimeout(sessionTtl);
+      cancelGuard();
+      processMetrics.activeBrowserSessions=Math.max(0,processMetrics.activeBrowserSessions-1);
+      void finishVoiceSession(tenantId,authorization.id,withTransaction).catch(()=>emitAlpha('gemini.session.close_pending',tenantId));
       const ip = ws._keralaiIp;
       const count = browserSessionsByIp.get(ip) ?? 1;
       if (count <= 1) browserSessionsByIp.delete(ip);
@@ -1584,7 +1608,7 @@ async function main() {
       // Resolve the tenant's own Gemini credential, models, profile and current
       // runtime mode before opening a session. There is no global fallback key.
       const [ai, liveModel, embeddingModel, profile, runtimeState] = await Promise.all([
-        getTenantGeminiClient(tenantId),
+        getTenantGeminiClient(tenantId,authorization.id),
         getTenantLiveModel(tenantId),
         getTenantEmbeddingModel(tenantId),
         getCompanyProfile(tenantId, { force: true }),
@@ -1598,17 +1622,12 @@ async function main() {
         liveModel,
         embeddingModel,
         companyProfile: profile,
+        onUsage:tokens=>recordVoiceTokens(tenantId,authorization.id,tokens,withTransaction),
         runtimeInstruction,
         buildInstruction: buildSystemInstruction,
         buildTools,
         buildGreeting,
       });
-
-      sessionTtl = setTimeout(() => {
-        if (!session) return;
-        session.send({ type: 'error', message: 'This demo session has reached its time limit.' });
-        session.close().finally(() => ws.close(1000, 'Session TTL reached'));
-      }, Number(process.env.BROWSER_SESSION_TTL_MS ?? 15 * 60 * 1000));
 
       ws.on('message', async (raw) => {
         if (!session) return;
@@ -1617,7 +1636,7 @@ async function main() {
           ws.close(1003, 'JSON frames required'); return;
         }
         try {
-          if (frame.type === 'start') await session.open(frame);
+          if (frame.type === 'start') { if(session.geminiSession)throw new Error('Session already started');await session.open(frame); }
           else if (frame.type === 'audio') session.sendAudio(frame.data, frame.mimeType);
           else if (frame.type === 'stop') { await session.close(); ws.close(1000, 'Session complete'); }
         } catch (error) {
@@ -1632,13 +1651,20 @@ async function main() {
     });
   });
 
-  // ── Exotel handler ─────────────────────────────────────────────────────────
+  // ── Shared phone transport handler ─────────────────────────────────────────────────────────
   wss.on('connection', (ws, req) => {
     const tenant = req._tenant;
     console.log(
-      `[bridge] New Exotel WebSocket connection from ${req.socket.remoteAddress} (tenant ${tenant?.slug ?? 'unknown'})`,
+      `[bridge] New phone WebSocket connection from ${req.socket.remoteAddress} (tenant ${tenant?.slug ?? 'unknown'})`,
     );
 
+    const transport=req._phoneClaims ? new VobizTransport(ws,req._phoneClaims) : new ExotelTransport(ws);
+    let startTimer=setTimeout(()=>{if(!session && ws.readyState===1)ws.close(1008,'Media handshake timeout');},10000);
+    startTimer.unref?.();
+    const phoneGuard=req._voiceAuthorization ? installVoiceGuard({expiresAt:req._voiceAuthorization.expires_at,
+      check:()=>rollingVoiceAuthorization(tenant.id,req._voiceAuthorization.id,withTransaction),
+      end:reason=>{emitAlpha('phone.call.denied',tenant.id,reason,req._voiceAuthorization.id);transport.stop();ws.terminate();}
+    }) : null;
     // Applet URL may carry ?sample-rate=8000|16000|24000 (authoritative at start).
     const queryRate =
       normalizeExotelRate(new URL(req.url ?? '/', 'http://localhost').searchParams.get('sample-rate')) ??
@@ -1658,13 +1684,16 @@ async function main() {
       }
       // JSON.parse("null"/"123"/'"x"') yields a non-object; frame.event would throw.
       if (!frame || typeof frame !== 'object') return;
+      try {frame=transport.normalize(frame);}catch {ws.close(1008,'Invalid media handshake');return;}
 
       switch (frame.event) {
         case 'connected':
           console.log('[bridge] Exotel connected event received');
           break;
 
+        case 'transport_ack': break;
         case 'start': {
+          clearTimeout(startTimer);
           const startMeta = frame.start ?? frame;
           const rawCallSid =
             frame.call_sid ?? frame.callSid ??
@@ -1708,11 +1737,12 @@ async function main() {
           const created = new CallSession(callSid, streamSid, streamKey, ws, null, {}, exotelRate, {
             tenantId,
             liveModel: GEMINI_MODEL,
-            embeddingModel: EMBEDDING_MODEL,
+            embeddingModel: EMBEDDING_MODEL, transport, phoneClaims:req._phoneClaims,alphaSessionId:req._voiceAuthorization?.id,
           });
           session = created;
           created.caller = startMeta.from ?? startMeta.caller ?? startMeta.custom_parameters?.caller ?? 'Unknown caller';
-          created.phone = startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
+          created.phone = req._phoneCaller ?? startMeta.from ?? startMeta.custom_parameters?.phone ?? null;
+          if(req._phoneClaims) void markPhoneConnection(req._phoneClaims,'connected').catch(()=>{});
           logPerf('call-start', { call: callSid, stream: streamSid, tenant: tenant.slug, rate: exotelRate });
 
           // Resolve this tenant's own Gemini credential, models and profile
@@ -1720,7 +1750,7 @@ async function main() {
           let setupError = null;
           try {
             const [ai, liveModel, embeddingModel, profile] = await Promise.all([
-              getTenantGeminiClient(tenantId),
+              getTenantGeminiClient(tenantId,req._voiceAuthorization?.id),
               getTenantLiveModel(tenantId),
               getTenantEmbeddingModel(tenantId),
               getCompanyProfile(tenantId, { force: true }).catch(() => created.companyProfile),
@@ -1743,6 +1773,7 @@ async function main() {
 
           // A tenant without a usable Gemini credential cannot run a call.
           if (!created.ai) {
+            if(req._phoneClaims) await markPhoneConnection(req._phoneClaims,'failed').catch(()=>{});
             console.error(
               `[bridge][${callSid}] No usable Gemini credential for tenant ${tenant.slug}` +
                 (setupError ? ` (${setupError.message})` : '') +
@@ -1758,6 +1789,7 @@ async function main() {
             await created.openGeminiSession();
           } catch (e) {
             console.error(`[bridge][${callSid}] Failed to open Gemini session:`, e);
+            if(req._phoneClaims) await markPhoneConnection(req._phoneClaims,'failed').catch(()=>{});
             if (session === created) session = null;
             // Persist a final record (and clear the start row) rather than
             // leaving a dangling "in progress" call.
@@ -1772,7 +1804,7 @@ async function main() {
           // log per packet.
           if (!session) break;
           const payload = frame.media?.payload;
-          if (payload) session.handleExotelMedia(payload);
+          if (payload) session.handlePhoneMedia(payload);
           break;
         }
 
@@ -1791,7 +1823,9 @@ async function main() {
     });
 
     ws.on('close', async (code, reason) => {
-      console.log(`[bridge] Exotel WebSocket closed (code=${code}, reason=${reason})`);
+      clearTimeout(startTimer);phoneGuard?.();transport.dispose();
+      if(req._voiceAuthorization)void finishVoiceSession(tenant.id,req._voiceAuthorization.id,withTransaction).catch(()=>emitAlpha('wallet.settlement.pending',tenant.id));
+      console.log(`[bridge] Phone WebSocket closed (code=${code}, reason=${reason})`);
       if (session) { await session.close(); session = null; }
     });
 

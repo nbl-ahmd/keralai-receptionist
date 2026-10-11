@@ -9,79 +9,35 @@
  * encrypted credential is decrypted and used to build a client.
  *
  * Decrypted keys are never logged and never returned to a browser. Cached
- * clients are short-lived so a rotated key takes effect automatically.
+ * clients resolve fresh so a rotated key takes effect on the next session.
  */
 
+import { reserveAiRequest } from './entitlements.mjs';
+import { AlphaAccessError } from './alpha-policy.mjs';
 import { GoogleGenAI } from '@google/genai';
 import { getTenantSecretValue, saveTenantSecret } from './secrets.mjs';
-import { getLegacyTenant, getTenantSetting } from './db.mjs';
+import { resolveTenantAiConfiguration as resolveAi } from './ai-config.mjs';
+import { dbQuery, getLegacyTenant, withTransaction } from './db.mjs';
 
 export const DEFAULT_LIVE_MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.8-live';
 export const DEFAULT_EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL ?? 'gemini-embedding-2';
 
-const CACHE_TTL_MS = 60_000;
-
-/** @type {Map<string, { value: GoogleGenAI, expiresAt: number }>} */
-const clientCache = new Map();
-
-/** Returns the tenant's decrypted Gemini API key, or null when unconfigured. */
-export async function getTenantGeminiApiKey(tenantId) {
-  return getTenantSecretValue(tenantId, 'gemini', 'api_key');
+export async function resolveTenantAiConfiguration(tenantId, consume = false) {
+  return resolveAi(tenantId, { query: dbQuery, readSecret: getTenantSecretValue, consume });
 }
-
-/**
- * Builds (and briefly caches) a Gemini client scoped to one tenant.
- * Throws when the tenant has not configured a key.
- */
-export async function getTenantGeminiClient(tenantId) {
-  const cached = clientCache.get(tenantId);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-
-  let apiKey;
-  try {
-    apiKey = await getTenantGeminiApiKey(tenantId);
-  } catch (error) {
-    // A decryption failure almost always means the bridge's
-    // TENANT_SECRETS_ENCRYPTION_KEY does not match the dashboard's. Surface a
-    // clear, actionable error (never the ciphertext or the key).
-    const failure = new Error(
-      'The workspace Gemini credential could not be decrypted. TENANT_SECRETS_ENCRYPTION_KEY ' +
-        'must be identical on the dashboard and the bridge; re-save the key after fixing it.',
-    );
-    failure.code = 'TENANT_SECRET_DECRYPT_FAILED';
-    failure.cause = error;
-    throw failure;
+export async function getTenantGeminiApiKey(tenantId) { return (await resolveTenantAiConfiguration(tenantId)).apiKey; }
+export async function getTenantGeminiClient(tenantId, sessionId=null) {
+  if(sessionId) {
+    const active=await dbQuery("select 1 from alpha_voice_sessions where tenant_id=$1 and id=$2 and state='active' and expires_at>now()",[tenantId,sessionId]);
+    if(!active.length)throw new AlphaAccessError(403,'Voice authorization is unavailable.');
   }
-  if (!apiKey) {
-    const missing = new Error('This workspace has no Gemini API key configured.');
-    missing.code = 'TENANT_GEMINI_KEY_MISSING';
-    throw missing;
-  }
-  const client = new GoogleGenAI({ apiKey });
-  clientCache.set(tenantId, { value: client, expiresAt: Date.now() + CACHE_TTL_MS });
-  return client;
+  const config = await resolveTenantAiConfiguration(tenantId, true);
+  if(!sessionId)await reserveAiRequest(tenantId,'bridge_ai_request',withTransaction);
+  return new GoogleGenAI({ apiKey: config.apiKey });
 }
-
-/** Drops a cached client so a rotated key is picked up immediately. */
-export function invalidateTenantGeminiClient(tenantId) {
-  clientCache.delete(tenantId);
-}
-
-async function resolveModel(tenantId, key, fallback) {
-  const value = await getTenantSetting(tenantId, key, '');
-  const text = typeof value === 'string' ? value.trim() : '';
-  return text || fallback;
-}
-
-/** Tenant-configured Gemini Live model, falling back to the env/default. */
-export async function getTenantLiveModel(tenantId) {
-  return resolveModel(tenantId, 'gemini.live_model', DEFAULT_LIVE_MODEL);
-}
-
-/** Tenant-configured embedding model, falling back to the env/default. */
-export async function getTenantEmbeddingModel(tenantId) {
-  return resolveModel(tenantId, 'gemini.embedding_model', DEFAULT_EMBEDDING_MODEL);
-}
+export function invalidateTenantGeminiClient() { /* All selections are fresh. */ }
+export async function getTenantLiveModel(tenantId) { return (await resolveTenantAiConfiguration(tenantId)).liveModel; }
+export async function getTenantEmbeddingModel(tenantId) { return (await resolveTenantAiConfiguration(tenantId)).embeddingModel; }
 
 /**
  * One-time migration of the pre-multitenancy Gemini key into the legacy tenant.
@@ -94,7 +50,7 @@ export async function getTenantEmbeddingModel(tenantId) {
  * encrypted at rest, so existing deployments keep working.
  *
  * This is a migration write, not a per-request global fallback: ordinary tenant
- * traffic still resolves credentials from `tenant_secrets` only. Never logs the
+ * traffic uses the explicit tenant AI mode. Never logs the
  * key.
  */
 export async function importLegacyGeminiKeyIfNeeded() {

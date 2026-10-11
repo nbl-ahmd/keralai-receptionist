@@ -1,3 +1,5 @@
+import { alphaMutation } from '@/lib/alpha/http';
+import { isPlatformManagedAi } from '@/lib/gemini';
 import { NextResponse } from 'next/server';
 import {
   deleteTenantSetting,
@@ -32,12 +34,15 @@ export async function GET(request: Request) {
  */
 export async function PATCH(request: Request) {
   try {
-    const { tenantId } = await resolveTenantContext(request, { roles: ['owner', 'admin'] });
+    const { tenantId } = await alphaMutation(request,'assistant_edit',16384);
     const body = (await request.json()) as { key?: string; value?: unknown };
     const key = body?.key;
     if (!key || typeof key !== 'string') {
       return NextResponse.json({ error: 'A setting key is required' }, { status: 400 });
     }
+
+    if (await isPlatformManagedAi(tenantId) && ALLOWED_MODELS.has(key))
+      return NextResponse.json({ error:'AI models are managed during the alpha.' }, { status:409 });
 
     if (body.value === null || body.value === undefined || body.value === '') {
       await deleteTenantSetting(tenantId, key);

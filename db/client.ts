@@ -29,7 +29,6 @@ function getSql() {
 
 // Cache the sql tagged-template function across hot reloads in development.
 declare global {
-  // eslint-disable-next-line no-var
   var __keralaiNeon: NeonQueryFunction<false, false> | undefined;
 }
 
@@ -49,8 +48,19 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   params: unknown[] = [],
 ): Promise<T[]> {
   const sql = getSqlCached();
+  // Integration runs use a disposable schema. HTTP Neon does not honor the
+  // connection URL search_path startup option, so set it transaction-locally.
+  const schema = process.env.KERALAI_TEST_SCHEMA;
+  if (schema) {
+    if (!/^keralai_test_[a-f0-9]{16}$/.test(schema)) throw new Error('Invalid test schema');
+    const results = await sql.transaction([
+      sql.query("select set_config('search_path',$1,true)", [schema+',public']),
+      sql.query(text, params),
+    ],{fetchOptions:{signal:AbortSignal.timeout(15000)}});
+    return results[1] as unknown as T[];
+  }
   // neon() default mode returns an array of row objects
-  const rows = (await sql.query(text, params)) as unknown as T[];
+  const rows = (await sql.query(text, params,{fetchOptions:{signal:AbortSignal.timeout(15000)}})) as unknown as T[];
   return rows;
 }
 

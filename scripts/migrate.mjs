@@ -58,20 +58,19 @@ async function main() {
 
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL.includes("sslmode=require")
-      ? { rejectUnauthorized: false }
-      : undefined,
+    connectionTimeoutMillis: 15000,
+    query_timeout: 30000,
   });
 
   await pool.query(`
-    create table if not exists schema_migrations (
+    create table if not exists public.schema_migrations (
       name text primary key,
       applied_at timestamptz not null default now()
     )
   `);
 
   const applied = new Set(
-    (await pool.query("select name from schema_migrations")).rows.map((row) => row.name),
+    (await pool.query("select name from public.schema_migrations")).rows.map((row) => row.name),
   );
 
   const files = fs
@@ -101,8 +100,9 @@ async function main() {
     const client = await pool.connect();
     try {
       await client.query("begin");
+      await client.query("set local search_path to public");
       await client.query(sql);
-      await client.query("insert into schema_migrations (name) values ($1)", [file]);
+      await client.query("insert into public.schema_migrations (name) values ($1)", [file]);
       await client.query("commit");
       console.log(`  ✓ ${file}`);
     } catch (error) {

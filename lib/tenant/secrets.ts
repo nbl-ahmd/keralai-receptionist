@@ -202,6 +202,14 @@ export async function listTenantSecrets(tenantId: string): Promise<SecretMeta[]>
   }));
 }
 
+/** A saved credential exists but cannot be read with the current master key. */
+export class SecretDecryptionError extends Error {
+  constructor() {
+    super("Saved credential cannot be decrypted. Restore the original encryption key or re-save the credential.");
+    this.name = "SecretDecryptionError";
+  }
+}
+
 /**
  * Decrypts and returns a single secret value for trusted server use.
  * Never expose the return value to a browser.
@@ -222,7 +230,12 @@ export async function getTenantSecretValue(
     [tenantId, provider, keyName],
   );
   if (!row) return null;
-  return decryptSecret(row);
+  try {
+    return decryptSecret(row);
+  } catch {
+    // Do not attach ciphertext, plaintext or the raw crypto error to this error.
+    throw new SecretDecryptionError();
+  }
 }
 
 export async function deleteTenantSecret(

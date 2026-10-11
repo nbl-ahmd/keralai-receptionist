@@ -1,3 +1,4 @@
+import { alphaMutation } from '@/lib/alpha/http';
 import { NextResponse } from 'next/server';
 import { KnowledgeItem } from '@/types';
 import { getKnowledge, getProfile } from '@/lib/store';
@@ -6,7 +7,7 @@ import {
   getTenantGeminiClient,
   getTenantTextModel,
 } from '@/lib/gemini';
-import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
+import { handleApiError } from '@/lib/auth/context';
 
 const VALID_TYPES: KnowledgeItem['type'][] = ['text', 'link', 'pdf', 'image', 'doc', 'instruction'];
 
@@ -89,7 +90,7 @@ If the user's message does not contain anything useful to store, return:
 
 export async function POST(request: Request) {
   try {
-    const { tenantId } = await resolveTenantContext(request);
+    const { tenantId } = await alphaMutation(request,'knowledge_upload',180000);
     const { message, history } = (await request.json()) as {
       message?: string;
       history?: ChatTurn[];
@@ -99,11 +100,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing message' }, { status: 400 });
     }
 
-    // Tenant-scoped credential: never a platform-wide Gemini key.
+    if ((message.length > 8000 ||
+      (history !== undefined && (!Array.isArray(history) || history.length > 20 || history.some(turn =>
+        typeof turn?.text !== 'string' || turn.text.length > 8000)))))
+      return NextResponse.json({ error:'Keep alpha messages under 8,000 characters and history under 20 turns.' }, { status:413 });
+
+    // Resolve credentials only after authenticating the tenant.
     const apiKey = await getTenantGeminiApiKey(tenantId);
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'Add a Gemini API key in Settings → Providers to use the knowledge assistant.' },
+        { error: 'AI is unavailable. Check Advanced settings or contact your test organiser.' },
         { status: 503 },
       );
     }
@@ -141,6 +147,7 @@ ${message}`,
         ],
       },
       config: {
+        maxOutputTokens: 2048,
         responseMimeType: 'application/json',
         responseSchema: {
           type: 'object',

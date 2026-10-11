@@ -1,3 +1,4 @@
+import { dbQuery } from './db.mjs';
 /**
  * bridge/browser-session.mjs
  *
@@ -54,6 +55,7 @@ export class BrowserSession {
    */
   constructor(ws, options) {
     this.ws = ws;
+    this.onUsage = options.onUsage;
     this.tenantId = options.tenantId;
     this.ai = options.ai;
     this.liveModel = options.liveModel;
@@ -174,6 +176,7 @@ export class BrowserSession {
         onopen: () => {
           const openingLine = this.greeting || this.buildGreeting(this.companyProfile);
           this.send({ type: 'connected' });
+          void dbQuery(`update tenant_onboarding set browser_test_completed_at=coalesce(browser_test_completed_at,now()),updated_at=now() where tenant_id=$1`,[this.tenantId]).catch(()=>console.warn('[bridge] onboarding test state could not be saved'));
           sessionPromise.then((session) => session.sendClientContent({
             turns: [{ role: 'user', parts: [{ text: `System command: Greet the caller with: "${openingLine}"` }] }],
             turnComplete: true,
@@ -181,6 +184,7 @@ export class BrowserSession {
         },
         onmessage: (message) => {
           if (this.closed) return;
+          if(Number.isSafeInteger(message.usageMetadata?.totalTokenCount))void this.onUsage?.(message.usageMetadata.totalTokenCount).catch(()=>console.warn('[browser] usage metadata could not be saved'));
           this.handleGeminiMessage(message).catch((error) => {
             console.error('[browser][relay] message failed:', error);
             this.send({ type: 'error', message: 'The voice session encountered an error.' });

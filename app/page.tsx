@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import {useRouter} from "next/navigation";
 import {
   ArrowRight,
   BookOpen,
@@ -112,6 +113,7 @@ const TRUST = [
 ];
 
 export default function LandingPage() {
+  const router=useRouter();
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -341,7 +343,7 @@ export default function LandingPage() {
               agents={[ASSISTANT_AGENT]}
               companyProfile={profile ?? undefined}
               onBuildAgent={() => {
-                window.location.href = "/dashboard";
+                router.push("/dashboard");
               }}
             />
           </div>

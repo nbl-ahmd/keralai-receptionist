@@ -1,3 +1,4 @@
+import { alphaMutation } from '@/lib/alpha/http';
 import { NextResponse } from 'next/server';
 import { getProfile, saveProfile } from '@/lib/store';
 import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
@@ -14,7 +15,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     // Company profile is workspace configuration: only owners/admins may change it.
-    const { tenantId } = await resolveTenantContext(request, { roles: ['owner', 'admin'] });
+    const { tenantId } = await alphaMutation(request,'assistant_edit',16384);
     const profile = await request.json();
     const saved = await saveProfile(tenantId, profile);
     return NextResponse.json({ success: true, profile: saved });

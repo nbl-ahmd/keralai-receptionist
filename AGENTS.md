@@ -6,19 +6,19 @@ KeralAI Receptionist is a Next.js + Neon Postgres + Node.js WebSocket bridge app
 
 Architecture:
 
-- Next.js 14 App Router frontend and API routes
+- Next.js 16 App Router frontend and API routes
 - Neon Postgres
 - `@neondatabase/serverless` for Next.js database access
 - Node.js `pg` for the long-running bridge
 - `ws` for WebSocket transport
 - `@google/genai` for Gemini Live
-- Exotel for phone audio transport
+- Managed Vobiz for phone audio; Exotel is a deprecated compatibility adapter
 - Render for the standalone bridge
 - Vercel for the Next.js application
 
 ## Primary Goal
 
-Convert the existing single-tenant receptionist into a working developer-preview multitenant application while preserving existing functionality.
+Evolve KeralAI into a beta-ready multi-tenant managed AI receptionist / personal-assistant platform while preserving existing functionality.
 
 Each authenticated user must have access only to their tenant data.
 
@@ -34,7 +34,7 @@ Tenant context must be resolved from authenticated session + validated membershi
 
 Never use a global singleton company profile.
 
-Never use a global Gemini API key for tenant requests.
+Default tenant mode uses encrypted per-tenant Gemini keys. Explicit closed-alpha platform mode may use PLATFORM_GEMINI_API_KEY after server-side invitation, active-tenant and daily-allowance checks. This user-authorized mode shares credentials only, never tenant data.
 
 Never use global CRM configuration for tenant requests.
 
@@ -164,11 +164,11 @@ for tenant calls.
 
 Resolve the tenant first.
 
-Load/decrypt the tenant Gemini credential.
+Resolve the selected credential mode after tenant authorization; decrypt personal keys or validate closed-alpha platform entitlement.
 
 Instantiate the Gemini client for that tenant/session.
 
-The bridge process itself may use a platform-level bootstrap credential only when explicitly needed; ordinary tenant traffic must use tenant-scoped configuration.
+The bridge supports explicit closed-alpha platform credentials through bridge/ai-config.mjs and bridge/entitlements.mjs, with fresh tenant configuration, plan/budget and daily allowance checks. Never introduce a silent fallback or a shared Gemini session/profile/history. Keep personal-key mode available and do not overwrite its encrypted keys.
 
 ## Runtime modes
 
@@ -290,7 +290,7 @@ CRM failures must remain best-effort and must not break live calls.
 
 ## Gemini / embeddings
 
-Normal knowledge embeddings must use the tenant's Gemini credential.
+Knowledge embeddings must resolve the selected credential mode after tenant authorization; platform mode requires closed-alpha eligibility.
 
 Knowledge search must always constrain by tenant.
 
@@ -388,9 +388,9 @@ Provide one-tap actions for:
 
 Provide custom mode/instruction support.
 
-## Developer preview
+## Managed beta
 
-This is a working developer preview, not an enterprise billing system.
+Managed telephony and an immutable INR billing ledger are part of this beta.
 
 Prioritize:
 
@@ -403,9 +403,9 @@ Prioritize:
 - easy local setup
 - easy Vercel + Render deployment
 
-Do not add billing.
+Keep financial entries append-only, integer minor units, tenant scoped, and idempotent. Never fake payments or provisioning.
 
-Do not add complex organization provisioning.
+Keep customer provisioning simple; preserve the membership model for future teams.
 
 Do not introduce a large ORM migration unless required.
 
@@ -498,3 +498,32 @@ Run validation and fix errors before declaring completion.
 Create or update documentation for all new environment variables and deployment steps.
 
 Do not ask the user to manually finish code wiring that the agent can complete.
+
+## Managed telephony invariants
+
+- Vobiz is the default behind `TelephonyProvider`; keep provider HTTP/codec assumptions in adapters.
+- External customers use `customer_use` + `individual`. Never bypass KYC with `personal_use`.
+- The final KYC authorization is a provider-confirmed `kyc_calls_blocked === false`.
+- Hosted KYC collects documents outside KeralAI. Store states/references only; never PAN/Aadhaar documents.
+- Purchase real inventory after server-side validation and a wallet hold. Activate only after verified routing.
+- An uncertain provider purchase must be reconciled, never blindly repeated. Preserve recoverable lifecycle states.
+- Resolve incoming DID to an internal tenant registry; validate signed provider callbacks and live call metadata.
+- Bridge phone tokens are short lived, scope bound, one use, and authorize an owned active number before Gemini.
+- Reuse one phone/Gemini session with transport adapters. Keep browser and deprecated Exotel behavior working.
+- Deduplicate webhook metadata and usage. Charge each provider call once after authoritative CDR reconciliation.
+- Wallet ledger is immutable. Reserve concurrent call budgets; recurring rental uses unique billing-period keys.
+- Platform admins come from the server allowlist, never client roles. Audit every operational action.
+- Fail closed until real callback signature emission is verified. Do not weaken signatures to make a demo work.
+- Use installed Vobiz skills and current official documentation MCP/OpenAPI; document disagreements.
+- Validate all ten widths in docs/manual-testing.md. Keep mobile sheets/navigation safe areas and bounded histories.
+- Integration tests use disposable schemas on a DIRECT database connection. Never set session search_path on PgBouncer.
+
+Read docs/vobiz-architecture.md, docs/telephony-provisioning.md, docs/kyc-flow.md and docs/billing-architecture.md before changing those workflows.
+
+## Closed alpha invariants
+
+Public signup requires a hashed DB invitation. Account, tenant, Alpha subscription, promo credit and invite redemption commit atomically. Do not reintroduce a shared invitation code, public signup bypass or email allowlist as platform-admin authority. Existing workspaces retain Internal/BYOK; mode switches are explicit and never replace encrypted keys.
+
+Use shared bridge/ai-config.mjs for server credential selection and bridge/entitlements.mjs for plans/admission/one-use claim/rolling guards. Browser voice works before KYC. Phone also requires existing Vobiz signature, live UUID, DID, authoritative KYC and readiness gates. A client boolean cannot grant access. Reserve bounded session usage atomically; phone settlement uses authoritative CDR and an immutable idempotent debit. Unknown provider state retains holds. Estimates are not actual Google/provider prices.
+
+Operator mutation requires server user-ID allowlist, canonical origin, rate/size limits, reason/reference and audit. Never trust tenant role alone. Separate app/bridge env files; process env wins. Never expose provider keys through NEXT_PUBLIC or copy the platform key into tenant secrets. Keep paid APIs, deployment, real KYC and production readiness activation explicit operator actions.

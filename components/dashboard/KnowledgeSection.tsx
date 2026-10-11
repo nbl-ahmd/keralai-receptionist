@@ -44,7 +44,7 @@ interface KnowledgeSectionProps {
   isChatting: boolean;
   onChatInputChange: (value: string) => void;
   onSendChat: () => void;
-  chatEndRef: RefObject<HTMLDivElement>;
+  chatEndRef: RefObject<HTMLDivElement | null>;
   newDocTitle: string;
   newDocType: KnowledgeItem["type"];
   newDocContent: string;
@@ -63,7 +63,7 @@ interface KnowledgeSectionProps {
   onDiscardParsed: () => void;
   onApplyParsedProfile: () => void;
   onPreviewChange: (preview: ParsePreview) => void;
-  fileInputRef: RefObject<HTMLInputElement>;
+  fileInputRef: RefObject<HTMLInputElement | null>;
   onDelete: (id: string) => void;
   onGoToInstructions: () => void;
 }

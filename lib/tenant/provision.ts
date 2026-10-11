@@ -53,6 +53,9 @@ async function uniqueTenantSlug(base: string): Promise<string> {
 
 /** Creates the default company profile + runtime-state rows for a tenant. */
 async function seedTenantRows(tenantId: string): Promise<void> {
+  await query("insert into tenant_ai_configuration(tenant_id,credential_mode) values($1,'tenant_managed') on conflict do nothing",[tenantId]);
+  await query("insert into tenant_subscriptions(tenant_id,plan_code) values($1,'internal') on conflict do nothing",[tenantId]);
+  await query(`insert into tenant_onboarding (tenant_id) values ($1) on conflict do nothing`,[tenantId]);
   await query(
     `insert into company_profile (tenant_id) values ($1) on conflict (tenant_id) do nothing`,
     [tenantId],

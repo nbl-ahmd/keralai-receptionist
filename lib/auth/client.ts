@@ -8,8 +8,7 @@
 
 import { createAuthClient } from "better-auth/react";
 
-export const authClient = createAuthClient({
-  baseURL: process.env.NEXT_PUBLIC_APP_URL || undefined,
-});
+// Browser requests follow the current origin; the server validates its canonical origin.
+export const authClient = createAuthClient();
 
 export const { signIn, signUp, signOut, useSession, getSession } = authClient;

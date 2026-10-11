@@ -10,21 +10,11 @@
  */
 
 import { NextResponse, type NextRequest } from "next/server";
-import { getSessionCookie } from "better-auth/cookies";
 
-const AUTH_PAGES = ["/login", "/register"];
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  const hasSession = Boolean(getSessionCookie(request));
-
-  // Signed-in users should not see the login/register pages.
-  if (hasSession && AUTH_PAGES.some((page) => pathname === page || pathname.startsWith(`${page}/`))) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    url.search = "";
-    return NextResponse.redirect(url);
-  }
+  const hasSession = Boolean(request.cookies.get("better-auth.session_token")?.value || request.cookies.get("__Secure-better-auth.session_token")?.value);
 
   // Unauthenticated users cannot reach the dashboard.
   if (!hasSession && pathname.startsWith("/dashboard")) {
@@ -34,7 +24,9 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  return NextResponse.next();
+  const headers=new Headers(request.headers);
+  headers.set('x-keralai-pathname',pathname);
+  return NextResponse.next({request:{headers}});
 }
 
 export const config = {

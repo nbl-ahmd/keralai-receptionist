@@ -372,6 +372,8 @@ export function buildSystemInstruction(
     profile.address ? `- Location: ${profile.address}` : null,
     profile.contactPhone ? `- Phone: ${profile.contactPhone}` : null,
     profile.contactEmail ? `- Email: ${profile.contactEmail}` : null,
+    `- Assistant purpose: ${profile.assistantPurpose ?? 'business'}` ,
+    profile.assistantInstructions ? `- Owner-approved behavior: ${profile.assistantInstructions}` : null,
     profile.additionalInfo ? `- Additional approved information: ${profile.additionalInfo}` : null,
   ]
     .filter(Boolean)

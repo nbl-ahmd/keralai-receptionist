@@ -38,11 +38,9 @@ function getPool() {
     query_timeout: queryTimeout,
     statement_timeout: queryTimeout,
     application_name: 'keralai-bridge',
-    ssl: process.env.DATABASE_URL.includes('sslmode=require')
-      ? { rejectUnauthorized: false }
-      : undefined,
+
   });
-  pool.on('error', (error) => console.error('[bridge][db] idle client error:', error));
+  pool.on('error', () => console.error(JSON.stringify({event:'bridge.database.idle_connection_failed'})));
   return pool;
 }
 
@@ -194,6 +192,8 @@ export async function loadCompanyProfile(tenantId) {
     greetingText: row.greeting_text ?? null,
     assistantName: row.assistant_name ?? '',
     assistantLanguage: row.assistant_language ?? '',
+    assistantPurpose: row.assistant_purpose ?? 'business',
+    assistantInstructions: row.assistant_instructions ?? '',
     additionalInfo: row.additional_info ?? '',
     endCallEnabled: row.end_call_enabled ?? true,
   });
@@ -215,7 +215,7 @@ export async function loadCompanyProfile(tenantId) {
     const rows = await dbQuery(
       `select name, industry, description, address, contact_email, contact_phone,
               voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text,
-              assistant_name, assistant_language, additional_info, end_call_enabled
+              assistant_name, assistant_language, additional_info, end_call_enabled, assistant_purpose, assistant_instructions
          from company_profile where tenant_id = $1`,
       [tenantId],
     );

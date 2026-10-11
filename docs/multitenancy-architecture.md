@@ -1,6 +1,6 @@
 # Multitenancy architecture
 
-This document explains how the KeralAI Receptionist developer preview isolates
+This document explains how the KeralAI managed beta isolates
 each authenticated user into their own tenant, how data is scoped, how tenant
 provider credentials are stored, and how existing single-tenant data was
 preserved.
@@ -111,16 +111,14 @@ so future provider types need no schema change. Today it holds:
 
 ## Per-tenant Gemini
 
-There is **no global Gemini API key** for tenant traffic.
+Each tenant has an explicit credential mode in `tenant_ai_configuration`. Existing workspaces retain Internal/BYOK (`tenant_managed`); invited Alpha workspaces start with `platform_managed`.
 
-- `lib/gemini.ts` resolves the tenant's Gemini key, decrypts it, and builds a
-  tenant-scoped `GoogleGenAI` client, cached with a TTL.
-- `bridge/gemini.mjs` does the same for the bridge with its own TTL cache.
-- Model names default to the platform values (`GENAI_MODEL`, `GEMINI_MODEL`,
-  `GEMINI_EMBEDDING_MODEL`) only when the tenant has not chosen one in
-  `tenant_settings`.
-- Knowledge embeddings use the tenant credential, and embedding search is always
-  constrained by `tenant_id`.
+- The canonical server-only resolver in `bridge/ai-config.mjs` is shared by `lib/gemini.ts` and `bridge/gemini.mjs`. Platform-managed mode uses `PLATFORM_GEMINI_API_KEY` configured separately on both services; BYOK decrypts only that tenant's stored key. A missing selected key fails closed without switching modes.
+- Client and live-session state remain tenant-scoped even when credentials come from the shared alpha project. The platform key is never copied into tenant secrets or returned to the browser.
+- Platform-managed tenants use operator-selected model defaults. BYOK tenants can choose their own models in `tenant_settings`.
+- Knowledge search is constrained by `tenant_id`; embeddings use the selected credential mode. Subscription, request allowance and voice reservations apply before authorized usage.
+
+See [alpha architecture](./alpha-architecture.md) for admission, isolation and quota enforcement, and [alpha operations](./alpha-operations.md) for configuration and testing.
 
 ## Assistant runtime modes
 
@@ -275,3 +273,7 @@ survive a logout.
 
 See also: [`environment-variables.md`](./environment-variables.md),
 [`deployment.md`](./deployment.md), and [`manual-testing.md`](./manual-testing.md).
+
+## Managed voice additions
+
+Migrations 009/010 add tenant-scoped telephony accounts, number lifecycle, KYC metadata, immutable wallet ledger/holds, usage budgets, nonce/webhook deduplication and onboarding. The DID registry and authenticated provider account/session lookup resolve a trusted tenant for callbacks; neither a client tenant ID nor an unsigned media path can select a customer. Allowlisted platform-admin queries and scheduled reconciliation are explicit control-plane queries. Ordinary customer routes still use validated session membership. See [managed architecture](vobiz-architecture.md) for the complete provider/security boundary.

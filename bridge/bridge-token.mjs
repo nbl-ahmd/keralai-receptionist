@@ -103,11 +103,12 @@ function sign(data, secret) {
 
 /**
  * @param {string} token
- * @param {'browser'|'exotel'} [expectedScope]
- * @returns {{ ok: true, payload: object } | { ok: false, reason: string }}
+ * @param {'browser'|'exotel'|'phone'} [expectedScope]
+ * @returns {{ ok: true, payload: Record<string, any> } | { ok: false, reason: string }}
  */
 export function verifyBridgeToken(token, expectedScope) {
   if (!token || typeof token !== 'string') return { ok: false, reason: 'malformed' };
+  if (token.split('.').length !== 2) return { ok: false, reason: 'malformed' };
   const [body, signature] = token.split('.');
   if (!body || !signature) return { ok: false, reason: 'malformed' };
 

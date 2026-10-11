@@ -186,6 +186,8 @@ export function buildSystemInstruction(
     companyProfile.address ? `- Location: ${companyProfile.address}` : null,
     companyProfile.contactPhone ? `- Phone: ${companyProfile.contactPhone}` : null,
     companyProfile.contactEmail ? `- Email: ${companyProfile.contactEmail}` : null,
+    `- Assistant purpose: ${companyProfile.assistantPurpose ?? 'business'}`,
+    companyProfile.assistantInstructions ? `- Owner-approved behavior: ${companyProfile.assistantInstructions}` : null,
     companyProfile.additionalInfo
       ? `- Additional approved information: ${companyProfile.additionalInfo}`
       : null,

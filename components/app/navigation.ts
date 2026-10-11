@@ -5,12 +5,14 @@ import {
   LayoutDashboard,
   Mic,
   PhoneCall,
+  Phone,
+  Wallet,
   Settings2,
   Zap,
 } from "lucide-react";
 
 export type DashboardTab = "overview" | "calls" | "knowledge" | "instructions" | "voice";
-export type ManagedRoute = "inbox" | "settings" | "performance";
+export type ManagedRoute = "inbox" | "settings" | "performance" | "phone" | "billing" | "assistant";
 
 export interface NavItem {
   key: DashboardTab;
@@ -26,7 +28,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "calls", label: "Calls", description: "History, transcripts and outcomes", icon: PhoneCall },
   { key: "knowledge", label: "Knowledge", description: "What the assistant can reference", icon: BookOpen },
   { key: "instructions", label: "Instructions", description: "Temporary behaviour for new calls", icon: Zap },
-  { key: "voice", label: "Voice", description: "How the assistant sounds", icon: Mic },
+  { key: "voice", label: "Test voice", description: "Try a browser conversation", icon: Mic },
 ];
 
 export interface ManageItem {
@@ -39,8 +41,11 @@ export interface ManageItem {
 
 /** Route-based destinations that sit outside the tab set. */
 export const MANAGE_ITEMS: ManageItem[] = [
+  { key: "assistant", href: "/dashboard/assistant", label: "Assistant", description: "Identity, behavior and availability", icon: Mic },
+  { key: "phone", href: "/dashboard/phone", label: "Phone", description: "Your number and verification", icon: Phone },
+  { key: "billing", href: "/dashboard/billing", label: "Balance", description: "Credits and usage", icon: Wallet },
   { key: "inbox", href: "/dashboard/crm", label: "Inbox", description: "Messages, callbacks and bookings", icon: Inbox },
-  { key: "settings", href: "/dashboard/settings", label: "Settings", description: "Workspace, voice and providers", icon: Settings2 },
+  { key: "settings", href: "/dashboard/settings", label: "Settings", description: "Account and integrations", icon: Settings2 },
   { key: "performance", href: "/dashboard/performance", label: "Performance", description: "Call latency and throughput", icon: Gauge },
 ];
 
@@ -55,7 +60,7 @@ export const MOBILE_TABS: Array<
 > = [
   { kind: "tab", key: "overview", label: "Overview", icon: LayoutDashboard },
   { kind: "tab", key: "calls", label: "Calls", icon: PhoneCall },
-  { kind: "tab", key: "knowledge", label: "Knowledge", icon: BookOpen },
+  { kind: "route", key: "phone", label: "Phone", icon: Phone },
   { kind: "route", key: "inbox", label: "Inbox", icon: Inbox },
   { kind: "route", key: "settings", label: "Settings", icon: Settings2 },
 ];

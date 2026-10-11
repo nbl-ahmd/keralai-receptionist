@@ -34,6 +34,8 @@ export const VOICE_PITCHES: VoicePitch[] = ['Low', 'Normal', 'High'];
 export const VOICE_SPEEDS: VoiceSpeed[] = ['Slow', 'Normal', 'Fast'];
 
 export interface CompanyProfile {
+  assistantPurpose?: 'personal' | 'business' | 'other';
+  assistantInstructions?: string;
   /**
    * Name of the business/organisation the assistant represents. For a personal
    * assistant setup this can be the owner's name. Never assume a specific person.

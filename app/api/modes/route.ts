@@ -1,3 +1,4 @@
+import { alphaMutation } from '@/lib/alpha/http';
 import { NextResponse } from 'next/server';
 import {
   BUILT_IN_MODES,
@@ -43,7 +44,7 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const { tenantId, userId } = await resolveTenantContext(request);
+    const { tenantId, userId } = await alphaMutation(request,'assistant_edit',16384);
     const body = (await request.json()) as {
       mode?: string;
       label?: string | null;
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
 /** Clears the mode and returns the assistant to `available`. */
 export async function DELETE(request: Request) {
   try {
-    const { tenantId, userId } = await resolveTenantContext(request);
+    const { tenantId, userId } = await alphaMutation(request,'assistant_edit',16384);
     const state = await setRuntimeState(tenantId, { mode: 'available', updatedBy: userId });
     return NextResponse.json({ success: true, state, status: describeRuntimeState(state) });
   } catch (error) {

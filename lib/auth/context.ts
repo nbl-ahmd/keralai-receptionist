@@ -12,6 +12,7 @@
  * Server-only.
  */
 
+import { AlphaAccessError } from "@/bridge/alpha-policy.mjs";
 import { NextResponse } from "next/server";
 import { getAuth } from "./server";
 import { provisionTenantForUser } from "../tenant/provision";
@@ -68,6 +69,7 @@ export async function getSession(request: Request): Promise<{
 export async function requireUserId(request: Request): Promise<SessionUser> {
   const session = await getSession(request);
   if (!session) throw new HttpError(401, "Authentication required");
+
   return session.user;
 }
 
@@ -207,7 +209,7 @@ export async function getTenant(
  * database or secret detail in production.
  */
 export function handleApiError(error: unknown, fallback = "Request failed"): NextResponse {
-  if (error instanceof HttpError) {
+  if (error instanceof HttpError || error instanceof AlphaAccessError) {
     return NextResponse.json({ error: error.message }, { status: error.status });
   }
   console.error("[api] Unhandled error:", error instanceof Error ? error.message : error);

@@ -39,3 +39,11 @@ bridge/.env.*.local
 .claude/
 .opencode/
 skills-lock.json
+
+# Browser QA artifacts
+.test-output/
+playwright-report/
+test-results/
+
+#agent docs
+docs/ALPHA_IMPLEMENTATION_PROMPT.md

@@ -1,26 +1,30 @@
+import { alphaMutation } from '@/lib/alpha/http';
 import { NextResponse } from 'next/server';
 import {
   getTenantGeminiApiKey,
   getTenantGeminiClient,
   getTenantTextModel,
 } from '@/lib/gemini';
-import { resolveTenantContext, handleApiError } from '@/lib/auth/context';
+import { handleApiError } from '@/lib/auth/context';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
-    const { tenantId } = await resolveTenantContext(request);
+    const { tenantId } = await alphaMutation(request,'knowledge_upload',15000000);
     const { mimeType, data } = await request.json();
     if (!mimeType || !data || typeof data !== 'string') {
       return NextResponse.json({ error: 'mimeType and base64 data are required' }, { status: 400 });
     }
 
-    // Tenant-scoped credential: never a platform-wide Gemini key.
+    if (data.length > 14_000_000)
+      return NextResponse.json({ error:'Use files under approximately 10 MB during alpha testing.' }, { status:413 });
+
+    // Resolve credentials only after authenticating the tenant.
     const apiKey = await getTenantGeminiApiKey(tenantId);
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'Add a Gemini API key in Settings → Providers before extracting files.' },
+        { error: 'AI is unavailable. Check Advanced settings or contact your test organiser.' },
         { status: 503 },
       );
     }

@@ -1,0 +1,15 @@
+# Alpha usage and wallet
+
+Amounts are integer INR paise. The existing append-only wallet ledger remains authoritative. Activation promo credit is one immutable `promotional_credit` entry in the signup transaction, referenced by invitation/tenant and uniquely idempotent. Operator credits require a reason and unique reference; replay produces no second credit, conflicting amount rejects. Payments remain disabled. Promo credit is not actual provider funding or a monthly refill.
+
+Phone admission requires positive configured customer pricing, approved conservative provider exposure, current KYC/DID authorization, active plan/wallet, included minutes, concurrency, customer spend cap and platform limits. It reserves the full maximum session horizon against quota, wallet and estimated costs. A 30-second termination buffer fits inside whole-minute credit; e.g. one minute of affordable reservation permits at most 30 seconds before stop. Ongoing sessions recheck current authorization/caps. A top-up does not extend an existing session automatically.
+
+Wallet spendable credit subtracts pending DID holds and pending CDR call reservations. Monthly customer spend includes negative ledger entries, outstanding setup holds and pending calls, avoiding a call-only spend cap. Setup holds capture only after verified routing; uncertain purchases remain held and are reconciled, never blindly repurchased. Number rental/release recovery follows the existing provider sign-off runbook.
+
+Only a matching owning-SA completed CDR settles phone usage. Included quota consumes `ceil(billsec/60)` minutes; customer debit uses the call's snapshotted rate. Exact provider decimal INR cost is separately rounded upward to integer paise. Numeric provider IDs are not CallUUIDs. Duplicate CDR/reconciliation yields one debit. Disconnect/WS duration never substitutes for authoritative billsec/cost; pending CDRs preserve holds even after transport closes or a period rolls. Corrections are new audited ledger entries, never changes to history.
+
+Browser sessions consume elapsed server time; active reservations prevent concurrent overspending. An unused expired token consumes zero seconds; a crashed active bridge conservatively consumes its full reservation after lease expiration. No customer wallet debit is taken for browser testing.
+
+AI client starts have a managed per-tenant UTC daily counter. Text/embedding requests and voice sessions also consume conservative estimated paise budgets; failed/short calls retain the AI estimate. These controls reduce exposure but are **not exact Google billing caps**. Actual AI cost stays null without authoritative billing data. The highest observed Live `totalTokenCount` metadata is diagnostic, not an invoice or complete token reconciliation. Review the Google project's usage/quota/billing and configure estimates conservatively; model/tool requests can vary substantially.
+
+Plan periods roll at UTC month boundaries when authorized. Existing sessions keep period/price snapshots; history is retained. No overage or automatic recurring paid subscription is enabled. Tenant caps cannot override platform gates or provider readiness.

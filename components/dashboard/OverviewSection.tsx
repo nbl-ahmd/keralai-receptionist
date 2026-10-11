@@ -98,7 +98,7 @@ export function OverviewSection({
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="Calls handled"
+          label="Recent calls handled"
           value={calls.length.toString()}
           helper={`${appointments.length} booking${appointments.length === 1 ? "" : "s"}`}
           icon={<PhoneCall className="h-4 w-4" />}

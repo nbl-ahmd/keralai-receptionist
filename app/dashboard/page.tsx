@@ -7,7 +7,9 @@ import { Loader2, PhoneCall } from "lucide-react";
 import AppShell from "@/components/app/AppShell";
 import { AttentionBanner } from "@/components/app/attention";
 import AssistantModeCard from "@/components/dashboard/AssistantModeCard";
-import CallsSection from "@/components/dashboard/CallsSection";
+import CallHistory from "@/components/dashboard/CallHistory";
+import AlphaUsageCard from '@/components/dashboard/AlphaUsageCard';
+import AssistantHomeStatus from "@/components/dashboard/AssistantHomeStatus";
 import InstructionsSection from "@/components/dashboard/InstructionsSection";
 import KnowledgeSection from "@/components/dashboard/KnowledgeSection";
 import OverviewSection from "@/components/dashboard/OverviewSection";
@@ -83,7 +85,7 @@ export default function DashboardPage() {
 
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
-  const [callFilter, setCallFilter] = useState<"all" | CallRecord["outcome"]>("all");
+
 
   // Tabs are deep-linkable via the URL hash so the shared mobile nav works from
   // any dashboard page (e.g. /dashboard#calls).
@@ -218,22 +220,11 @@ export default function DashboardPage() {
     [knowledgeBase],
   );
 
-  const filteredCalls = useMemo(() => {
-    if (callFilter === "all") return calls;
-    return calls.filter((call) => call.outcome === callFilter);
-  }, [calls, callFilter]);
 
-  const selectedCall = useMemo(
-    () => calls.find((call) => call.id === selectedCallId) ?? null,
-    [calls, selectedCallId],
-  );
 
-  const callBookings = useMemo(() => {
-    if (!selectedCall) return [];
-    return appointments.filter(
-      (apt) => selectedCall.bookingIds.includes(apt.id) || apt.callSid === selectedCall.callSid,
-    );
-  }, [selectedCall, appointments]);
+
+
+
 
   const openCall = useCallback(
     (id: string) => {
@@ -590,6 +581,7 @@ export default function DashboardPage() {
       >
         {activeTab === "overview" && (
           <div className="space-y-6">
+            <AssistantHomeStatus profile={profile}/><AlphaUsageCard compact/>
             <AttentionBanner />
             <AssistantModeCard mode={assistantMode} />
             <OverviewSection
@@ -617,16 +609,7 @@ export default function DashboardPage() {
         )}
 
         {activeTab === "calls" && (
-          <CallsSection
-            filteredCalls={filteredCalls}
-            callFilter={callFilter}
-            onFilterChange={setCallFilter}
-            selectedCall={selectedCall}
-            callBookings={callBookings}
-            loading={isLoading}
-            onSelectCall={setSelectedCallId}
-            onCloseDetail={() => setSelectedCallId(null)}
-          />
+          <CallHistory initialSelectedId={selectedCallId} appointments={appointments} />
         )}
 
         {activeTab === "knowledge" && (

@@ -1,3 +1,5 @@
+> **Two services, two configurations:** Next.js uses app-root `.env.local` locally and Vercel Environment Variables when hosted. The bridge uses `bridge/.env.local` locally and Render Environment when hosted. `.env.local.example` and `bridge/.env.example` are templates only. No third env file or `app/.env` is needed. See [the file/host mapping](./environment-variables.md#which-files-to-use).
+
 # Deployment
 
 This guide covers local setup and deploying the two services: the Next.js app on
@@ -8,7 +10,7 @@ Vercel and the bridge on Render. For the full variable reference see
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22+ (Next.js 16 / React 19)
 - A Neon Postgres database
 - A Google AI Studio (Gemini) API key **per tenant** — created in the dashboard,
   not in env for tenant traffic
@@ -28,7 +30,7 @@ cp .env.local.example .env.local
 cp bridge/.env.example bridge/.env.local
 
 # 4. Install bridge deps
-cd bridge && npm install && cd ..
+npm install --prefix bridge
 
 # 5. Apply migrations (creates the tenant model + auth tables, backfills legacy data)
 npm run migrate
@@ -62,7 +64,7 @@ and `TENANT_SECRETS_ENCRYPTION_KEY`. The latter two must be identical in
   data is deleted.
 - To claim the legacy data, set `LEGACY_TENANT_CLAIM_EMAIL` to the intended owner
   email and `LEGACY_TENANT_CLAIM_TOKEN` to a random server-only secret. After
-  signing in with that email, open Settings → Providers → Legacy data, paste the
+  signing in with that email, open Advanced → AI connection → Legacy data, paste the
   token, and claim. Users are never granted the legacy workspace implicitly at
   signup.
 
@@ -140,7 +142,7 @@ per session.
 Every tenant uses its **own** Exotel account and number. There is no shared
 platform account and no Exotel credential in the environment.
 
-1. Have the tester sign in and open **Settings → Providers → Exotel account**.
+1. Have the tester sign in and open **Advanced → AI connection → Exotel account**.
 2. Enter the Account SID, API key, API token and region from their Exotel
    dashboard (**Settings → API Settings**), plus their ExoPhone number.
    Click **Save Exotel account**, then **Test connection** to confirm Exotel
@@ -178,8 +180,8 @@ never the token itself. Watch the Render logs and match the line:
 
 | Log line | Meaning | Fix |
 | --- | --- | --- |
-| `[exotel-auth] rejected bare /ws/exotel …` | The Exotel applet still points at the old pre-multitenancy path. | Paste the tenant URL from Settings → Providers → Exotel routing into the applet. |
-| `[exotel-auth] upgrade … tokenPresent=no tokenSource=none` then `reason=missing_slug_or_token` | The applet URL carries the slug but no token. | Re-copy the Basic-auth URL from Settings → Providers → Exotel routing; do not hand-type it. `queryParams=0` in the same line usually means Exotel stripped the query string entirely. |
+| `[exotel-auth] rejected bare /ws/exotel …` | The Exotel applet still points at the old pre-multitenancy path. | Paste the tenant URL from Advanced → AI connection → Exotel routing into the applet. |
+| `[exotel-auth] upgrade … tokenPresent=no tokenSource=none` then `reason=missing_slug_or_token` | The applet URL carries the slug but no token. | Re-copy the Basic-auth URL from Advanced → AI connection → Exotel routing; do not hand-type it. `queryParams=0` in the same line usually means Exotel stripped the query string entirely. |
 | `[exotel-auth] rejected slug=… reason=unknown_slug` | The slug in the URL is wrong. | Re-copy the URL; do not rename the workspace. |
 | `[exotel-auth] rejected … reason=no_credential_configured` | No token has been generated for this workspace. | Click **Rotate** to generate one. |
 | `[exotel-auth] rejected … reason=token_mismatch tenant=…` | The token was rotated after it was pasted into Exotel. | Update the applet with the current URL. |
@@ -234,3 +236,39 @@ values differ between Vercel and Render.
   the key stable across deploys; if it must change, re-save every tenant's
   credentials afterwards.
 - Rotating an Exotel token requires updating the Exotel applet.
+
+## Managed Vobiz rollout
+
+1. Back up Neon and run `npm run migrate`, then `npm run migrate:status`. New migrations 009/010 are additive; 001–008 remain unchanged. Existing tenants retain completed onboarding and legacy Exotel data. The migration runner explicitly uses `public` and transaction-local search path so pooled-session state cannot redirect migrations.
+2. Configure server-only parent Vobiz credentials, canonical HTTPS app origin, public bridge URL, commercial paise prices, explicit platform-admin user IDs and cron secret. Preserve the existing shared encryption/signing secrets exactly. The bridge uses Node 22, its existing Gemini dependency and pooled database connection; deploy the updated transport/session files.
+3. Keep `VOBIZ_CALLBACK_SIGNATURES_VERIFIED=0` until account-specific callback credential/signature emission is verified. Ask Vobiz to confirm the documented callback-URL credential configuration for generated applications. The current public create-application schema does not expose a credential field. This is a provider readiness requirement; customers never configure URLs or credentials.
+4. On a staging parent account, create a throwaway individual `customer_use` subaccount and run `npm run test:vobiz-kyc` with the test-only variables. Never provision production DIDs on mock-verified accounts. Test real hosted verification separately with an appropriate staging identity flow.
+5. Verify unsigned/forged voice and KYC callbacks are rejected, and actual parent/subaccount V2/V3 signatures pass at the canonical URL. Set the readiness flag to `1` on both app and bridge only after this test and explicit operator action.
+6. Run the two-tenant live-call checklist in manual-testing.md: purchase real inventory, verify automatic application binding, call both DIDs, exercise tools/modes/barge-in, inspect independent transcripts and final CDR debits. Record cold-answer and audio latency. Keep the parent provider balance funded.
+7. Schedule authenticated `GET /api/jobs/telephony` every five minutes. The endpoint expects the configured Bearer cron secret, not a user cookie. Use a scheduler whose invocation timeout supports up to 300 seconds. Monitor returned failure counts, pending calls/holds, stuck provisioning and provider balance. Configure alerting before inviting users.
+8. Allowlisted operators use `/dashboard/admin` for KYC sync, setup retry, number suspend/resume and audited beta credit. Use a strong unique operation reference for each credit. Online payments are disabled, so invite beta-credit users only until an actual verified gateway integration is deployed.
+
+On Vercel use `npm run build` (webpack preserves the existing configuration); run migrations as a release step before deploying new routes. On Render use the existing bridge install/start commands. Do not use a sleeping free bridge tier for reliable incoming calls. TLS access logs must redact URL token queries for `/ws/browser` and `/ws/vobiz`; the application does not log them. Do not proxy authenticated API responses into a shared cache. Existing service-worker caching remains limited to public static assets.
+
+### Operational recovery
+
+- `needs_review` account creation: inspect parent account inventory and recover the correct SA credentials securely. Do not insert an arbitrary account ID or reset the placeholder without confirming whether remote creation succeeded.
+- Unknown purchase: retry reconciliation or investigate provider owned numbers. Never call purchase again to resolve uncertainty. The held balance is not a captured charge.
+- Failed configuration: retry the existing DID; inspect application binding and hosted KYC gate. Remove orphan unattached applications after confirming they are unused.
+- Standard release is paid and normally enters a 24-hour provider cooldown. Keep local `releasing/release_unknown` until owned inventory confirms absence. Unknown release: reconcile owned inventory until absent. Do not select another DID until release is confirmed.
+- Pending usage: retry authoritative CDR reconciliation; never charge from a browser timer or disconnect duration. Verify database availability and signed hangup delivery.
+- Low rental balance: grant a documented beta adjustment, run reconciliation, then resume only after the due rental is settled. Suspension blocks app routing but an owned provider number may still incur provider rental.
+
+Production payment processing, taxes/refunds and commercial prices require operator decisions. Outbound calling and recording storage remain deferred. Live media/KYC tests cannot be declared passed from fixtures alone.
+
+### Dependency validation
+
+Next.js/React and ESLint were upgraded to the current Next 16 / React 19 toolchain, following the [official migration guide](https://nextjs.org/docs/app/guides/upgrading/version-16); `proxy.ts` replaces middleware and React ref types allow null. Compatible npm audit fixes are applied. The standalone bridge audit has no reported advisories. The root audit still reports nine moderate/high findings through Tailwind 3 and the Next lint glob/selector tooling. These tools process repository-owned CSS/file patterns at build/lint time; customer input is not passed to them. Resolving the entire chain requires a separate Tailwind 4/tooling migration and visual regression review. Do not report the whole dependency audit as clean or use `audit fix --force` without assessing that migration.
+
+The current provider contract audit, live read-only results, exact approved test sequence and rollback steps are in [LIVE VOBIZ sign-off](./live-vobiz-signoff.md). Do not skip its callback-configuration preflight or enable a production gate to discover whether callbacks are signed.
+
+Live sign-off also ran `npm audit --omit=dev`: seven findings remain in the installed production dependency graph because tailwindcss-animate retains its Tailwind peer. They concern CSS/glob compilation in this app, not a discovered customer runtime input path. The full classification is in live-vobiz-signoff.md; neither root audit is clean.
+
+## Invited alpha with platform-provided AI
+
+Follow [alpha operations](./alpha-operations.md) and [closed-alpha setup](./closed-alpha.md). Apply additive migrations 012–015 after 001–011. Credential mode is per-tenant database state; shared-code/email allowlist environment mode is retired. New invitation tenants use platform AI and Alpha plan; existing workspaces retain Internal/BYOK. Set matching server-only platform credentials/estimates and stable signing/encryption keys on both services. Vercel alone holds operator allowlist/invite issuance/provider parent secrets. Phone/purchase controls and provider attestation remain disabled until explicit live sign-off. Test schema settings must never be deployed. Browser auth follows its current origin; server canonical origins still require configuration.

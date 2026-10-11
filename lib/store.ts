@@ -1,3 +1,6 @@
+import { transaction } from '@/db/transaction';
+import { loadEntitlement } from '@/bridge/entitlements.mjs';
+import { HttpError } from '@/lib/auth/context';
 /**
  * store.ts
  *
@@ -158,6 +161,8 @@ interface ProfileRow {
   assistant_name: string | null;
   assistant_language: string | null;
   additional_info: string | null;
+  assistant_purpose: 'personal' | 'business' | 'other';
+  assistant_instructions: string;
   end_call_enabled: boolean | null;
 }
 
@@ -199,6 +204,8 @@ export function normalizeProfile(input: Record<string, unknown>): CompanyProfile
     greetingText: greetingText && greetingText.trim() ? greetingText : null,
     assistantName: String(input.assistantName ?? "").slice(0, 80),
     assistantLanguage: String(input.assistantLanguage ?? "").slice(0, 200),
+    assistantPurpose: input.assistantPurpose === 'personal' || input.assistantPurpose === 'other' ? input.assistantPurpose : 'business',
+    assistantInstructions: String(input.assistantInstructions ?? '').slice(0,4000),
     additionalInfo: String(input.additionalInfo ?? "").slice(0, 4000),
     endCallEnabled: input.endCallEnabled === undefined ? true : Boolean(input.endCallEnabled),
   };
@@ -207,7 +214,7 @@ export function normalizeProfile(input: Record<string, unknown>): CompanyProfile
 const PROFILE_SELECT = `
   select name, industry, description, address, contact_email, contact_phone,
          voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text,
-         assistant_name, assistant_language, additional_info, end_call_enabled
+         assistant_name, assistant_language, additional_info, end_call_enabled, assistant_purpose, assistant_instructions
     from company_profile where tenant_id = $1`;
 
 function mapProfileRow(row: ProfileRow): CompanyProfile {
@@ -225,6 +232,8 @@ function mapProfileRow(row: ProfileRow): CompanyProfile {
     greetingText: row.greeting_text ?? null,
     assistantName: row.assistant_name ?? "",
     assistantLanguage: row.assistant_language ?? "",
+    assistantPurpose: row.assistant_purpose ?? 'business',
+    assistantInstructions: row.assistant_instructions ?? '',
     additionalInfo: row.additional_info ?? "",
     endCallEnabled: row.end_call_enabled ?? true,
   };
@@ -252,8 +261,8 @@ export async function saveProfile(tenantId: string, profile: CompanyProfile): Pr
     `insert into company_profile (
        tenant_id, name, industry, description, address, contact_email, contact_phone,
        voice_name, voice_pitch, voice_speed, greeting_enabled, greeting_text,
-       assistant_name, assistant_language, additional_info, end_call_enabled, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+       assistant_name, assistant_language, additional_info, end_call_enabled, assistant_purpose, assistant_instructions, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
      on conflict (tenant_id) do update set
        name = excluded.name,
        industry = excluded.industry,
@@ -270,6 +279,8 @@ export async function saveProfile(tenantId: string, profile: CompanyProfile): Pr
        assistant_language = excluded.assistant_language,
        additional_info = excluded.additional_info,
        end_call_enabled = excluded.end_call_enabled,
+       assistant_purpose = excluded.assistant_purpose,
+       assistant_instructions = excluded.assistant_instructions,
        updated_at = now()`,
     [
       tenantId,
@@ -288,6 +299,8 @@ export async function saveProfile(tenantId: string, profile: CompanyProfile): Pr
       normalised.assistantLanguage,
       normalised.additionalInfo,
       normalised.endCallEnabled,
+      normalised.assistantPurpose,
+      normalised.assistantInstructions,
     ],
   );
   return normalised;
@@ -357,7 +370,13 @@ export async function upsertKnowledgeItem(tenantId: string, item: KnowledgeItem)
   // `is_active` only has behavioural meaning for instructions; normal knowledge
   // always stores true. New instructions default to active.
   const isActive = item.type === "instruction" ? item.isActive !== false : true;
-  const rows = await query<KnowledgeRow>(
+  const rows = await transaction(async client=>{
+    const plan=await loadEntitlement(client,tenantId);
+    if(!plan || plan.status!=='active' || plan.tenant_status!=='active' || !plan.limits.knowledge_upload)throw new HttpError(403,'Knowledge editing is unavailable for this plan.');
+    const exists=await client.query('select id from knowledge_items where tenant_id=$1 and id=$2',[tenantId,id]);
+    const count=await client.query('select count(*)::int as count from knowledge_items where tenant_id=$1',[tenantId]);
+    if(!exists.rows.length && count.rows[0].count>=plan.limits.knowledge_items)throw new HttpError(403,'Your knowledge allowance is full. Remove an item or contact your organiser.');
+    return (await client.query<KnowledgeRow>(
     `insert into knowledge_items (id, tenant_id, type, title, content, file_name, date_added, is_active, updated_at)
      values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), $8, now())
      on conflict (id) do update set
@@ -370,7 +389,8 @@ export async function upsertKnowledgeItem(tenantId: string, item: KnowledgeItem)
      where knowledge_items.tenant_id = excluded.tenant_id
      returning id, type, title, content, file_name, date_added, is_active`,
     [id, tenantId, item.type, item.title, item.content, item.fileName ?? null, item.dateAdded ?? null, isActive],
-  );
+  )).rows;
+  });
   if (!rows[0]) throw new Error("Knowledge item not found for this workspace");
   return mapKnowledgeRow(rows[0]);
 }
@@ -783,10 +803,26 @@ const CALL_SELECT = `
     ) a on true`;
 
 export async function getCalls(tenantId: string): Promise<CallRecord[]> {
-  const rows = await query<CallRow>(`${CALL_SELECT} where c.tenant_id = $1 order by c.started_at desc`, [
+  const rows = await query<CallRow>(`${CALL_SELECT} where c.tenant_id = $1 order by c.started_at desc limit 100`, [
     tenantId,
   ]);
   return rows.map(mapCallRow);
+}
+
+export async function getCallPage(tenantId:string,options:{page:number;search:string;outcome:string;channel:string;date:string}) {
+  const params=[tenantId,options.search,options.outcome,options.channel,options.date];
+  const where=`where c.tenant_id=$1 and ($2='' or c.caller ilike '%' || $2 || '%' or c.phone ilike '%' || $2 || '%')
+    and ($3='all' or c.outcome=$3) and ($4='all' or c.channel=$4)
+    and ($5='' or (c.started_at >= nullif($5,'')::date and c.started_at < nullif($5,'')::date+interval '1 day'))`;
+  const [rows,count]=await Promise.all([
+    query<CallRow>(`${CALL_SELECT} ${where} order by c.started_at desc limit 25 offset $6`,[...params,(options.page-1)*25]),
+    queryOne<{total:string}>(`select count(*)::text as total from calls c ${where}`,params)
+  ]);
+  return {items:rows.map(mapCallRow),total:Number(count?.total??0),page:options.page};
+}
+export async function getCallById(tenantId:string,id:string) {
+  const row=await queryOne<CallRow>(`${CALL_SELECT} where c.tenant_id=$1 and c.id=$2`,[tenantId,id]);
+  return row?mapCallRow(row):null;
 }
 
 export async function getCallBySid(tenantId: string, callSid: string): Promise<CallRecord | null> {

@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test';
+import {test,expect} from './fixtures';
 import {fixtureInvite} from './invite-fixture';
 test('invitation pages reject expired/reused links and wrong bound email',async({page})=>{
  for(const options of [{expired:true},{consumed:true}]) {

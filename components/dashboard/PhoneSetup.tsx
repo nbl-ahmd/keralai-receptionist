@@ -18,7 +18,8 @@ const phaseLabels=['Verify identity','Choose number','Check testing credit','Act
 export default function PhoneSetup() {
   const [summary,setSummary]=useState<PhoneSummary|null>(null),[error,setError]=useState<string|null>(null);
   const [busy,setBusy]=useState(false),[inventory,setInventory]=useState<InventoryNumber[]>([]);
-  const [searched,setSearched]=useState(false),[search,setSearch]=useState(''),[page,setPage]=useState(1),[total,setTotal]=useState(0);
+  const [reviewCount,setReviewCount]=useState(0),[hasMore,setHasMore]=useState(false);
+  const [searched,setSearched]=useState(false),[search,setSearch]=useState(''),[page,setPage]=useState(1);
   const [selected,setSelected]=useState<InventoryNumber|null>(null),[release,setRelease]=useState(false);
   const [usageError,setUsageError]=useState(false);
   const [usage,setUsage]=useState<Array<{id:string;started_at:string;duration_seconds:number|null;customer_charge_minor:string|null;billing_status:string}>>([]);
@@ -45,7 +46,9 @@ export default function PhoneSetup() {
   const step=active?4:!verified?0:!number?1:number.provisioningStatus==='purchasing'?3:2;
   const searchInventory=async(nextPage=1)=>{
     const result=await phoneApi(`/api/telephony/numbers/search?search=${encodeURIComponent(search)}&page=${nextPage}`);
-    setInventory(result.items);setTotal(result.total);setPage(nextPage);setSearched(true);
+    setInventory(result.items);setPage(nextPage);setSearched(true);
+    setReviewCount(Object.values(result.excluded??{}).reduce<number>((sum,value)=>sum+Number(value),0));
+    setHasMore(result.hasMore??nextPage*25<result.total);
   };
   const start=async()=>{
     if(!account) setSummary(await phoneApi('/api/telephony/account',{}));
@@ -101,11 +104,12 @@ export default function PhoneSetup() {
             <Field label="Search by digits" className="w-full">{props=><Input {...props} inputMode="tel" value={search} maxLength={16} onChange={e=>setSearch(e.target.value.replace(/[^+0-9]/g,''))} placeholder="For example, 80"/>}</Field>
             <Button type="submit" className="w-full sm:w-auto" loading={busy}>Find numbers</Button>
           </form>
-          {searched && inventory.length===0 && <Notice tone="info">No numbers matched. Try fewer digits or check again later.</Notice>}
+          {searched && reviewCount>0 && <Notice tone="info">{reviewCount} {reviewCount===1?'number needs':'numbers need'} operator review for pricing or availability on this page. Your organiser can check the funding policy.</Notice>}
+          {searched && inventory.length===0 && <Notice tone="info">{reviewCount>0?'No numbers on this page meet the approved phone policy. Try the next page or contact your organiser.':'No numbers matched. Try fewer digits or check again later.'}</Notice>}
           <ul className="divide-y divide-border">{inventory.map(item=><li key={item.e164} className="flex flex-wrap items-center justify-between gap-3 py-4">
             <div><p className="text-lg font-semibold tabular-nums">{item.e164}</p><p className="text-xs text-muted-foreground">{item.region || 'India'} · {money(item.monthlyPriceMinor)}/month</p></div>
             <Button variant="outline" onClick={()=>setSelected(item)} disabled={busy}>Choose</Button></li>)}</ul>
-          {searched && <div className="mt-5 flex items-center justify-between"><Button variant="ghost" disabled={page===1||busy} onClick={()=>void run(()=>searchInventory(page-1))}>Previous</Button><span className="text-xs text-muted-foreground">Page {page}</span><Button variant="ghost" disabled={page*25>=total||busy} onClick={()=>void run(()=>searchInventory(page+1))}>Next</Button></div>}
+          {searched && <div className="mt-5 flex items-center justify-between"><Button variant="ghost" disabled={page===1||busy} onClick={()=>void run(()=>searchInventory(page-1))}>Previous</Button><span className="text-xs text-muted-foreground">Page {page}</span><Button variant="ghost" disabled={!hasMore||busy} onClick={()=>void run(()=>searchInventory(page+1))}>Next</Button></div>}
         </section>}
         {number && <section>
           <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-6">

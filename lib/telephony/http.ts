@@ -2,6 +2,7 @@ import { AlphaAccessError } from '@/bridge/alpha-policy.mjs';
 import { NextResponse } from 'next/server';
 import { resolveTenantContext, HttpError } from '@/lib/auth/context';
 import { limitOperation } from './store';
+import { ProviderError,providerErrorDetails } from './errors';
 
 export async function domainRoute(request: Request, work: (tenantId: string) => Promise<unknown>, mutate = false, mutationLimit = 6) {
   try {
@@ -16,9 +17,11 @@ export async function domainRoute(request: Request, work: (tenantId: string) => 
     return NextResponse.json(await work(tenantId),{ headers:{'Cache-Control':'private, no-store'} });
   } catch (error) {
     const status = error instanceof HttpError || error instanceof AlphaAccessError ? error.status:500;
+    const requestId=crypto.randomUUID();
     // Provider/DB payloads are never surfaced or logged here.
-    console.warn(JSON.stringify({ event:'telephony.request.failed',status,path:new URL(request.url).pathname }));
-    return NextResponse.json({ error:error instanceof HttpError || error instanceof AlphaAccessError ? error.message:'Unable to complete phone setup. Please try again.' },
+    console.warn(JSON.stringify({ event:'telephony.request.failed',status,path:new URL(request.url).pathname,requestId,
+      ...(error instanceof ProviderError?providerErrorDetails(error):{}) }));
+    return NextResponse.json({ error:error instanceof HttpError || error instanceof AlphaAccessError ? error.message:'Unable to complete phone setup. Please try again.',requestId },
       { status,headers:{'Cache-Control':'private, no-store'} });
   }
 }

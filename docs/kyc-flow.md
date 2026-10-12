@@ -35,3 +35,5 @@ customer_use/individual and literal kyc_calls_blocked, with matching identities.
 It discards masked identity fields and never assumes a missing gate is false.
 The documented synthetic PAN endpoint returned HTTP 404. Provider mock/real
 acceptance has NOT passed; see [provider blocker evidence](./phone-alpha-provider-blockers.md).
+
+See [KYC and phone troubleshooting](./vobiz-troubleshooting.md) for safe provider error references, blocked test recovery and deployed readiness checks.

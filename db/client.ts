@@ -15,6 +15,7 @@
 
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 import { type QueryResultRow } from 'pg';
+import { transaction } from './transaction';
 
 
 function getSql() {
@@ -47,18 +48,19 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
   params: unknown[] = [],
 ): Promise<T[]> {
-  const sql = getSqlCached();
-  // Integration runs use a disposable schema. HTTP Neon does not honor the
-  // connection URL search_path startup option, so set it transaction-locally.
+  // Disposable integration/UI schemas use TCP PostgreSQL, including CI's
+  // pgvector container. A PostgreSQL socket cannot serve Neon HTTP requests.
+  // Keep the production Neon path and never change a pooled session's schema.
   const schema = process.env.KERALAI_TEST_SCHEMA;
-  if (schema) {
-    if (!/^keralai_test_[a-f0-9]{16}$/.test(schema)) throw new Error('Invalid test schema');
-    const results = await sql.transaction([
-      sql.query("select set_config('search_path',$1,true)", [schema+',public']),
-      sql.query(text, params),
-    ],{fetchOptions:{signal:AbortSignal.timeout(15000)}});
-    return results[1] as unknown as T[];
+  if (schema || process.env.TEST_SCHEMA) {
+    if (!schema || !/^keralai_test_[a-f0-9]{16}$/.test(schema) || process.env.TEST_SCHEMA !== schema)
+      throw new Error('Invalid test schema');
+    return transaction(async client => {
+      await client.query("select set_config('search_path',$1,true)", [schema+',public']);
+      return (await client.query<T>(text, params)).rows;
+    });
   }
+  const sql = getSqlCached();
   // neon() default mode returns an array of row objects
   const rows = (await sql.query(text, params,{fetchOptions:{signal:AbortSignal.timeout(15000)}})) as unknown as T[];
   return rows;

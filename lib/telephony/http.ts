@@ -3,15 +3,33 @@ import { NextResponse } from 'next/server';
 import { resolveTenantContext, HttpError } from '@/lib/auth/context';
 import { limitOperation } from './store';
 import { ProviderError,providerErrorDetails } from './errors';
+import { getTelephonyProvider } from './provider';
+import { isPhoneProvider } from './provider-options';
 
 export async function domainRoute(request: Request, work: (tenantId: string) => Promise<unknown>, mutate = false, mutationLimit = 6) {
   try {
     const { tenantId } = await resolveTenantContext(request, mutate ? { roles:['owner','admin'] } : {});
+    // Explicit provider requests must never silently fall through to Vobiz.
+    const requestedProvider = new URL(request.url).searchParams.get('provider');
+    if (requestedProvider !== null) {
+      if (!isPhoneProvider(requestedProvider)) throw new HttpError(400, 'Unknown phone provider');
+      getTelephonyProvider(requestedProvider);
+    }
     if (mutate) {
       const origin = request.headers.get('origin');
       const expected = process.env.BETTER_AUTH_URL ? new URL(process.env.BETTER_AUTH_URL).origin : new URL(request.url).origin;
       if (!origin || origin !== expected) throw new HttpError(403,'Invalid request origin');
-      if (Number(request.headers.get('content-length') ?? 0) > 8192 || (await request.clone().text()).length > 8192) throw new HttpError(413,'Request too large');
+      if (Number(request.headers.get('content-length') ?? 0) > 8192) throw new HttpError(413,'Request too large');
+      const text = await request.clone().text();
+      if (text.length > 8192) throw new HttpError(413,'Request too large');
+      if (text) {
+        let body: unknown;
+        try { body = JSON.parse(text); } catch { throw new HttpError(400, 'Invalid JSON'); }
+        if (body && typeof body === 'object' && 'provider' in body) {
+          if (!isPhoneProvider(body.provider)) throw new HttpError(400, 'Unknown phone provider');
+          getTelephonyProvider(body.provider);
+        }
+      }
     }
     await limitOperation(tenantId,new URL(request.url).pathname,mutate ? mutationLimit:60);
     return NextResponse.json(await work(tenantId),{ headers:{'Cache-Control':'private, no-store'} });

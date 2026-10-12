@@ -24,6 +24,10 @@ flowchart TD
 
 `lib/telephony/types.ts` defines `TelephonyProvider`; `provider.ts` selects the adapter. Customer APIs operate on account/KYC/numbers/usage/wallet, never arbitrary provider IDs. `service.ts` owns orchestration; Vobiz HTTP/schema/signature/XML behavior is in `providers/vobiz`. This beta selects Vobiz; adding another provider requires implementing its adapter and factory selection, not rewriting tenant tables.
 
+VoiceLink has a separate setup view and tested media transport preparation, but
+remains unavailable for activation until its authenticated REST/callback/CDR
+contracts are supplied. See [VoiceLink integration](./voicelink-integration.md).
+
 The bridge retains one `CallSession`. `transports/vobiz.mjs` converts protocol and G.711 mu-law, and `exotel-legacy.mjs` preserves PCM legacy installations. Browser voice remains its existing separate relay. No SIP infrastructure is introduced. Both services use tenant-scoped Gemini credentials; the bridge receives no Vobiz master credentials.
 
 The trusted DID lookup in inbound callbacks is intentionally global so it can resolve tenant context. Provider account/session lookups in KYC callbacks are similarly global identifiers authenticated by provider HMAC. Scheduled reconciliation and allowlisted administrator queries are explicit control-plane exceptions. All customer data access is scoped by validated membership, never a client tenant ID.

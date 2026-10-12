@@ -16,7 +16,11 @@
     "test:ui": "node scripts/test-integration.mjs --ui",
     "test:integration": "node scripts/test-integration.mjs",
     "test:vobiz-kyc": "node scripts/test-vobiz-kyc.mjs",
-    "test:smoke": "node scripts/smoke-alpha.mjs"
+    "test:smoke": "node scripts/smoke-alpha.mjs",
+    "test:bridge-smoke": "node scripts/smoke-bridge.mjs",
+    "test:config": "node scripts/check-alpha-config.mjs",
+    "test:gemini-browser": "node scripts/test-integration.mjs --live-gemini",
+    "test:did-exposure": "node scripts/test-integration.mjs --exposure"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

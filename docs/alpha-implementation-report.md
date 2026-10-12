@@ -1,5 +1,9 @@
 # Closed-alpha implementation report — 2026-10-10
 
+This is the historical initial implementation report. Current 2026-10-11 work
+and real Gemini evidence are in [the full Alpha phase record](./full-alpha-phase-record.md).
+The full specification is still being implemented; this report does not grant readiness.
+
 The code now supports an invited, platform-funded alpha with per-workspace isolation and server-enforced limits. **This is preparation for controlled staging, not customer-launch or production telephony approval.** No deployment, Google request, real KYC, provider configuration mutation, purchase/release or carrier call was performed. Existing working-tree changes were preserved; no commit was created.
 
 ## Architecture

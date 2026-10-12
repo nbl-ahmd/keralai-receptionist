@@ -494,6 +494,8 @@ export function buildGreeting(profile = {}) {
   const owner = ownerLabel(profile);
   const identity = assistantIdentity(profile);
   const name = String(profile.assistantName ?? '').trim();
+  if (/^(malayalam|ml(?:-|$)|മലയാളം)/i.test(String(profile.assistantLanguage ?? '').trim()))
+    return `നമസ്കാരം, ${owner}-ന്റെ അസിസ്റ്റന്റ് ${name || identity} ആണ് സംസാരിക്കുന്നത്. എങ്ങനെ സഹായിക്കാം?`;
   if (name) return `Hi, this is ${identity} from ${owner}. How can I help?`;
   return `Hi, you've reached ${owner}. How can I help?`;
 }

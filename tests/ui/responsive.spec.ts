@@ -1,7 +1,7 @@
 import {fixtureInvite} from './invite-fixture';
 import {test,expect} from '@playwright/test';
 const sizes=[[320,568],[360,800],[375,812],[390,844],[414,896],[768,1024],[1024,768],[1280,800],[1440,900],[1728,1117]];
-const summary={account:null,numbers:[],wallet:{balanceMinor:0,heldMinor:0,availableMinor:0,status:'active'},configured:true,assistantConfigured:true,paymentsEnabled:false};
+const summary={account:null,numbers:[],wallet:{balanceMinor:0,heldMinor:0,availableMinor:0,status:'active'},phoneCallsReady:false,phoneReadinessReason:'Phone service is awaiting provider readiness.',configured:true,kycAvailable:true,browserTestCompleted:true,phoneActivationApproved:true,assistantConfigured:true,paymentsEnabled:false};
 test('signup resumes onboarding; managed pages fit all acceptance viewports',async({page})=>{
  test.setTimeout(600000); // Fifty real authenticated page loads against the remote fixture DB.
  const registration=await page.request.post('/api/auth/sign-up/email',{data:{name:'Responsive Test',email:'responsive@example.test',password:'browser-test-password123'},headers:{Origin:'http://localhost:3210','x-alpha-invite-code':await fixtureInvite('responsive@example.test')}});expect(registration.ok()).toBeTruthy();
@@ -21,7 +21,9 @@ test('signup resumes onboarding; managed pages fit all acceptance viewports',asy
  }
 });
 test('phone verification, failed setup, active and error states remain usable on mobile',async({page})=>{
- await page.request.post('/api/auth/sign-in/email',{data:{email:'responsive@example.test',password:'browser-test-password123'},headers:{Origin:'http://localhost:3210'}});
+ const signup=await page.request.post('/api/auth/sign-up/email',{data:{name:'Phone state tester',email:'phone-state-ui@example.test',password:'browser-test-password123'},headers:{Origin:'http://localhost:3210','x-alpha-invite-code':await fixtureInvite('phone-state-ui@example.test')}});
+ expect(signup.ok()).toBeTruthy();
+ await page.request.post('/api/onboarding',{data:{purpose:'personal',step:'complete'},headers:{Origin:'http://localhost:3210'}});
  await page.setViewportSize({width:320,height:568});
  const account={kycStatus:'pending',callsBlocked:true,documents:{pan:'verified',aadhaar:'pending'},status:'active',sessionStatus:'expired',sessionExpiresAt:new Date(Date.now()-10000).toISOString(),lastCheckedAt:null};
  let state:any={...summary,account};
@@ -31,6 +33,7 @@ test('phone verification, failed setup, active and error states remain usable on
   if(mode==='active')state={...state,numbers:[{...state.numbers[0],status:'active',provisioningStatus:'active'}]};
   if(mode==='error'){await page.unroute('**/api/telephony/account');await page.route('**/api/telephony/account',r=>r.fulfill({status:503,json:{error:'Unable to load phone setup. Try again.'}}));}
   await page.goto('/dashboard/phone');await page.waitForLoadState('networkidle');
+  if(mode==='active')await expect(page.getByText('Paused — Phone service is awaiting provider readiness.',{exact:true})).toBeVisible();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBeTruthy();
   await page.screenshot({path:`.test-output/phone-${mode}-320.png`,fullPage:true});
  }

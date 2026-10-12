@@ -4,7 +4,7 @@ import { HttpError } from '@/lib/auth/context';
 import { validatedLimits,emitAlpha } from '@/bridge/entitlements.mjs';
 export async function alphaAdminSnapshot(page=1) {
  const [tenants,invites,controls,metrics]=await Promise.all([
- query(`select t.id,t.name,t.status,s.plan_code,s.status as subscription_status,s.voice_enabled,s.purchase_enabled,
+ query(`select t.id,t.name,t.status,s.plan_code,s.status as subscription_status,s.voice_enabled,s.purchase_enabled,s.phone_activation_approved,
  s.period_start,s.period_end,s.spend_cap_minor,s.entitlement_overrides,p.entitlements,p.display_name,
  coalesce((select sum(amount_minor) from wallet_transactions w where w.tenant_id=t.id),0)::text as balance_minor,
  (select count(*) from alpha_voice_sessions v where v.tenant_id=t.id and state<>'closed' and expires_at>now())::int as active_sessions,
@@ -59,6 +59,8 @@ export async function alphaAdminAction(actorId:string,input:{action:string;tenan
   if(!subscription)throw new HttpError(404,'Workspace not found.');
   switch(input.action) {
    case 'suspend':case 'resume':await c.query('update tenants set status=$2,updated_at=now() where id=$1',[tid,input.action==='suspend'?'suspended':'active']);break;
+   case 'phone_approval':if(typeof input.value!=='boolean')throw new HttpError(400,'Invalid phone approval.');
+    await c.query('update tenant_subscriptions set phone_activation_approved=$2,updated_at=now() where tenant_id=$1',[tid,input.value]);break;
    case 'voice':case 'purchase':if(typeof input.value!=='boolean')throw new HttpError(400,'Invalid gate.');
     await c.query(`update tenant_subscriptions set ${input.action==='voice'?'voice_enabled':'purchase_enabled'}=$2,updated_at=now() where tenant_id=$1`,[tid,input.value]);break;
    case 'subscription':if(!['active','suspended','cancelled'].includes(String(input.value)))throw new HttpError(400,'Invalid subscription state.');

@@ -1,23 +1,25 @@
-import type { TelephonyProvider, AccountRef, AvailableNumber, NumberInventory, KycState } from '../../types';
+import type { TelephonyProvider, AccountRef, AvailableNumber, NumberInventory } from '../../types';
 import { request, parentCredentials } from './client';
 import { object, string, decimal, integer } from './schemas';
 import { getTenantSecretValue } from '@/lib/tenant/secrets';
 import { ProviderError } from '../../errors';
+import { moneyMinor } from '../../did-policy';
 import { normalizeE164 } from '../../policy';
 import { verifyKycWebhook, verifyVoiceWebhook } from './webhooks';
 
 const enc = encodeURIComponent;
-const states = new Set(['not_started','pending','verified','failed']);
-function state(value: unknown): KycState {
-  if (typeof value !== 'string' || !states.has(value)) throw new ProviderError('invalid_kyc_state');
-  return value as KycState;
-}
+import {normalizeKycStatus} from './kyc-status.mjs';
 function number(value: unknown): AvailableNumber {
   const n = object(value);
   return { id: string(n.id), e164: normalizeE164(n.e164), country: string(n.country),
     region: typeof n.region === 'string' ? n.region : '',
-    monthlyCost: decimal(n.monthly_fee), setupCost: decimal(n.setup_fee ?? 0), currency: string(n.currency),
-    voice: n.voice_enabled !== false && (!n.capabilities || object(n.capabilities).voice !== false) };
+    monthlyCost: decimal(n.monthly_fee), setupCost: n.setup_fee === undefined ? '' : decimal(n.setup_fee), currency: string(n.currency),
+    voice: n.voice_enabled !== false && (!n.capabilities || object(n.capabilities).voice !== false) &&
+      (n.voice_enabled === true || (!!n.capabilities && object(n.capabilities).voice === true)),
+    releaseCost: n.release_fee === undefined ? undefined : decimal(n.release_fee),
+    commitmentMonths: typeof n.minimum_commitment_months === 'number' ? n.minimum_commitment_months : undefined,
+    available: n.status === 'active' && n.is_blocked === false,
+    restricted: n.is_trial_number !== false || n.awaiting_registration === true || n.is_spam === true || n.special === true };
 }
 function inventory(value: unknown, page: number): NumberInventory {
   const data = object(value);
@@ -58,12 +60,13 @@ export const vobizProvider: TelephonyProvider = {
   async getKycStatus(account) {
     // Test mode changes per-document verification endpoints, not the status gate.
     const data = object(await request(`/sub-accounts/${enc(account.authId)}/kyc/status`));
-    if (data.sub_account_id !== account.authId || data.kyc_mode !== 'customer_use' || data.business_type !== 'individual' || typeof data.kyc_calls_blocked !== 'boolean')
-      throw new ProviderError('invalid_kyc_account');
-    const docs = object(data.verifications);
-    const documents: Record<string, KycState> = {};
-    for (const name of ['pan','aadhaar']) if (docs[name] !== undefined) documents[name] = state(docs[name]);
-    return { status: state(data.overall_status), callsBlocked: data.kyc_calls_blocked, documents };
+    const parent=parentCredentials().authId;
+    const identity='sub_account_id' in data?undefined:object(await request(`/accounts/${enc(parent)}/sub-accounts/${enc(account.authId)}`));
+    try{return normalizeKycStatus(data,account.authId,identity,parent);}catch{throw new ProviderError('invalid_kyc_account');}
+  },
+  async getPlatformBalance() {
+    const data=object(await request(`/Account/${enc(parentCredentials().authId)}/balance/INR`));
+    return {availableMinor:moneyMinor(data.available_balance),active:data.currency==='INR'&&data.status==='active'};
   },
   async searchAvailableNumbers(input) {
     const params = new URLSearchParams({ country: 'IN', page: String(input.page ?? 1), per_page: '25', search: input.search ?? '' });

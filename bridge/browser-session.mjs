@@ -1,4 +1,3 @@
-import { dbQuery } from './db.mjs';
 /**
  * bridge/browser-session.mjs
  *
@@ -10,6 +9,7 @@ import { dbQuery } from './db.mjs';
  */
 
 import { Modality } from '@google/genai';
+import { safeError } from './safe-error.mjs';
 import {
   loadActiveInstructions,
   logCrmSyncEvent,
@@ -56,6 +56,8 @@ export class BrowserSession {
   constructor(ws, options) {
     this.ws = ws;
     this.onUsage = options.onUsage;
+    this.onBrowserTestComplete = options.onBrowserTestComplete;
+    this.browserTestComplete = false;
     this.tenantId = options.tenantId;
     this.ai = options.ai;
     this.liveModel = options.liveModel;
@@ -100,7 +102,7 @@ export class BrowserSession {
     try {
       this.ws.send(JSON.stringify(frame));
     } catch (error) {
-      console.error('[browser][relay] send failed:', error.message);
+      console.error('[browser][relay] send failed:', safeError(error));
     }
   }
 
@@ -174,31 +176,36 @@ export class BrowserSession {
       },
       callbacks: {
         onopen: () => {
-          const openingLine = this.greeting || this.buildGreeting(this.companyProfile);
-          this.send({ type: 'connected' });
-          void dbQuery(`update tenant_onboarding set browser_test_completed_at=coalesce(browser_test_completed_at,now()),updated_at=now() where tenant_id=$1`,[this.tenantId]).catch(()=>console.warn('[bridge] onboarding test state could not be saved'));
-          sessionPromise.then((session) => session.sendClientContent({
-            turns: [{ role: 'user', parts: [{ text: `System command: Greet the caller with: "${openingLine}"` }] }],
-            turnComplete: true,
-          }));
+          // Socket open is not successful model setup. Readiness follows the
+          // SDK connect promise, which waits for Google's setupComplete.
         },
         onmessage: (message) => {
           if (this.closed) return;
           if(Number.isSafeInteger(message.usageMetadata?.totalTokenCount))void this.onUsage?.(message.usageMetadata.totalTokenCount).catch(()=>console.warn('[browser] usage metadata could not be saved'));
           this.handleGeminiMessage(message).catch((error) => {
-            console.error('[browser][relay] message failed:', error);
+            console.error('[browser][relay] message failed:', safeError(error));
             this.send({ type: 'error', message: 'The voice session encountered an error.' });
           });
         },
         onerror: (error) => {
-          console.error('[browser][relay] Gemini error:', error);
+          console.error('[browser][relay] Gemini error:', safeError(error));
           this.send({ type: 'error', message: 'Gemini Live connection failed.' });
+          this.ws.close(1011,'Model connection failed');
         },
         onclose: () => this.send({ type: 'closed' }),
       },
     });
+    let connectTimer;
+    void sessionPromise.then(session=>{if(this.closed)session.close();},()=>{});
     try {
-      this.geminiSession = await sessionPromise;
+      this.geminiSession = await Promise.race([sessionPromise,new Promise((_,reject)=>{
+        connectTimer=setTimeout(()=>reject(new Error('Model setup timed out')),18000);
+        connectTimer.unref?.();
+      })]);
+      if(this.closed) {this.geminiSession.close();return;}
+      this.send({type:'connected'});
+      const openingLine=this.greeting||this.buildGreeting(this.companyProfile);
+      this.geminiSession.sendClientContent({turns:[{role:'user',parts:[{text:`System command: Greet the caller with: "${openingLine}"`}]}],turnComplete:true});
       const connectMs = msSince(connectStartNs);
       this.metrics.setGeminiConnect(connectMs);
       logPerf('gemini', {
@@ -208,6 +215,7 @@ export class BrowserSession {
         model: this.liveModel,
       });
     } finally {
+      clearTimeout(connectTimer);
       this._opening = false;
     }
   }
@@ -243,7 +251,7 @@ export class BrowserSession {
             result = { result: 'Appointment booked successfully.' };
           } catch (error) {
             toolOk = false;
-            console.error('[browser][relay] booking failed:', error);
+            console.error('[browser][relay] booking failed:', safeError(error));
             result = { result: 'Unable to save the appointment. Please offer another way to follow up.' };
           }
 
@@ -265,7 +273,7 @@ export class BrowserSession {
                 status: sync.ok ? 'success' : 'failed',
                 error: sync.error,
               }))
-              .catch((e) => console.error('[browser][relay] CRM sync error:', e));
+              .catch((e) => console.error('[browser][relay] CRM sync error:', safeError(e)));
           }
         } else if (fc.name === 'searchKnowledgeBase') {
           const query = fc.args?.query || '';
@@ -281,7 +289,7 @@ export class BrowserSession {
             if (values) results = await searchKnowledgeEmbeddings(this.tenantId, `[${values.join(',')}]`, 3);
           } catch (error) {
             toolOk = false;
-            console.error('[browser][relay] RAG failed:', error);
+            console.error('[browser][relay] RAG failed:', safeError(error));
           }
           this.geminiSession.sendToolResponse({
             functionResponses: { id: fc.id, name: fc.name, response: { result: results } },
@@ -305,7 +313,7 @@ export class BrowserSession {
             response = { result: 'Saved successfully.' };
           } catch (error) {
             toolOk = false;
-            console.error('[browser][relay] action failed:', error);
+            console.error('[browser][relay] action failed:', safeError(error));
             response = {
               result: 'FAILED: could not save due to a system error. Do not confirm; apologise and offer to try again.',
             };
@@ -340,7 +348,7 @@ export class BrowserSession {
                 this._endCallTimer = null;
                 if (this.closed) return;
                 this.close().catch((error) =>
-                  console.error('[browser][relay] close after endCall failed:', error),
+                  console.error('[browser][relay] close after endCall failed:', safeError(error)),
                 );
                 try { this.ws.close(1000, 'Assistant ended session'); } catch { /* ignore */ }
               }, 900);
@@ -367,6 +375,10 @@ export class BrowserSession {
 
     const audio = message.serverContent?.modelTurn?.parts?.find((p) => p.inlineData)?.inlineData?.data;
     if (audio) {
+      if(!this.browserTestComplete) {
+        this.browserTestComplete=true;
+        void this.onBrowserTestComplete?.().catch(()=>console.warn('[browser] test completion could not be saved'));
+      }
       const t0 = hrNow();
       this.send({ type: 'audio', data: audio });
       const procMs = msSince(t0);
@@ -467,10 +479,10 @@ export class BrowserSession {
             status: sync.ok ? 'success' : 'failed',
             error: sync.error,
           }))
-          .catch((e) => console.error('[browser][relay] CRM close sync error:', e));
+          .catch((e) => console.error('[browser][relay] CRM close sync error:', safeError(e)));
       }
     } catch (error) {
-      console.error('[browser][relay] call persistence failed:', error);
+      console.error('[browser][relay] call persistence failed:', safeError(error));
     }
 
     try { this.geminiSession?.close(); } catch { /* already closed */ }

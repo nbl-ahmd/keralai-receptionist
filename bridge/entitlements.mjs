@@ -27,6 +27,7 @@ function capabilityDecision(row,capability,controls) {
  if(!row.plan_active || row.status!=='active')return deny('Your plan is inactive. Contact your organiser.');
  if(row.limits[capability]!==true)return deny('This feature is not included in your plan.');
  if(['browser_voice','phone_inbound','phone_outbound'].includes(capability) && !row.voice_enabled)return deny('Voice is disabled for this workspace.');
+ if(capability==='number_purchase' && row.plan_code==='alpha' && !row.phone_activation_approved)return deny('Phone activation needs Alpha operator approval.');
  if(capability==='number_purchase' && (!row.purchase_enabled || !controls.purchase_enabled))return deny('Number activation is paused.');
  if(capability==='browser_voice' && (!controls.browser_enabled || process.env.PLATFORM_BROWSER_VOICE_ENABLED==='0'))return deny('Browser voice is paused.');
  if(capability.startsWith('phone_') && (!controls.phone_enabled || process.env.PLATFORM_NEW_PHONE_CALLS_ENABLED==='0' || process.env.VOBIZ_CALLBACK_SIGNATURES_VERIFIED!=='1'))return deny('Phone service is awaiting provider readiness.');
@@ -106,9 +107,10 @@ export async function admitVoiceSession(c,input) {
  coalesce(sum(coalesce(provider_actual_minor,provider_reserved_minor)),0) as provider_minor,
  coalesce(sum(ai_estimated_minor),0) as ai_minor
  from alpha_voice_sessions where created_at>=(date_trunc('month',now() at time zone 'UTC') at time zone 'UTC')`)).rows[0];
+ const didExposure=kind==='phone'?await providerDidExposure(c):0;
  const globalAi=Number((await c.query("select coalesce(sum(estimated_minor),0) as total from alpha_ai_usage where created_at>=(date_trunc('month',now() at time zone 'UTC') at time zone 'UTC')")).rows[0].total);
  if(global.active>=control.max_active_sessions || Number(global.monthly_seconds)+seconds>control.monthly_voice_seconds ||
- Number(global.daily_seconds)+seconds>control.daily_voice_seconds || Number(global.provider_minor)+providerReserve>Number(control.monthly_provider_cap_minor) ||
+ Number(global.daily_seconds)+seconds>control.daily_voice_seconds || Number(global.provider_minor)+didExposure+providerReserve>Number(control.monthly_provider_cap_minor) ||
  Number(global.ai_minor)+globalAi+aiReserve>Number(control.monthly_ai_cap_minor))throw reject(429,'Platform testing allowance is used. Contact your organiser.');
  const result=await c.query(`insert into alpha_voice_sessions(tenant_id,user_id,kind,provider_call_id,phone_number_id,
  token_expires_at,expires_at,reserved_seconds,reserved_minor,provider_reserved_minor,ai_estimated_minor,
@@ -170,7 +172,7 @@ export async function rollingVoiceAuthorization(tenantId,sessionId,transaction) 
   if(session.kind==='legacy' && (row.plan_code!=='internal' || !control.phone_enabled || process.env.PLATFORM_NEW_PHONE_CALLS_ENABLED==='0'))return deny('Legacy phone is paused.');
   const global=(await c.query(`select count(*) filter(where state<>'closed' and expires_at>now())::int as active,coalesce(sum(case when settlement='settled' then used_seconds else reserved_seconds end),0) as seconds,coalesce(sum(case when settlement='settled' then used_seconds else reserved_seconds end) filter(where created_at>=date_trunc('day',now() at time zone 'UTC') at time zone 'UTC'),0) as daily_seconds,coalesce(sum(coalesce(provider_actual_minor,provider_reserved_minor)),0) as provider,coalesce(sum(ai_estimated_minor),0) as ai from alpha_voice_sessions where created_at>=date_trunc('month',now() at time zone 'UTC') at time zone 'UTC'`)).rows[0];
   const requestAi=Number((await c.query(`select coalesce(sum(estimated_minor),0) as total from alpha_ai_usage where created_at>=date_trunc('month',now() at time zone 'UTC') at time zone 'UTC'`)).rows[0].total);
-  if(global.active>control.max_active_sessions || Number(global.seconds)>Number(control.monthly_voice_seconds) || Number(global.daily_seconds)>Number(control.daily_voice_seconds) || Number(global.provider)>Number(control.monthly_provider_cap_minor)||Number(global.ai)+requestAi>Number(control.monthly_ai_cap_minor))return deny('Platform testing budget changed.');
+  if(global.active>control.max_active_sessions || Number(global.seconds)>Number(control.monthly_voice_seconds) || Number(global.daily_seconds)>Number(control.daily_voice_seconds) || Number(global.provider)+(session.kind==='phone'?await providerDidExposure(c):0)>Number(control.monthly_provider_cap_minor)||Number(global.ai)+requestAi>Number(control.monthly_ai_cap_minor))return deny('Platform testing budget changed.');
   if(session.user_id && !(await c.query('select 1 from tenant_memberships where tenant_id=$1 and user_id=$2',[tenantId,session.user_id])).rows.length)return deny('Workspace access revoked.');
   const total=await usageTotals(c,tenantId,session.period_start);
   const requests=Number((await c.query('select coalesce(sum(estimated_minor),0) as amount from alpha_ai_usage where tenant_id=$1 and period_start=$2',[tenantId,session.period_start])).rows[0].amount);
@@ -205,4 +207,13 @@ export async function reserveAiRequest(tenantId,operation,transaction) {
   const result=await c.query(`insert into alpha_ai_usage(tenant_id,operation,estimated_minor,plan_code,plan_version,period_start)
   values($1,$2,$3,$4,$5,$6) returning id`,[tenantId,operation,estimate,row.plan_code,row.version,row.period_start]);return result.rows[0].id;
  });
+}
+
+// Conservative commitments remain reserved while a number is owned or uncertain.
+// An unreviewed legacy DID fails closed rather than inventing provider exposure.
+export async function providerDidExposure(c) {
+ const result=(await c.query(`select count(*) filter(where provider_exposure_minor is null and (status<>'released' or created_at>=date_trunc('month',now() at time zone 'UTC') at time zone 'UTC' or released_at>=date_trunc('month',now() at time zone 'UTC') at time zone 'UTC'))::int as unknown,
+ coalesce(sum(provider_exposure_minor) filter(where status<>'released' or created_at>=date_trunc('month',now() at time zone 'UTC') at time zone 'UTC' or released_at>=date_trunc('month',now() at time zone 'UTC') at time zone 'UTC'),0) as amount from phone_numbers`)).rows[0];
+ const amount=Number(result.amount);
+ return result.unknown||!Number.isSafeInteger(amount)?Infinity:amount;
 }

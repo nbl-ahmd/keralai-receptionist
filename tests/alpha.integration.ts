@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {requirePhoneSetupEligibility,ensureCustomerAccount} from '@/lib/telephony/service';
+import {GET as phoneAccountGet} from '@/app/api/telephony/account/route';
 import {transaction} from '@/db/transaction';
 import {admitVoiceSession,claimVoiceSession,finishVoiceSession,rollingVoiceAuthorization,reserveAiRequest,authorizeUsage} from '../bridge/entitlements.mjs';
 import {query,queryOne} from '@/db/client';
@@ -43,6 +45,25 @@ test('alpha DB: atomic invitation/signup/plan/promo and canonical credentials',a
  assert.equal((await signup('invited@example.test',duplicate.token)).status,422);
  assert.equal((await queryOne<{uses:number}>('select uses from alpha_invites where id=$1',[duplicate.id]))!.uses,0);
  const tid=context.tenantId;
+ const savedPlatformKey=process.env.PLATFORM_GEMINI_API_KEY;process.env.PLATFORM_GEMINI_API_KEY='';
+ const notConfigured=await phoneAccountGet(new Request(process.env.BETTER_AUTH_URL+'/api/telephony/account',{headers:{cookie}}));
+ assert.equal(notConfigured.status,200,'phone setup remains visible before managed AI is configured');
+ assert.equal((await notConfigured.json()).assistantConfigured,false);process.env.PLATFORM_GEMINI_API_KEY=savedPlatformKey;
+
+ const approval=await queryOne<{phone_activation_approved:boolean}>('select phone_activation_approved from tenant_subscriptions where tenant_id=$1',[tid]);
+ assert.equal(approval!.phone_activation_approved,false,'invited Alpha defaults to browser-only');
+ await assert.rejects(requirePhoneSetupEligibility(tid),/operator approval/);
+ assert.match((await authorizeUsage(tid,'number_purchase',transaction)).reason!,/operator approval/);
+ await alphaAdminAction('fixture-operator',{action:'phone_approval',tenantId:tid,value:true,reason:'explicit disposable fixture approval',reference:'fixture-phone-approval-1'});
+ assert.equal((await authorizeUsage(tid,'number_purchase',transaction)).allowed,true);
+ await assert.rejects(requirePhoneSetupEligibility(tid),/browser before/);
+ await assert.rejects(ensureCustomerAccount(tid,new Request(process.env.BETTER_AUTH_URL+'/api/telephony/account',{headers:{cookie}})),/browser before/);
+ assert.equal((await query('select id from tenant_telephony_accounts where tenant_id=$1',[tid])).length,0,'no provider account intent before real browser completion');
+ await query('update tenant_onboarding set browser_test_completed_at=now() where tenant_id=$1',[tid]);
+ await requirePhoneSetupEligibility(tid);
+ await alphaAdminAction('fixture-operator',{action:'phone_approval',tenantId:tid,value:false,reason:'revoke future activation',reference:'fixture-phone-approval-2'});
+ assert.equal((await authorizeUsage(tid,'number_purchase',transaction)).allowed,false);
+
  await assert.rejects(transaction(c=>admitVoiceSession(c,{tenantId:tid,kind:'legacy'})),/Legacy/);
  const raceStarted=performance.now();
  const concurrent=await Promise.allSettled([transaction(c=>admitVoiceSession(c,{tenantId:tid,kind:'browser',userId:context.userId})),transaction(c=>admitVoiceSession(c,{tenantId:tid,kind:'browser',userId:context.userId}))]);

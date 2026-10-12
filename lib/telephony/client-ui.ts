@@ -1,9 +1,9 @@
 export interface PhoneSummary {
   account: null | { kycStatus:string; callsBlocked:boolean; documents:Record<string,string>; status:string;
     sessionStatus:string|null; sessionExpiresAt:string|null; lastCheckedAt:string|null };
-  numbers: Array<{id:string;e164:string;region:string;status:string;provisioningStatus:string;monthlyPriceMinor:number}>;
+  numbers: Array<{id:string;e164:string;region:string;status:string;provisioningStatus:string;releaseRequested:boolean;monthlyPriceMinor:number}>;
   wallet:{balanceMinor:number;heldMinor:number;availableMinor:number;status:string};
-  configured:boolean;assistantConfigured:boolean;assistantNeedsRepair?:boolean;assistantManaged?:boolean;paymentsEnabled:boolean;
+  phoneCallsReady:boolean;phoneReadinessReason:string|null;browserTestCompleted:boolean;kycAvailable:boolean;phoneActivationApproved:boolean;configured:boolean;assistantConfigured:boolean;assistantNeedsRepair?:boolean;assistantManaged?:boolean;paymentsEnabled:boolean;
 }
 export const money=(minor:number)=>new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR'}).format(minor/100);
 export async function phoneApi(path:string,body?:unknown,key?:string) {

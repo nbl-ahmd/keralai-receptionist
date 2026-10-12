@@ -14,7 +14,7 @@ export async function requirePlatformAdmin(request: Request) {
 }
 export async function adminSnapshot(page=1) {
   return query(`select t.id,t.name,t.status,a.provider_auth_id,a.kyc_status,a.kyc_calls_blocked,a.status as account_status,a.error_code as account_error,
-    n.id as number_id,n.e164,n.status as number_status,n.provisioning_status,n.error_code,
+    n.id as number_id,n.e164,n.status as number_status,n.provisioning_status,n.error_code,n.release_requested_at,
     coalesce((select sum(amount_minor) from wallet_transactions w where w.tenant_id=t.id),0)::text as balance_minor,
     (select count(*) from telephony_usage_events u where u.tenant_id=t.id and u.billing_status='pending') as pending_calls,
     (select count(*) from telephony_usage_events u where u.tenant_id=t.id and u.call_status='failed') as failed_calls,

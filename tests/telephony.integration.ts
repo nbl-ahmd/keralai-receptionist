@@ -6,7 +6,7 @@ import {getTenantGeminiApiKey} from '@/lib/gemini';
 import {getTenantGeminiApiKey as bridgeGeminiKey} from '../bridge/gemini.mjs';
 import {getAuth} from '@/lib/auth/server';
 import {resolveTenantContext} from '@/lib/auth/context';
-import {ensureCustomerAccount,syncKyc,startKyc,purchaseNumber,retryNumber,releaseNumber,phoneSummary} from '@/lib/telephony/service';
+import {ensureCustomerAccount,syncKyc,startKyc,purchaseNumber,retryNumber,releaseNumber,requestNumberRelease,phoneSummary} from '@/lib/telephony/service';
 import {getNumber,initWallet,wallet} from '@/lib/telephony/store';
 import {GET as phoneAccountGet} from '@/app/api/telephony/account/route';
 import {GET as knowledgeGet} from '@/app/api/knowledge/route';
@@ -26,7 +26,7 @@ import {verifyBridgeToken} from '../bridge/bridge-token.mjs';
 const originalFetch=globalThis.fetch;
 let accountCount=0,purchases=0,configurationFail=false,purchaseTimeout=false,releases=0;
 const remote=new Map<string,{blocked:boolean;state:string;owned:any[]}>();
-const inventory=(e164:string)=>({id:e164,e164,country:'IN',region:'Kerala',currency:'INR',monthly_fee:'100',setup_fee:'10',voice_enabled:true});
+const inventory=(e164:string)=>({id:e164,e164,country:'IN',region:'Kerala',currency:'INR',monthly_fee:'100',setup_fee:'10',voice_enabled:true,status:'active',is_blocked:false,is_trial_number:false,minimum_commitment_months:0});
 globalThis.fetch=async(input,init)=>{
  const url=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);
  if(url.hostname!=='api.vobiz.ai')return originalFetch(input,init);
@@ -41,6 +41,7 @@ globalThis.fetch=async(input,init)=>{
   const id=path.split('/')[4],r=remote.get(id)!;data={sub_account_id:id,kyc_mode:'customer_use',business_type:'individual',overall_status:r.state,kyc_calls_blocked:r.blocked,verifications:{pan:r.state,aadhaar:r.state}};
  }else if(path.endsWith('/kyc-sessions'))data={session_id:'session-'+crypto.randomUUID(),widget_url:'https://kyc.vobiz.ai/s/test',expires_at:new Date(Date.now()+86400000).toISOString(),status:'link_ready'};
  else if(path.includes('/sub-accounts/')){const id=path.split('/').at(-1)!;data={id:id.slice(3),auth_id:id,enabled:true,is_active:true};}
+ else if(path.endsWith('/balance/INR'))data={currency:'INR',status:'active',available_balance:'10000'};
  else if(path.endsWith('/inventory/numbers'))data={items:[inventory('+914841234501'),inventory('+914841234502'),inventory('+914841234503')],total:3};
  else if(path.endsWith('/purchase-from-inventory')){purchases++;const n=inventory(body.e164);remote.get(auth)!.owned.push(n);if(purchaseTimeout){purchaseTimeout=false;throw new Error('simulated timeout after provider commit');}data={number:n};}
  else if(path.endsWith('/Application/'))data={app_id:'app-'+crypto.randomUUID()};
@@ -130,15 +131,38 @@ test('isolated database: auth, KYC gates, provision retries, signed routing and 
  assert.equal((await kycWebhook(webhook())).status,204);assert.equal((await kycWebhook(webhook())).status,204);
  assert.equal((await phoneSummary(b.tenantId)).account!.callsBlocked,true);
  await initWallet(a.tenantId);await query("insert into wallet_transactions(tenant_id,type,amount_minor,reference_type,reference_id,idempotency_key) values($1,'adjustment',100000,'fixture','test','fixture-credit')",[a.tenantId]);
+ // Pricing/funding rejection occurs before any hold or provider purchase.
+ process.env.ALPHA_MAX_DID_MONTHLY_COST_MINOR='9999';
+ await assert.rejects(purchaseNumber(a.tenantId,{e164:'+914841234501',key:crypto.randomUUID()}),/approved Alpha exposure/);
+ process.env.ALPHA_MAX_DID_MONTHLY_COST_MINOR='10000';
+ process.env.ALPHA_MIN_VOBIZ_BALANCE_MINOR='999999';
+ await assert.rejects(purchaseNumber(a.tenantId,{e164:'+914841234501',key:crypto.randomUUID()}),/operator funds service/);
+ process.env.ALPHA_MIN_VOBIZ_BALANCE_MINOR='10000';
+ const providerCap=await queryOne<{monthly_provider_cap_minor:string}>('select monthly_provider_cap_minor from platform_usage_controls where id=1');
+ await query('update platform_usage_controls set monthly_provider_cap_minor=10000 where id=1');
+ await assert.rejects(purchaseNumber(a.tenantId,{e164:'+914841234501',key:crypto.randomUUID()}),/provider allowance/);
+ await query('update platform_usage_controls set monthly_provider_cap_minor=$1 where id=1',[providerCap!.monthly_provider_cap_minor]);
+ assert.equal(purchases,0);assert.equal((await wallet(a.tenantId)).heldMinor,0);
+ assert.equal((await phoneSummary(a.tenantId)).phoneCallsReady,false,'no active DID means calls are not ready');
  configurationFail=true;
  await assert.rejects(purchaseNumber(a.tenantId,{e164:'+914841234501',key:crypto.randomUUID()}));
  const number=(await query('select * from phone_numbers where tenant_id=$1',[a.tenantId]))[0];assert.equal(number.provisioning_status,'configuration_failed');assert.equal(purchases,1);assert.equal((await wallet(a.tenantId)).heldMinor,11000);
+ assert.equal(Number(number.provider_exposure_minor),11000,'DID exposure is reserved before paid mutation');
  process.env.VOBIZ_CALLBACK_SIGNATURES_VERIFIED='0';
  await assert.rejects(retryNumber(a.tenantId,number.id),/provider readiness/);assert.equal((await getNumber(a.tenantId,number.id))!.status,'failed');
  process.env.VOBIZ_CALLBACK_SIGNATURES_VERIFIED='1';
  configurationFail=false;await retryNumber(a.tenantId,number.id);
  await purchaseNumber(a.tenantId,{e164:number.e164,key:crypto.randomUUID()});assert.equal(purchases,1);assert.equal((await wallet(a.tenantId)).heldMinor,0);
+ assert.equal((await phoneSummary(a.tenantId)).phoneCallsReady,true);
+ process.env.PLATFORM_NEW_PHONE_CALLS_ENABLED='0';assert.equal((await phoneSummary(a.tenantId)).phoneCallsReady,false,'display readiness uses the actual admission gate');process.env.PLATFORM_NEW_PHONE_CALLS_ENABLED='1';
+ const initialLedger=await query("select type,amount_minor from wallet_transactions where tenant_id=$1 and reference_id=$2 order by type",[a.tenantId,number.id]);
+ assert.deepEqual(initialLedger.map(r=>[r.type,Number(r.amount_minor)]),[['number_rental',-10000],['number_setup',-1000]]);
  assert.equal(await getNumber(b.tenantId,number.id),null);
+ await assert.rejects(requestNumberRelease(b.tenantId,number.id,b.userId),/not found/);
+ await requestNumberRelease(a.tenantId,number.id,a.userId);await requestNumberRelease(a.tenantId,number.id,a.userId);
+ assert.equal(releases,0,'customer request does not perform paid release');
+ assert.equal((await phoneSummary(a.tenantId)).numbers[0].releaseRequested,true);
+ assert.equal((await query("select id from platform_audit_events where tenant_id=$1 and action='tenant.number.release_requested'",[a.tenantId])).length,1);
  const cross=await retryRoute(new Request(process.env.BETTER_AUTH_URL+'/api/telephony/numbers/retry',{method:'POST',headers:{cookie:b.cookie,origin:new URL(process.env.BETTER_AUTH_URL!).origin,'Content-Type':'application/json'},body:JSON.stringify({id:number.id,tenantId:a.tenantId})}));assert.equal(cross.status,404);
  await assert.rejects(requirePlatformAdmin(a.request));
  await query("update tenant_memberships set role='member' where user_id=$1 and tenant_id=$2",[b.userId,b.tenantId]);

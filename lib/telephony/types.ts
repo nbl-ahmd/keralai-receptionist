@@ -9,6 +9,7 @@ export interface KycSession { id: string; url: string; expiresAt: string; status
 export interface AvailableNumber {
   id: string; e164: string; country: string; region: string;
   monthlyCost: string; setupCost: string; currency: string; voice: boolean;
+  releaseCost?: string; commitmentMonths?: number; available?: boolean; restricted?: boolean;
 }
 export interface NumberInventory { items: AvailableNumber[]; total: number; page: number }
 export interface AccountRef { tenantId: string; authId: string }
@@ -25,6 +26,7 @@ export interface TelephonyProvider {
   getCustomerAccount(account: AccountRef): Promise<CustomerAccount>;
   createKycSession(account: AccountRef, input: { returnUrl: string; webhookUrl: string }): Promise<KycSession>;
   getKycStatus(account: AccountRef): Promise<KycStatus>;
+  getPlatformBalance(): Promise<{availableMinor: number; active: boolean}>;
   searchAvailableNumbers(input: { search?: string; page?: number }): Promise<NumberInventory>;
   purchaseNumber(account: AccountRef, e164: string): Promise<AvailableNumber>;
   listOwnedNumbers(account: AccountRef, page: number): Promise<NumberInventory>;
@@ -49,5 +51,5 @@ export interface PhoneNumberRow {
   id: string; tenant_id: string; telephony_account_id: string; provider: string;
   e164: string; region: string; status: string; provisioning_status: string;
   application_id: string | null; customer_monthly_price_minor: string;
-  initial_charge_minor: string; idempotency_key: string; error_code: string | null;
+  release_requested_at: string|null; initial_charge_minor: string; idempotency_key: string; error_code: string | null;
 }

@@ -49,6 +49,8 @@
  */
 
 import './env.mjs';
+import { safeError } from './safe-error.mjs';
+import { installBrowserFrames } from './browser-frames.mjs';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 
@@ -161,7 +163,7 @@ function runBackground(label, fn) {
       });
     } catch (error) {
       processMetrics.backgroundFailures++;
-      console.error(`[bridge][bg:${label}] failed:`, error?.message ?? error);
+      console.error(`[bridge][bg:${label}] failed:`, safeError(error));
       logPerf('bg', {
         task: label,
         dur_ms: msSince(startedNs).toFixed(1),
@@ -461,7 +463,7 @@ class CallSession {
   }
 
   log(...args) { console.log(`[bridge][${this.callSid}]`, ...args); }
-  err(...args) { console.error(`[bridge][${this.callSid}]`, ...args); }
+  err(...args) { console.error(`[bridge][${this.callSid}]`, ...args.map(value => typeof value === 'string' ? value : safeError(value))); }
 
   /** Display name for the assistant in summaries/logs — never a hardcoded person. */
   _assistantLabel() {
@@ -487,7 +489,7 @@ class CallSession {
     const now = Date.now();
     if (now - this.mediaErrorLoggedAt < 5000) return;
     this.mediaErrorLoggedAt = now;
-    this.err(`Media ${stage} error (x${this.mediaErrorCount}):`, error?.message ?? error);
+    this.err(`Media ${stage} error (x${this.mediaErrorCount}):`, safeError(error));
     this.mediaErrorCount = 0;
   }
 
@@ -500,7 +502,7 @@ class CallSession {
     if (!this.callIdPromise) {
       this.callIdPromise = upsertCallRecord(this.tenantId, this._startRecord())
         .then((id) => { this.callId = id; return id; })
-        .catch((e) => { this.err('Failed to create call record:', e?.message ?? e); return null; });
+        .catch((e) => { this.err('Failed to create call record:', safeError(e)); return null; });
     }
     return this.callIdPromise;
   }
@@ -596,7 +598,7 @@ class CallSession {
       const runtimeState = await getTenantRuntimeState(this.tenantId);
       runtimeInstruction = buildRuntimeInstruction(runtimeState);
     } catch (e) {
-      this.err('Failed to load runtime mode:', e?.message ?? e);
+      this.err('Failed to load runtime mode:', safeError(e));
     }
 
     const audioSettings = resolveLiveAudioSettings(process.env, this.companyProfile);
@@ -667,18 +669,18 @@ class CallSession {
           );
         },
         onerror: (err) => {
-          this.err('Gemini Live error:', err?.message ?? err);
+          this.err('Gemini Live error:', safeError(err));
         },
         onclose: (evt) => {
           this.geminiOpen = false;
           this.geminiClosed = true;
-          this.log('Gemini Live session closed', evt?.code, evt?.reason);
+          this.log('Gemini Live session closed', Number.isInteger(evt?.code) ? evt.code : 'unknown');
           // Unexpected drop mid-call: don't leave the caller in dead air while
           // pendingInput silently overflows. End the call (idempotent).
           if (!this.closed) {
             this.err('Gemini disconnected unexpectedly — ending call');
             try { if (this.exotelWs.readyState === 1) this.exotelWs.close(1011, 'Gemini disconnected'); } catch { /* ignore */ }
-            this.close().catch((e) => this.err('Error closing after Gemini drop:', e));
+            void runBackground('phone-gemini-close', () => this.close());
           }
         },
       },
@@ -1084,7 +1086,7 @@ class CallSession {
       try {
         this.transport.stop();
       } catch { /* ignore */ }
-      if(this.transport.name!=='vobiz') this.close().catch((e) => this.err('Error closing after endCall:', e));
+      if(this.transport.name!=='vobiz') void runBackground('phone-tool-close', () => this.close());
     }, END_CALL_GRACE_MS);
     this._endCallTimer.unref?.();
   }
@@ -1579,6 +1581,16 @@ async function main() {
     /** @type {BrowserSession | null} */
     let session = null;
     const authorization=req._voiceAuthorization;
+    const acceptFrames=installBrowserFrames(ws,async (current,frame)=>{
+      if(frame.type==='start') { if(current.geminiSession)throw new Error('Session already started');await current.open(frame); }
+      else if(frame.type==='audio')current.sendAudio(frame.data,frame.mimeType);
+      else if(frame.type==='stop') {await current.close();ws.close(1000,'Session complete');}
+    },async error=>{
+      console.error('[bridge][browser] frame failed:',safeError(error));
+      session?.send({type:'error',message:'Unable to start the voice session.'});
+      await session?.close();
+      ws.close(1011,'Voice session failed');
+    });
     const cancelGuard=installVoiceGuard({expiresAt:authorization.expires_at,
       check:()=>rollingVoiceAuthorization(tenantId,authorization.id,withTransaction),
       end:reason=>{session?.send({type:'error',message:'This voice session has ended. Check your usage or contact your organiser.'});
@@ -1590,14 +1602,14 @@ async function main() {
     ws.on('close', () => {
       cancelGuard();
       processMetrics.activeBrowserSessions=Math.max(0,processMetrics.activeBrowserSessions-1);
-      void finishVoiceSession(tenantId,authorization.id,withTransaction).catch(()=>emitAlpha('gemini.session.close_pending',tenantId));
+      void runBackground('browser-usage-close',()=>finishVoiceSession(tenantId,authorization.id,withTransaction));
       const ip = ws._keralaiIp;
       const count = browserSessionsByIp.get(ip) ?? 1;
       if (count <= 1) browserSessionsByIp.delete(ip);
       else browserSessionsByIp.set(ip, count - 1);
-      if (session) session.close().catch((e) => console.error('[bridge][browser] close failed:', e));
+      if (session) void runBackground('browser-call-close',()=>session.close());
     });
-    ws.on('error', (e) => console.error('[bridge][browser] WebSocket error:', e));
+    ws.on('error', (e) => console.error('[bridge][browser] WebSocket error:', safeError(e)));
 
     (async () => {
       if (!tenantId) { ws.close(1008, 'Missing tenant'); return; }
@@ -1623,28 +1635,14 @@ async function main() {
         embeddingModel,
         companyProfile: profile,
         onUsage:tokens=>recordVoiceTokens(tenantId,authorization.id,tokens,withTransaction),
+        onBrowserTestComplete:()=>dbQuery(`update tenant_onboarding set browser_test_completed_at=coalesce(browser_test_completed_at,now()),updated_at=now() where tenant_id=$1`,[tenantId]),
         runtimeInstruction,
         buildInstruction: buildSystemInstruction,
         buildTools,
         buildGreeting,
       });
 
-      ws.on('message', async (raw) => {
-        if (!session) return;
-        let frame;
-        try { frame = JSON.parse(raw.toString()); } catch {
-          ws.close(1003, 'JSON frames required'); return;
-        }
-        try {
-          if (frame.type === 'start') { if(session.geminiSession)throw new Error('Session already started');await session.open(frame); }
-          else if (frame.type === 'audio') session.sendAudio(frame.data, frame.mimeType);
-          else if (frame.type === 'stop') { await session.close(); ws.close(1000, 'Session complete'); }
-        } catch (error) {
-          console.error('[bridge][browser] frame failed:', error);
-          session.send({ type: 'error', message: 'Unable to start the voice session.' });
-          await session.close();
-        }
-      });
+      acceptFrames(session);
     })().catch((e) => {
       console.error('[bridge][browser] Session setup failed:', e?.message ?? e);
       try { ws.close(1011, 'Session setup failed'); } catch { /* ignore */ }
@@ -1761,12 +1759,12 @@ async function main() {
             created.companyProfile = profile ?? created.companyProfile;
           } catch (e) {
             setupError = e;
-            console.error(`[bridge][${callSid}] Tenant setup failed:`, e?.message ?? e);
+            console.error(`[bridge][${callSid}] Tenant setup failed:`, safeError(e));
           }
 
           // Create the DB calls row in the background so bookings can reference
           // it even though the call is still in progress.
-          void created.ensureCallRecord();
+          void runBackground('phone-call-start', () => created.ensureCallRecord());
 
           // A 'stop' may have arrived while we awaited — don't connect Gemini.
           if (created.closed) break;
@@ -1776,11 +1774,11 @@ async function main() {
             if(req._phoneClaims) await markPhoneConnection(req._phoneClaims,'failed').catch(()=>{});
             console.error(
               `[bridge][${callSid}] No usable Gemini credential for tenant ${tenant.slug}` +
-                (setupError ? ` (${setupError.message})` : '') +
+                (setupError ? ' (tenant setup failed)' : '') +
                 ' — ending call',
             );
             if (session === created) session = null;
-            try { await created.close(); } catch { /* logged inside close() */ }
+            await runBackground('phone-setup-close', () => created.close());
             if (ws.readyState === 1) ws.close(1011, 'Tenant Gemini credential unavailable');
             break;
           }
@@ -1788,12 +1786,12 @@ async function main() {
           try {
             await created.openGeminiSession();
           } catch (e) {
-            console.error(`[bridge][${callSid}] Failed to open Gemini session:`, e);
+            console.error(`[bridge][${callSid}] Failed to open Gemini session:`, safeError(e));
             if(req._phoneClaims) await markPhoneConnection(req._phoneClaims,'failed').catch(()=>{});
             if (session === created) session = null;
             // Persist a final record (and clear the start row) rather than
             // leaving a dangling "in progress" call.
-            try { await created.close(); } catch { /* logged inside close() */ }
+            await runBackground('phone-connect-close', () => created.close());
             if (ws.readyState === 1) ws.close(1011, 'Gemini session failed to open');
           }
           break;
@@ -1814,7 +1812,11 @@ async function main() {
 
         case 'stop':
           console.log('[bridge] Exotel stop event — closing session');
-          if (session) { await session.close(); session = null; }
+          if (session) {
+            const closing = session;
+            session = null;
+            await runBackground('phone-stop-close', () => closing.close());
+          }
           break;
 
         default:
@@ -1822,14 +1824,18 @@ async function main() {
       }
     });
 
-    ws.on('close', async (code, reason) => {
+    ws.on('close', (code) => {
       clearTimeout(startTimer);phoneGuard?.();transport.dispose();
-      if(req._voiceAuthorization)void finishVoiceSession(tenant.id,req._voiceAuthorization.id,withTransaction).catch(()=>emitAlpha('wallet.settlement.pending',tenant.id));
-      console.log(`[bridge] Phone WebSocket closed (code=${code}, reason=${reason})`);
-      if (session) { await session.close(); session = null; }
+      if(req._voiceAuthorization)void runBackground('phone-usage-close',()=>finishVoiceSession(tenant.id,req._voiceAuthorization.id,withTransaction));
+      console.log(`[bridge] Phone WebSocket closed (code=${code})`);
+      if (session) {
+        const closing = session;
+        session = null;
+        void runBackground('phone-call-close', () => closing.close());
+      }
     });
 
-    ws.on('error', (err) => console.error('[bridge] Exotel WebSocket error:', err));
+    ws.on('error', (err) => console.error('[bridge] Phone WebSocket error:', safeError(err)));
   });
 
   // ── Start listening ────────────────────────────────────────────────────────
@@ -1866,12 +1872,16 @@ async function main() {
     }, 10_000);
 
     // Stop accepting connections and release live WebSocket clients.
-    for (const client of wss.clients) { try { client.close(1001, 'Server shutting down'); } catch { /* ignore */ } }
-    for (const client of browserWss.clients) { try { client.close(1001, 'Server shutting down'); } catch { /* ignore */ } }
+    await Promise.all([...wss.clients,...browserWss.clients].map(client=>new Promise(resolve=>{
+      if(client.readyState===3)return resolve();
+      const timer=setTimeout(()=>{client.terminate();resolve();},2000);
+      client.once('close',()=>{clearTimeout(timer);resolve();});
+      try {client.close(1001,'Server shutting down');}catch{clearTimeout(timer);resolve();}
+    })));
 
     server.close(async () => {
-      try { await drainBackground(3000); } catch { /* ignore */ }
-      try { await closePool(); } catch (e) { console.error('[bridge] Error closing pool:', e.message); }
+      try { await drainBackground(7000); } catch { /* ignore */ }
+      try { await closePool(); } catch (e) { console.error('[bridge] Error closing pool:', safeError(e)); }
       clearTimeout(forceExit);
       console.log('[bridge] Shutdown complete.');
       process.exit(0);
@@ -1883,11 +1893,11 @@ async function main() {
 
   // Never let a stray rejection from background work take the process down.
   process.on('unhandledRejection', (reason) => {
-    console.error('[bridge] Unhandled promise rejection:', reason?.message ?? reason);
+    console.error('[bridge] Unhandled promise rejection:', safeError(reason));
   });
 }
 
 main().catch((err) => {
-  console.error('[bridge] Fatal startup error:', err);
+  console.error('[bridge] Fatal startup error:', safeError(err));
   process.exit(1);
 });

@@ -9,6 +9,7 @@ export async function tenantUsage(tenantId:string) {
    coalesce(sum(used_seconds) filter(where kind<>'phone' and settlement='settled'),0) as browser
    from alpha_voice_sessions where tenant_id=$1 and period_start=$2`,[tenantId,row.period_start])).rows[0];
   return {name:row.display_name,code:row.plan_code,status:row.status,voiceEnabled:row.voice_enabled&&row.tenant_status==='active',
+   phoneActivationApproved:row.phone_activation_approved,
    periodStart:row.period_start,periodEnd:row.period_end,includedMinutes:row.limits.phone_minutes,
    usedMinutes:Math.ceil(Number(confirmed.phone)/60),reservedMinutes:Math.ceil((Number(totals.phone_seconds)-Number(confirmed.phone))/60),
    remainingMinutes:Math.max(0,Math.floor((row.limits.phone_minutes*60-Number(totals.phone_seconds))/60)),

@@ -142,6 +142,7 @@ export function useLiveSession({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
   const connectTimeoutRef = useRef<number | null>(null);
+  const connectionAttemptRef = useRef(0);
 
   const bookingRef = useRef(onBookAppointment);
   const transcriptCallbackRef = useRef(onTranscript);
@@ -219,21 +220,20 @@ export function useLiveSession({
   }, []);
 
   const disconnect = useCallback(async () => {
+    connectionAttemptRef.current += 1;
     clearConnectTimeout();
     setIsConnecting(false);
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: "stop" }));
-      socketRef.current.close(1000, "Client ended session");
-    }
+    const socket = socketRef.current;
     socketRef.current = null;
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "stop" }));
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "Client ended session");
     processorRef.current?.disconnect();
     sourceRef.current?.disconnect();
     processorRef.current = null;
     sourceRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
-    if (inputContextRef.current) await inputContextRef.current.close().catch(() => undefined);
-    if (outputContextRef.current) await outputContextRef.current.close().catch(() => undefined);
+    const input = inputContextRef.current, output = outputContextRef.current;
     inputContextRef.current = null;
     outputContextRef.current = null;
     stopPlayback();
@@ -244,9 +244,13 @@ export function useLiveSession({
     setIsSpeaking(false);
     speakingCountRef.current = 0;
     setHasConnected(false);
+    await Promise.all([input?.close().catch(() => undefined), output?.close().catch(() => undefined)]);
   }, [clearConnectTimeout, stopPlayback]);
 
+  useEffect(() => () => { void disconnect(); }, [disconnect]);
+
   const connect = useCallback(async () => {
+    const attempt = ++connectionAttemptRef.current;
     setError(null);
     clearConnectTimeout();
     setIsConnecting(true);
@@ -258,6 +262,7 @@ export function useLiveSession({
       // Authorise against the dashboard first (session cookie), so we never
       // prompt for the mic before we know the tenant is allowed to talk.
       const bridgeAuth = await fetchBridgeToken();
+      if (attempt !== connectionAttemptRef.current) return;
 
       const inputContext = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: INPUT_SAMPLE_RATE,
@@ -268,6 +273,10 @@ export function useLiveSession({
       inputContextRef.current = inputContext;
       outputContextRef.current = outputContext;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (attempt !== connectionAttemptRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       streamRef.current = stream;
 
       const analyser = outputContext.createAnalyser();
@@ -281,6 +290,7 @@ export function useLiveSession({
       socketRef.current = socket;
 
       socket.onmessage = async (event) => {
+        if (socketRef.current !== socket) return;
         const frame = JSON.parse(event.data) as RelayFrame;
         if (frame.type === "connected") {
           clearConnectTimeout();
@@ -303,6 +313,11 @@ export function useLiveSession({
           clearConnectTimeout();
           setIsConnecting(false);
           setError(frame.message || "Voice relay error.");
+          void disconnect();
+          return;
+        }
+        if (frame.type === "closed") {
+          void disconnect();
           return;
         }
         if (frame.type === "interrupted") {
@@ -319,6 +334,7 @@ export function useLiveSession({
             OUTPUT_SAMPLE_RATE,
             1,
           );
+          if (socketRef.current !== socket) return;
           const source = context.createBufferSource();
           source.buffer = audioBuffer;
           source.connect(analyserRef.current || context.destination);
@@ -337,15 +353,18 @@ export function useLiveSession({
       };
 
       socket.onerror = () => {
+        if (socketRef.current !== socket) return;
         clearConnectTimeout();
         setIsConnecting(false);
         setError(`Could not reach the voice relay at ${displayUrl}. Check the bridge URL.`);
       };
       socket.onclose = () => {
+        if (socketRef.current !== socket) return;
         clearConnectTimeout();
         connectedRef.current = false;
         setIsConnecting(false);
         setIsConnected(false);
+        void disconnect();
       };
 
       // If the relay never reports ready (bad URL, bridge down, rejected origin),
@@ -360,6 +379,11 @@ export function useLiveSession({
 
       await new Promise<void>((resolve, reject) => {
         socket.onopen = () => {
+          if (attempt !== connectionAttemptRef.current) {
+            socket.close();
+            reject(new Error("Voice session cancelled."));
+            return;
+          }
           const config = configRef.current;
           socket.send(JSON.stringify({
             type: "start",
@@ -379,13 +403,14 @@ export function useLiveSession({
       sourceRef.current = source;
       processorRef.current = processor;
       processor.onaudioprocess = (event) => {
-        if (mutedRef.current || socket.readyState !== WebSocket.OPEN) return;
+        if (!connectedRef.current || mutedRef.current || socket.readyState !== WebSocket.OPEN) return;
         const blob = createPcmBlob(event.inputBuffer.getChannelData(0));
         socket.send(JSON.stringify({ type: "audio", data: blob.data, mimeType: blob.mimeType }));
       };
       source.connect(processor);
       processor.connect(inputContext.destination);
     } catch (error) {
+      if (attempt !== connectionAttemptRef.current) return;
       console.error("Voice relay connection failed:", error instanceof Error ? error.message : error);
       setError(error instanceof Error ? error.message : "Could not start the voice session.");
       await disconnect();

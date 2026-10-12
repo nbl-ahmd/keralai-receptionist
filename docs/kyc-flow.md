@@ -19,3 +19,19 @@ VOBIZ_KYC_TEST_DISPOSABLE=1 VOBIZ_KYC_TEST_SUBACCOUNT=SA_THROWAWAY npm run test:
 ```
 
 The script validates initial blocking, PAN failed/pending/verified, PAN-only remaining blocked, mock DigiLocker completion and the final provider gate. It does not print credentials, request bodies or documents. There is no documented hosted-session mock mirror, so the app does not invent one. Local integration tests use deterministic HTTP fixtures and a disposable database schema for expired-session restart and duplicate webhook behavior. Provider test mode and the hosted redirect still require real platform credentials and must be run before release.
+
+## Live contract observation — 2026-10-12
+
+Invited Alpha users now need operator phone approval and a completed actual
+browser voice test before creating a provider account or hosted session.
+Onboarding step/redirect booleans cannot supply that evidence. Read-only KYC
+reconciliation remains available for existing accounts. Carrier signature
+attestation is separate from eligibility to begin identity verification.
+
+The actual status GET on the approved disposable account returned flat auth_id,
+kyc_status and nullable document states. The adapter supports this explicitly
+validated variant using a second authenticated parent-owned account GET for
+customer_use/individual and literal kyc_calls_blocked, with matching identities.
+It discards masked identity fields and never assumes a missing gate is false.
+The documented synthetic PAN endpoint returned HTTP 404. Provider mock/real
+acceptance has NOT passed; see [provider blocker evidence](./phone-alpha-provider-blockers.md).

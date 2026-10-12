@@ -1,5 +1,6 @@
+import {didExposure,assertParentFunding} from './did-policy';
 import { AlphaAccessError } from '@/bridge/alpha-policy.mjs';
-import { requireCapability } from '@/lib/alpha/entitlements';
+import { requireCapability,authorizeUsage } from '@/lib/alpha/entitlements';
 import { isPlatformManagedAi } from '@/lib/gemini';
 import { getTenantGeminiApiKey } from '@/lib/gemini';
 import { query, queryOne } from '@/db/client';
@@ -16,12 +17,22 @@ function ref(account: TelephonyAccountRow): AccountRef {
   if (!account.provider_auth_id) throw new HttpError(409, 'Phone setup needs support. Please contact us.');
   return { tenantId: account.tenant_id, authId: account.provider_auth_id };
 }
+export async function requirePhoneSetupEligibility(tenantId:string) {
+ const row=await queryOne<{plan_code:string;status:string;phone_activation_approved:boolean;browser_test_completed_at:string|null}>(`select s.plan_code,s.status,s.phone_activation_approved,o.browser_test_completed_at
+ from tenant_subscriptions s left join tenant_onboarding o on o.tenant_id=s.tenant_id where s.tenant_id=$1`,[tenantId]);
+ if(!row||row.status!=='active')throw new HttpError(403,'Your plan is inactive. Contact your organiser.');
+ if(row.plan_code==='alpha') {
+  if(!row.phone_activation_approved)throw new HttpError(403,'Phone setup needs Alpha operator approval.');
+  if(!row.browser_test_completed_at)throw new HttpError(409,'Test your assistant in the browser before identity verification.');
+ }
+}
 export async function ensureCustomerAccount(tenantId: string, request: Request) {
   await requireActiveTenant(tenantId);
   return withOperationLock(tenantId, async () => {
     const existing = await getAccount(tenantId);
     if (existing?.provider_auth_id) return existing;
     if (existing) throw new HttpError(409, 'Phone setup needs support. No second account will be created.');
+    await requirePhoneSetupEligibility(tenantId);
     const session = await getSession(request);
     if (!session?.user.email) throw new HttpError(400, 'An email address is required for identity verification.');
     const tenant = await queryOne<{ name: string }>('select name from tenants where id=$1',[tenantId]);
@@ -66,6 +77,7 @@ export async function syncKyc(tenantId: string) {
 }
 export async function startKyc(tenantId: string) {
   await requireActiveTenant(tenantId);
+  await requirePhoneSetupEligibility(tenantId);
   return withOperationLock(tenantId,async () => {
     const account = await getAccount(tenantId);
     if (!account) throw new HttpError(409,'Start phone setup first.');
@@ -82,13 +94,14 @@ export async function startKyc(tenantId: string) {
   });
 }
 export async function searchNumbers(tenantId: string, input: { search: string; page: number }) {
+  await requireCapability(tenantId,'number_purchase');
   await requireActiveTenant(tenantId);
   const account = await getAccount(tenantId);
   assertActivationAllowed(account);
   const data = await getTelephonyProvider().searchAvailableNumbers(input);
   const monthlyPriceMinor = price('PHONE_MONTHLY_PRICE_MINOR');
   const setupPriceMinor = price('PHONE_SETUP_PRICE_MINOR');
-  return { ...data, items: data.items.filter((n) => n.country === 'IN' && n.currency === 'INR' && n.voice)
+  return { ...data, items: data.items.filter((n) => {try {didExposure(n);return true;}catch{return false;}})
     .map((n) => ({ e164: n.e164, region: n.region, monthlyPriceMinor, setupPriceMinor })) };
 }
 async function reconcilePurchase(account: TelephonyAccountRow, number: PhoneNumberRow) {
@@ -152,6 +165,9 @@ export async function purchaseNumber(tenantId: string, input: { e164: unknown; k
     const inventory = await getTelephonyProvider().searchAvailableNumbers({ search: e164, page:1 });
     const selected = inventory.items.find((n) => n.e164===e164 && n.country==='IN' && n.currency==='INR' && n.voice);
     if (!selected) throw new HttpError(409,'That number is no longer available. Choose another.');
+    const exposure=didExposure(selected);
+    const parentBalance=await getTelephonyProvider().getPlatformBalance();
+    assertParentFunding(parentBalance,exposure);
     // Validate public callback configuration before spending provider funds.
     publicOrigin();
     if (!getTelephonyProvider(account.provider).activationReady) throw new HttpError(503,'Phone activation is awaiting provider readiness checks.');
@@ -159,7 +175,7 @@ export async function purchaseNumber(tenantId: string, input: { e164: unknown; k
     if(!await getTenantGeminiApiKey(tenantId)) throw new HttpError(409,'Connect your AI account and test your assistant before activating phone calls.');
     const monthlyPrice = price('PHONE_MONTHLY_PRICE_MINOR'), setup = price('PHONE_SETUP_PRICE_MINOR');
     number = await reserveNumber({ tenantId,accountId:account.id,provider:account.provider,e164,region:selected.region,providerNumberId:selected.id,
-      monthlyCost:selected.monthlyCost,monthlyPrice,charge:monthlyPrice+setup,key });
+      monthlyCost:selected.monthlyCost,monthlyPrice,setupPrice:setup,providerExposure:exposure,parentBalance,charge:monthlyPrice+setup,key });
     observe('vobiz.number.provisioning',tenantId,number.id);
     try {
       const purchased = await getTelephonyProvider().purchaseNumber(ref(account),e164);
@@ -198,18 +214,35 @@ export async function phoneSummary(tenantId: string) {
   const assistantState = getTenantGeminiApiKey(tenantId)
     .then(key => ({ configured:!!key, needsRepair:false }))
     .catch(error => {
-      if(error instanceof AlphaAccessError && error.status===403)return {configured:false,needsRepair:false};
+      if(error instanceof AlphaAccessError && [403,503].includes(error.status))return {configured:false,needsRepair:false};
       if (!(error instanceof SecretDecryptionError)) throw error;
       return { configured:false, needsRepair:true };
     });
-  const [account,numbers,balance,assistant] = await Promise.all([getAccount(tenantId),getNumbers(tenantId),wallet(tenantId),assistantState]);
+  const [account,numbers,balance,assistant,subscription,phoneDecision] = await Promise.all([getAccount(tenantId),getNumbers(tenantId),wallet(tenantId),assistantState,queryOne<{plan_code:string;phone_activation_approved:boolean;browser_test_completed_at:string|null}>(`select s.plan_code,s.phone_activation_approved,o.browser_test_completed_at from tenant_subscriptions s left join tenant_onboarding o on o.tenant_id=s.tenant_id where s.tenant_id=$1`,[tenantId]),authorizeUsage(tenantId,'phone_inbound')]);
   return { account: account ? { kycStatus: account.kyc_status, callsBlocked: account.kyc_calls_blocked,
     documents: account.document_states, status:account.status, sessionStatus:account.kyc_session_status,
     sessionExpiresAt:account.kyc_session_expires_at, lastCheckedAt:account.kyc_last_checked_at } : null,
     numbers: numbers.map((n) => ({ id:n.id,e164:n.e164,region:n.region,status:n.status,provisioningStatus:n.provisioning_status,
-      monthlyPriceMinor:Number(n.customer_monthly_price_minor) })), wallet:balance,
+      releaseRequested:!!n.release_requested_at,monthlyPriceMinor:Number(n.customer_monthly_price_minor) })), wallet:balance,
+    phoneActivationApproved:!!subscription&&(subscription.plan_code!=='alpha'||subscription.phone_activation_approved),
+    browserTestCompleted:!!subscription&&(subscription.plan_code!=='alpha'||!!subscription.browser_test_completed_at),
+    phoneCallsReady:phoneDecision.allowed&&numbers.some(n=>n.status==='active')&&account?.status==='active'&&account.kyc_calls_blocked===false&&assistant.configured&&balance.status==='active'&&balance.availableMinor>0,
+    phoneReadinessReason:phoneDecision.allowed?null:phoneDecision.reason,
+    kycAvailable:getTelephonyProvider().configured&&(()=>{try{publicOrigin();return true;}catch{return false;}})(),
     configured:getTelephonyProvider().activationReady,
     assistantConfigured:assistant.configured, assistantManaged:await isPlatformManagedAi(tenantId), assistantNeedsRepair:assistant.needsRepair, paymentsEnabled:false };
+}
+// Customer request is local only; provider release remains an explicit operator action.
+export async function requestNumberRelease(tenantId:string,id:string,userId:string) {
+ await transaction(async client=>{
+  const number=(await client.query('select id,status from phone_numbers where tenant_id=$1 and id=$2 for update',[tenantId,id])).rows[0];
+  if(!number)throw new HttpError(404,'Phone number not found');
+  if(number.status==='released')return;
+  const updated=await client.query(`update phone_numbers set release_requested_at=now(),release_requested_by=$3,updated_at=now()
+    where tenant_id=$1 and id=$2 and release_requested_at is null returning id`,[tenantId,id,userId]);
+  if(updated.rows.length)await client.query(`insert into platform_audit_events(actor_id,tenant_id,action,resource_id,reason,reference)
+    values($1,$2,'tenant.number.release_requested',$3,'Tester requested operator review; no provider mutation',$4)`,[userId,tenantId,id,`release-request:${id}`]);
+ });
 }
 export async function releaseNumber(tenantId: string, id: string) {
   return withOperationLock(tenantId,async () => {

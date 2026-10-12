@@ -13,3 +13,11 @@ test('readiness never treats a configured key as live acceptance and redacts mis
  for(const value of ['fixture-managed-key','different-secret','fixture-signing-secret'])assert.ok(!JSON.stringify(result).includes(value));
  assert.ok(alphaConfiguration({...app,TEST_SCHEMA:'public'},bridge).browserBlockers.length);
 });
+
+test('phone readiness requires canonical HTTPS callbacks and matching secure bridge origins',()=>{
+ const app:any={BETTER_AUTH_URL:'https://app.example.org',TELEPHONY_PUBLIC_ORIGIN:'https://app.example.org',BRIDGE_PUBLIC_URL:'https://bridge.example.org',NEXT_PUBLIC_BRIDGE_WS_URL:'wss://bridge.example.org'};
+ const missing=alphaConfiguration({...app,TELEPHONY_PUBLIC_ORIGIN:undefined},{});assert.ok(missing.phoneBlockers.some(b=>b.startsWith('Telephony public origin:')));
+ const valid=alphaConfiguration(app,{});assert.ok(!valid.phoneBlockers.some(b=>/origin|Bridge public URL|Browser bridge URL/.test(b)));
+ for(const url of ['http://bridge.example.org','https://user:pass@bridge.example.org','https://bridge.example.org/path'])assert.ok(alphaConfiguration({...app,BRIDGE_PUBLIC_URL:url},{}).phoneBlockers.some(b=>b.startsWith('Bridge public URL:')));
+ assert.ok(alphaConfiguration({...app,NEXT_PUBLIC_BRIDGE_WS_URL:'wss://other.example.org'},{}).phoneBlockers.some(b=>b.startsWith('Browser bridge URL:')));
+});

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { checkDatabase } from '@/db/client';
 import { getEncryptionKeyFingerprint } from '@/lib/tenant/secrets';
+import { releaseInfo } from '@/bridge/release-info.mjs';
 
 // Health must reflect live dependency state, never a cached response.
 export const dynamic = 'force-dynamic';
@@ -20,6 +21,7 @@ export async function GET() {
   const database = await checkDatabase();
 
   const body = {
+    release:releaseInfo(),
     status: database.ok ? 'ok' : 'degraded',
     uptimeSec: Math.round(process.uptime()),
     checks: {
@@ -41,5 +43,5 @@ export async function GET() {
     ...(database.error && process.env.NODE_ENV === 'development' ? { error: database.error } : {}),
   };
 
-  return NextResponse.json(body, { status: database.ok ? 200 : 503 });
+  return NextResponse.json(body, { status: database.ok ? 200 : 503,headers:{'Cache-Control':'no-store'} });
 }

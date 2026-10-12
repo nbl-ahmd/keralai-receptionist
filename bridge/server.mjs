@@ -1,3 +1,4 @@
+import {releaseInfo} from './release-info.mjs';
 /**
  * bridge/server.mjs
  *
@@ -1349,6 +1350,7 @@ async function main() {
         JSON.stringify({
           ok: true,
           service: 'keralai-bridge',
+          release:releaseInfo(),
           // Non-secret: compare with the dashboard's /api/health to confirm both
           // processes derived the same TENANT_SECRETS_ENCRYPTION_KEY. Exposed
           // outside production, or in production when

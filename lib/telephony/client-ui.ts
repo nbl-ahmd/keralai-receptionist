@@ -9,6 +9,9 @@ export const money=(minor:number)=>new Intl.NumberFormat('en-IN',{style:'currenc
 export async function phoneApi(path:string,body?:unknown,key?:string) {
   const response=await fetch(path,{cache:'no-store',...(body!==undefined ? {method:'POST',headers:{'Content-Type':'application/json',...(key?{'Idempotency-Key':key}:{})},body:JSON.stringify(body)}:{})});
   const data=await response.json();
-  if(!response.ok) throw new Error(data.error ?? 'Unable to complete this step. Please try again.');
+  if(!response.ok) {
+    const reference=typeof data.requestId==='string'&&/^[a-f0-9-]{36}$/.test(data.requestId)?` Support reference: ${data.requestId}.`:'';
+    throw new Error((data.error ?? 'Unable to complete this step. Please try again.')+reference);
+  }
   return data;
 }

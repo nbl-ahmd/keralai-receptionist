@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test';
+import {test,expect} from './fixtures';
 import {fixtureInvite} from './invite-fixture';
 test.use({permissions:['microphone'],launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream']}});
 test('closing voice modal stops microphone tracks and sends relay stop',async({page})=>{

@@ -1,5 +1,5 @@
 import {fixtureInvite} from './invite-fixture';
-import {test,expect} from '@playwright/test';
+import {test,expect} from './fixtures';
 const sizes=[[320,568],[360,800],[375,812],[390,844],[414,896],[768,1024],[1024,768],[1280,800],[1440,900],[1728,1117]];
 const summary={account:null,numbers:[],wallet:{balanceMinor:0,heldMinor:0,availableMinor:0,status:'active'},phoneCallsReady:false,phoneReadinessReason:'Phone service is awaiting provider readiness.',configured:true,kycAvailable:true,browserTestCompleted:true,phoneActivationApproved:true,assistantConfigured:true,paymentsEnabled:false};
 test('signup resumes onboarding; managed pages fit all acceptance viewports',async({page})=>{

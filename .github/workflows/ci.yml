@@ -43,7 +43,8 @@ jobs:
       - run: find bridge scripts -name '*.mjs' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
       - run: npm run build
       - run: npm run test:bridge-smoke
-      - run: npm run test:integration
+      - run: mkdir -p .test-output
+      - run: npm run test:integration 2>&1 | tee .test-output/integration.log
       - run: npm run test:did-exposure
       - run: npx playwright install --with-deps chromium
       - run: npm run test:ui
@@ -51,5 +52,7 @@ jobs:
         if: failure()
         with:
           name: alpha-test-failures
-          path: .test-output/results
+          path: |
+            .test-output/results
+            .test-output/integration.log
           retention-days: 7

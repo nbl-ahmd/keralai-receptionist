@@ -1,4 +1,4 @@
-import {didExposure,assertParentFunding} from './did-policy';
+import {didExposure,didPolicy,InventoryReviewError,assertParentFunding} from './did-policy';
 import { AlphaAccessError } from '@/bridge/alpha-policy.mjs';
 import { requireCapability,authorizeUsage } from '@/lib/alpha/entitlements';
 import { isPlatformManagedAi } from '@/lib/gemini';
@@ -98,11 +98,19 @@ export async function searchNumbers(tenantId: string, input: { search: string; p
   await requireActiveTenant(tenantId);
   const account = await getAccount(tenantId);
   assertActivationAllowed(account);
-  const data = await getTelephonyProvider().searchAvailableNumbers(input);
+  // Global configuration errors must not masquerade as empty inventory.
+  const policy=didPolicy();
   const monthlyPriceMinor = price('PHONE_MONTHLY_PRICE_MINOR');
   const setupPriceMinor = price('PHONE_SETUP_PRICE_MINOR');
-  return { ...data, items: data.items.filter((n) => {try {didExposure(n);return true;}catch{return false;}})
-    .map((n) => ({ e164: n.e164, region: n.region, monthlyPriceMinor, setupPriceMinor })) };
+  const data = await getTelephonyProvider().searchAvailableNumbers(input);
+  const excluded={metadata:0,pricing:0,exposure:0};
+  const items=[];
+  for(const n of data.items) {
+    try{didExposure(n,policy);items.push({e164:n.e164,region:n.region,monthlyPriceMinor,setupPriceMinor});}
+    catch(error){if(!(error instanceof InventoryReviewError))throw error;excluded[error.reason]++;}
+  }
+  // total refers to provider inventory before policy filtering, not eligible DIDs.
+  return {...data,items,excluded,hasMore:data.page*25<data.total};
 }
 async function reconcilePurchase(account: TelephonyAccountRow, number: PhoneNumberRow) {
   const provider = getTelephonyProvider(account.provider);

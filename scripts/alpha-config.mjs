@@ -17,6 +17,17 @@ export function alphaConfiguration(app, bridge) {
     } catch { return null; }
   };
   const appOrigin = origin(app.BETTER_AUTH_URL);
+  const telephonyOrigin=origin(app.TELEPHONY_PUBLIC_ORIGIN);
+  const bridgeOrigin=origin(app.BRIDGE_PUBLIC_URL);
+  if(!telephonyOrigin?.startsWith('https:')||telephonyOrigin!==appOrigin)
+    phoneBlockers.push('Telephony public origin: canonical HTTPS app origin required');
+  if(!bridgeOrigin?.startsWith('https:'))phoneBlockers.push('Bridge public URL: HTTPS origin required');
+  let browserBridge;
+  try {
+    const u=new URL(app.NEXT_PUBLIC_BRIDGE_WS_URL);
+    if(u.protocol==='wss:'&&!u.username&&!u.password&&!u.search&&!u.hash&&u.pathname==='/')browserBridge='https://'+u.host;
+  }catch{}
+  if(!browserBridge||browserBridge!==bridgeOrigin)phoneBlockers.push('Browser bridge URL: matching WSS bridge origin required');
   if (!appOrigin || origin(app.NEXT_PUBLIC_APP_URL) !== appOrigin)
     browserBlockers.push('Auth/public app origins: missing or mismatched');
   if (!appOrigin || !bridge.PUBLIC_APP_ORIGIN?.split(',').map(s => s.trim()).includes(appOrigin))

@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
+import {GET as readinessGet} from '@/app/api/admin/telephony/readiness/route';
+import {POST as kycSessionPost} from '@/app/api/telephony/kyc/session/route';
 import {query,queryOne} from '@/db/client';
 import {getTenantGeminiApiKey} from '@/lib/gemini';
 import {getTenantGeminiApiKey as bridgeGeminiKey} from '../bridge/gemini.mjs';
 import {getAuth} from '@/lib/auth/server';
 import {resolveTenantContext} from '@/lib/auth/context';
-import {ensureCustomerAccount,syncKyc,startKyc,purchaseNumber,retryNumber,releaseNumber,requestNumberRelease,phoneSummary} from '@/lib/telephony/service';
+import {ensureCustomerAccount,syncKyc,startKyc,purchaseNumber,retryNumber,releaseNumber,requestNumberRelease,phoneSummary,searchNumbers} from '@/lib/telephony/service';
 import {getNumber,initWallet,wallet} from '@/lib/telephony/store';
 import {GET as phoneAccountGet} from '@/app/api/telephony/account/route';
 import {GET as knowledgeGet} from '@/app/api/knowledge/route';
@@ -24,6 +26,7 @@ import {authorizePhoneBridge} from '../bridge/telephony.mjs';
 import {verifyBridgeToken} from '../bridge/bridge-token.mjs';
 
 const originalFetch=globalThis.fetch;
+let kycSessionFailure=0,inventoryCount=0;
 let accountCount=0,purchases=0,configurationFail=false,purchaseTimeout=false,releases=0;
 const remote=new Map<string,{blocked:boolean;state:string;owned:any[]}>();
 const inventory=(e164:string)=>({id:e164,e164,country:'IN',region:'Kerala',currency:'INR',monthly_fee:'100',setup_fee:'10',voice_enabled:true,status:'active',is_blocked:false,is_trial_number:false,minimum_commitment_months:0});
@@ -39,10 +42,10 @@ globalThis.fetch=async(input,init)=>{
   data={sub_account:{id:String(accountCount),enabled:true},auth_credentials:{auth_id:id,auth_token:`secret-${id}`}};
  }else if(path.includes('/kyc/status')){
   const id=path.split('/')[4],r=remote.get(id)!;data={sub_account_id:id,kyc_mode:'customer_use',business_type:'individual',overall_status:r.state,kyc_calls_blocked:r.blocked,verifications:{pan:r.state,aadhaar:r.state}};
- }else if(path.endsWith('/kyc-sessions'))data={session_id:'session-'+crypto.randomUUID(),widget_url:'https://kyc.vobiz.ai/s/test',expires_at:new Date(Date.now()+86400000).toISOString(),status:'link_ready'};
+ }else if(path.endsWith('/kyc-sessions')){if(kycSessionFailure)return new Response(JSON.stringify({pan:'private-document',token:'private-token'}),{status:kycSessionFailure});data={session_id:'session-'+crypto.randomUUID(),widget_url:'https://kyc.vobiz.ai/s/test',expires_at:new Date(Date.now()+86400000).toISOString(),status:'link_ready'};}
  else if(path.includes('/sub-accounts/')){const id=path.split('/').at(-1)!;data={id:id.slice(3),auth_id:id,enabled:true,is_active:true};}
  else if(path.endsWith('/balance/INR'))data={currency:'INR',status:'active',available_balance:'10000'};
- else if(path.endsWith('/inventory/numbers'))data={items:[inventory('+914841234501'),inventory('+914841234502'),inventory('+914841234503')],total:3};
+ else if(path.endsWith('/inventory/numbers')){inventoryCount++;data={items:[inventory('+914841234501'),inventory('+914841234502'),inventory('+914841234503')],total:3};}
  else if(path.endsWith('/purchase-from-inventory')){purchases++;const n=inventory(body.e164);remote.get(auth)!.owned.push(n);if(purchaseTimeout){purchaseTimeout=false;throw new Error('simulated timeout after provider commit');}data={number:n};}
  else if(path.endsWith('/Application/'))data={app_id:'app-'+crypto.randomUUID()};
  else if(path.endsWith('/application')){
@@ -132,6 +135,17 @@ test('isolated database: auth, KYC gates, provision retries, signed routing and 
  assert.equal((await phoneSummary(b.tenantId)).account!.callsBlocked,true);
  await initWallet(a.tenantId);await query("insert into wallet_transactions(tenant_id,type,amount_minor,reference_type,reference_id,idempotency_key) values($1,'adjustment',100000,'fixture','test','fixture-credit')",[a.tenantId]);
  // Pricing/funding rejection occurs before any hold or provider purchase.
+ const eligible=await searchNumbers(a.tenantId,{search:'',page:1});assert.equal(eligible.items.length,3);assert.equal(eligible.hasMore,false);
+ process.env.ALPHA_MAX_DID_MONTHLY_COST_MINOR='9999';
+ const reviewed=await searchNumbers(a.tenantId,{search:'',page:1});assert.equal(reviewed.items.length,0);assert.equal(reviewed.excluded.exposure,3);assert.equal(reviewed.total,3);
+ process.env.ALPHA_MAX_DID_MONTHLY_COST_MINOR='10000';
+ const beforeInventory=inventoryCount,releasePolicy=process.env.ALPHA_DID_RELEASE_COST_MINOR;delete process.env.ALPHA_DID_RELEASE_COST_MINOR;
+ await assert.rejects(searchNumbers(a.tenantId,{search:'',page:1}),/funding policy/);assert.equal(inventoryCount,beforeInventory);
+ process.env.ALPHA_DID_RELEASE_COST_MINOR=releasePolicy;
+ kycSessionFailure=404;
+ const failedSession=await kycSessionPost(new Request('https://app.example/api/telephony/kyc/session',{method:'POST',headers:{cookie:a.cookie,origin:'https://app.example'},body:'{}'}));
+ assert.equal(failedSession.status,503);const failure=await failedSession.json();assert.match(failure.error,/could not find/);assert.match(failure.requestId,/^[a-f0-9-]{36}$/);
+ assert.ok(!JSON.stringify(failure).includes('private-document'));assert.ok(!JSON.stringify(failure).includes('private-token'));kycSessionFailure=0;
  process.env.ALPHA_MAX_DID_MONTHLY_COST_MINOR='9999';
  await assert.rejects(purchaseNumber(a.tenantId,{e164:'+914841234501',key:crypto.randomUUID()}),/approved Alpha exposure/);
  process.env.ALPHA_MAX_DID_MONTHLY_COST_MINOR='10000';
@@ -165,6 +179,14 @@ test('isolated database: auth, KYC gates, provision retries, signed routing and 
  assert.equal((await query("select id from platform_audit_events where tenant_id=$1 and action='tenant.number.release_requested'",[a.tenantId])).length,1);
  const cross=await retryRoute(new Request(process.env.BETTER_AUTH_URL+'/api/telephony/numbers/retry',{method:'POST',headers:{cookie:b.cookie,origin:new URL(process.env.BETTER_AUTH_URL!).origin,'Content-Type':'application/json'},body:JSON.stringify({id:number.id,tenantId:a.tenantId})}));assert.equal(cross.status,404);
  await assert.rejects(requirePlatformAdmin(a.request));
+ const previousAdmins=process.env.PLATFORM_ADMIN_USER_IDS;process.env.PLATFORM_ADMIN_USER_IDS=a.userId;
+ const unauth=await readinessGet(new Request('https://app.example/api/admin/telephony/readiness'));assert.equal(unauth.status,401);
+ const memberReadiness=await readinessGet(new Request('https://app.example/api/admin/telephony/readiness',{headers:{cookie:b.cookie}}));assert.equal(memberReadiness.status,403);
+ const readiness=await readinessGet(new Request(`https://app.example/api/admin/telephony/readiness?tenantId=${b.tenantId}`,{headers:{cookie:a.cookie}}));assert.equal(readiness.status,200);
+ const readinessData=await readiness.json();assert.equal(readinessData.checks.find((c:any)=>c.key==='migration016').ready,true);assert.equal(readinessData.checks.find((c:any)=>c.key==='kyc').ready,false);
+ assert.equal(readinessData.bridge.status,'not_checked');assert.equal(readinessData.liveProviderAcceptance,'NOT_VALIDATED');assert.ok(!JSON.stringify(readinessData).includes('secret-SA'));
+ if(previousAdmins===undefined)delete process.env.PLATFORM_ADMIN_USER_IDS;else process.env.PLATFORM_ADMIN_USER_IDS=previousAdmins;
+
  await query("update tenant_memberships set role='member' where user_id=$1 and tenant_id=$2",[b.userId,b.tenantId]);
  assert.equal((await retryRoute(new Request(process.env.BETTER_AUTH_URL+'/api/telephony/numbers/retry',{method:'POST',headers:{cookie:b.cookie,origin:new URL(process.env.BETTER_AUTH_URL!).origin},body:JSON.stringify({id:number.id})}))).status,403);
  await assert.rejects(resolveTenantContext(new Request('https://app.example/api/telephony/account')));

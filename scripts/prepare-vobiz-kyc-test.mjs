@@ -4,9 +4,9 @@ import {spawn} from 'node:child_process';
 import nextEnv from '@next/env';
 import {Pool} from 'pg';
 const file='.test-output/vobiz-kyc-test-intent.json';
-const create=process.argv.includes('--create'),test=process.argv.includes('--test-prepared');
-if(create===test || (create && process.env.VOBIZ_KYC_TEST_CREATE_APPROVED!=='1')) {
- console.error('Choose --create with explicit VOBIZ_KYC_TEST_CREATE_APPROVED=1, or --test-prepared. No provider request made.');
+const create=process.argv.includes('--create'),retry=process.argv.includes('--retry-prepared'),test=process.argv.includes('--test-prepared')||retry;
+if(create===test || (create && process.env.VOBIZ_KYC_TEST_CREATE_APPROVED!=='1') || (retry&&process.env.VOBIZ_KYC_TEST_RETRY_APPROVED!=='1')) {
+ console.error('Choose --create with explicit VOBIZ_KYC_TEST_CREATE_APPROVED=1, --test-prepared, or --retry-prepared with VOBIZ_KYC_TEST_RETRY_APPROVED=1. No provider request made.');
  process.exit(1);
 }
 nextEnv.loadEnvConfig(process.cwd(),false,{info(){},error(){}});
@@ -42,12 +42,15 @@ try {
   console.log(JSON.stringify({action:'disposable_account_created',record:file,credentialsRetained:false,phoneNumbersAttached:0,kycTestRun:false}));
  } else {
   const record=JSON.parse(fs.readFileSync(file,'utf8'));
-  if(record.purpose!=='disposable_mock_kyc_only'||record.state!=='created'||!record.authId?.startsWith('SA_')||!Number.isFinite(Date.parse(record.createdAt))||Date.parse(record.createdAt)>Date.now()+60000||Date.now()-Date.parse(record.createdAt)>86400000)
+  if(record.purpose!=='disposable_mock_kyc_only'||!(retry?['blocked_contract_mismatch','test_failed']:['created']).includes(record.state)||!record.authId?.startsWith('SA_')||!Number.isFinite(Date.parse(record.createdAt))||Date.parse(record.createdAt)>Date.now()+60000||(!retry&&Date.now()-Date.parse(record.createdAt)>86400000))
    throw new PreparationError('A fresh, successfully created disposable preparation record is required');
+  fs.writeFileSync(file,JSON.stringify({...record,state:'testing'}),{mode:0o600});
   const child=spawn(process.execPath,['scripts/test-vobiz-kyc.mjs'],{stdio:'inherit',env:{...process.env,VOBIZ_KYC_TEST_DISPOSABLE:'1',VOBIZ_KYC_TEST_SUBACCOUNT:record.authId}});
   const code=await new Promise(resolve=>child.on('exit',resolve));
   process.exitCode=code??1;
-  if(code===0)fs.writeFileSync(file,JSON.stringify({...record,state:'tested',testedAt:new Date().toISOString()}),{mode:0o600});
+  const resultFile='.test-output/vobiz-kyc-test-result.json';
+  const result=fs.existsSync(resultFile)?JSON.parse(fs.readFileSync(resultFile,'utf8')):{};
+  fs.writeFileSync(file,JSON.stringify({...record,state:code===0?'tested':result.state==='blocked_contract_mismatch'?'blocked_contract_mismatch':'test_failed',testedAt:new Date().toISOString()}),{mode:0o600});
  }
 } catch(error) {
  // Local messages above contain no provider body, credential or identity.

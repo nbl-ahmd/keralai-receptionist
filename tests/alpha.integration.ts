@@ -7,6 +7,8 @@ import {admitVoiceSession,claimVoiceSession,finishVoiceSession,rollingVoiceAutho
 import {query,queryOne} from '@/db/client';
 import {createInvite,inspectInvite,inviteHash} from '@/lib/alpha/invites';
 import {alphaAdminAction} from '@/lib/alpha/admin';
+import {GET as dashboardGet} from '@/app/api/dashboard/route';
+import {GET as auditGet} from '@/app/api/admin/audit/route';
 import {GET as adminGet,POST as adminPost} from '@/app/api/admin/alpha/route';
 import {POST as aiMode} from '@/app/api/tenant/ai/route';
 import {GET as usageGet} from '@/app/api/alpha/usage/route';
@@ -110,7 +112,16 @@ test('alpha DB: atomic invitation/signup/plan/promo and canonical credentials',a
  assert.equal((await authorizeUsage(tid,'team_invite',transaction)).allowed,false);
  const adminRequest=()=>new Request(process.env.BETTER_AUTH_URL+'/api/admin/alpha',{headers:{cookie}});
  assert.equal((await adminGet(adminRequest())).status,403,'tenant owner is not platform admin');
+ assert.equal((await auditGet(adminRequest())).status,403);
+ assert.equal((await dashboardGet(new Request(process.env.BETTER_AUTH_URL+'/api/dashboard'))).status,401);
+ const dashboard=await dashboardGet(new Request(process.env.BETTER_AUTH_URL+'/api/dashboard',{headers:{cookie}}));
+ assert.equal(dashboard.status,200);assert.equal(dashboard.headers.get('cache-control'),'private, no-store');
+ const activity=await dashboardGet(new Request(process.env.BETTER_AUTH_URL+'/api/dashboard?scope=activity',{headers:{cookie}}));
+ const activityData=await activity.json();assert.equal(activity.status,200);assert.equal('profile' in activityData,false);assert.equal('knowledge' in activityData,false);
+ const foreign=await dashboardGet(new Request(process.env.BETTER_AUTH_URL+'/api/dashboard',{headers:{cookie,'x-tenant-id':crypto.randomUUID()}}));
+ assert.deepEqual(await foreign.json(),await dashboard.json(),'aggregate honors validated membership only');
  process.env.PLATFORM_ADMIN_USER_IDS=context.userId;
+ assert.equal((await auditGet(adminRequest())).status,200);
  const snapshot=await adminGet(adminRequest());assert.equal(snapshot.status,200);const snapshotBody=await snapshot.json();
  assert.ok(!JSON.stringify(snapshotBody).includes(invite.token));assert.ok(!JSON.stringify(snapshotBody).includes('fixture-alpha-platform'));
  const creditInput={action:'credit',tenantId:tid,amountMinor:1000,reason:'operator fixture credit',reference:'fixture-alpha-credit-0001'};

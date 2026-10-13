@@ -20,6 +20,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import Link from "next/link";
@@ -233,12 +234,14 @@ export function AttentionProvider({
   const [items, setItems] = useState<AttentionItem[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const inFlight = useRef(false);
   const refresh = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
-      const [inboxRes, callsRes] = await Promise.all([
-        fetch("/api/inbox", { cache: "no-store" }).then((response) => response.json()),
-        fetch("/api/calls", { cache: "no-store" }).then((response) => response.json()),
-      ]);
+      const response = await fetch("/api/dashboard?scope=activity", { cache: "no-store" });
+      if (!response.ok) throw new Error("Attention unavailable");
+      const { inbox: inboxRes, calls: callsRes } = await response.json();
 
       const appointments: Appointment[] = Array.isArray(inboxRes?.appointments)
         ? inboxRes.appointments
@@ -254,6 +257,7 @@ export function AttentionProvider({
     } catch {
       // Attention is best-effort; a failed poll must never disrupt the page.
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }, []);
@@ -261,8 +265,10 @@ export function AttentionProvider({
   useEffect(() => {
     void refresh();
     if (!pollMs) return;
-    const interval = window.setInterval(() => void refresh(), pollMs);
-    return () => window.clearInterval(interval);
+    const refreshVisible = () => { if (document.visibilityState === "visible") void refresh(); };
+    const interval = window.setInterval(refreshVisible, pollMs);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", refreshVisible); };
   }, [refresh, pollMs]);
 
   const markHandled = useCallback(

@@ -58,9 +58,9 @@ export async function getSession(request: Request): Promise<{
         expiresAt: result.session.expiresAt,
       },
     };
-  } catch (error) {
+  } catch {
     // A malformed/absent DB should not be reported as a 500 auth failure here.
-    console.error("[auth] getSession failed:", error instanceof Error ? error.message : error);
+    console.error("[auth] Session lookup failed");
     return null;
   }
 }
@@ -210,12 +210,8 @@ export async function getTenant(
  */
 export function handleApiError(error: unknown, fallback = "Request failed"): NextResponse {
   if (error instanceof HttpError || error instanceof AlphaAccessError) {
-    return NextResponse.json({ error: error.message }, { status: error.status });
+    return NextResponse.json({ error: error.message }, { status: error.status, headers: { "Cache-Control": "private, no-store" } });
   }
-  console.error("[api] Unhandled error:", error instanceof Error ? error.message : error);
-  const message =
-    process.env.NODE_ENV === "development" && error instanceof Error
-      ? error.message
-      : fallback;
-  return NextResponse.json({ error: message }, { status: 500 });
+  console.error("[api] Request failed", { operation: fallback });
+  return NextResponse.json({ error: fallback }, { status: 500, headers: { 'Cache-Control': 'private, no-store' } });
 }

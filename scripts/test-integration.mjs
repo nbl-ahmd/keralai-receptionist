@@ -59,6 +59,10 @@ try {
   }
  } else if(process.argv.includes('--ui')) {
   Object.assign(env,{BETTER_AUTH_URL:'http://localhost:3210',NEXT_PUBLIC_APP_URL:'http://localhost:3210',PUBLIC_APP_ORIGIN:'http://localhost:3210'});
+  const operator=spawn(process.execPath,['--import','tsx','scripts/seed-ui-admin.ts'],{env,stdio:['ignore','pipe','inherit']});
+  let operatorId='';operator.stdout.on('data',chunk=>{operatorId+=chunk.toString();});
+  if(await new Promise(resolve=>operator.on('exit',resolve))!==0 || !operatorId.trim())throw new Error('Admin UI fixture failed');
+  env.PLATFORM_ADMIN_USER_IDS=operatorId.trim();
   const {createServer}=await import('node:net');
   const portCheck=createServer();
   await new Promise((resolve,reject)=>{portCheck.once('error',reject);portCheck.listen(3210,()=>portCheck.close(resolve));});

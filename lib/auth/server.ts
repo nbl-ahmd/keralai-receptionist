@@ -130,9 +130,11 @@ export async function handleAuthRequest(request: Request): Promise<Response> {
   if (request.method === 'POST' && /\/(sign-up|sign-in)\//.test(path) && !path.endsWith('/email'))
     return Response.json({message:'Closed alpha uses email accounts.'},{status:403});
   if(request.method==='POST' && path.endsWith('/sign-in/email')) {
-    try { if((await request.clone().text()).length>16384)throw new HttpError(413,'Request too large.');
-      const body=await request.clone().json();await inviteRateLimit('anonymous','auth-global',120);
-      await inviteRateLimit(typeof body.email==='string'?body.email.toLowerCase().slice(0,254):'anonymous','signin',10);
+    try { const rawBody=await request.clone().text();
+      if(rawBody.length>16384)throw new HttpError(413,'Request too large.');
+      const body=JSON.parse(rawBody);
+      await Promise.all([inviteRateLimit('anonymous','auth-global',120),
+        inviteRateLimit(typeof body.email==='string'?body.email.toLowerCase().slice(0,254):'anonymous','signin',10)]);
     }catch(e){return Response.json({message:e instanceof HttpError?e.message:'Unable to sign in.'},{status:e instanceof HttpError?e.status:503});}
   }
   if (request.method !== 'POST' || !path.endsWith('/sign-up/email')) return getAuth().handler(request);

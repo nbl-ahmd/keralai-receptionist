@@ -17,7 +17,7 @@ export function proxy(request: NextRequest) {
   const hasSession = Boolean(request.cookies.get("better-auth.session_token")?.value || request.cookies.get("__Secure-better-auth.session_token")?.value);
 
   // Unauthenticated users cannot reach the dashboard.
-  if (!hasSession && pathname.startsWith("/dashboard")) {
+  if (!hasSession && (pathname.startsWith("/dashboard") || pathname === '/admin' || pathname.startsWith('/admin/'))) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", `${pathname}${search}`);
@@ -30,5 +30,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/login", "/register"],
+  matcher: ["/dashboard/:path*", "/admin/:path*", "/login", "/register"],
 };

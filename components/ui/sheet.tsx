@@ -59,7 +59,7 @@ export function Sheet({
       >
         <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
           <div className="min-w-0">
-            <h2 id={titleId} className="text-base font-semibold text-foreground">
+            <h2 id={titleId} className="break-words text-base font-semibold text-foreground">
               {title}
             </h2>
             {description && (
@@ -72,7 +72,7 @@ export function Sheet({
             type="button"
             onClick={close}
             aria-label="Close panel"
-            className="-mr-1.5 -mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="-mr-1.5 -mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <X className="h-4.5 w-4.5" />
           </button>

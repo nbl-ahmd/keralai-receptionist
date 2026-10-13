@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { fixtureInvite } from './invite-fixture';
+import { fixtureInvite, loginOperator } from './invite-fixture';
 
 test('Connected VoiceLink setup gives the correct next step and enables eligible account creation', async ({ page }) => {
   const email = 'voicelink-ready-account@example.test';
@@ -155,14 +155,16 @@ test('operator recovery dispatches VoiceLink and requires a reference before unp
     return route.fulfill({json:{items:[{id:'fixture-tenant',provider:'voicelink',name:'Synthetic VoiceLink workspace',provider_auth_id:'501',provider_username:'ka_fixture',kyc_status:'verified',kyc_calls_blocked:false,balance_minor:'0',pending_calls:0,failed_calls:0,recent_usage:[],checkout:{id:'fixture',state:'draft_unknown',e164:'+918012345678',code:'draft_reference_missing',orderId:null}}],page:1}});
   });
   await page.route('**/api/admin/alpha',route=>route.fulfill({json:{tenants:[],invites:[],controls:{},metrics:{}}}));
-  await page.setViewportSize({width:320,height:700});await page.goto('/dashboard/admin');
-  await page.getByLabel('Reason for phone operations').fill('Read-only support reconciliation');
+  await loginOperator(page);
+  await page.setViewportSize({width:320,height:700});await page.goto('/admin/workspaces');
+  await page.getByRole('button',{name:'Manage Synthetic VoiceLink workspace'}).click();
+  await page.getByLabel('Operator reason').fill('Read-only support reconciliation');
   await page.getByRole('button',{name:'Check saved checkout'}).click();
   expect(actions[0]).toMatchObject({provider:'voicelink',action:'reconcile_voicelink_checkout'});
   await page.getByRole('button',{name:'Resolve closed draft'}).click();
   await expect(page.getByRole('button',{name:'Record draft closure'})).toBeDisabled();
-  await page.getByLabel('VoiceLink support reference').fill('SUPPORT-UI-FIXTURE');
-  await page.getByRole('checkbox',{name:'VoiceLink confirmed this original draft is closed and unpaid.'}).check();
+  await page.getByLabel('Provider or support reference').fill('SUPPORT-UI-FIXTURE');
+  await page.getByRole('checkbox',{name:'VoiceLink confirmed the original draft is closed and unpaid.'}).check();
   await page.getByRole('button',{name:'Record draft closure'}).click();
   expect(actions.at(-1)).toMatchObject({provider:'voicelink',action:'close_voicelink_draft',reference:'SUPPORT-UI-FIXTURE',providerDraftClosed:true});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBeTruthy();

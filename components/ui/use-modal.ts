@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -17,7 +17,7 @@ export function useModal(open: boolean, onOpenChange: (open: boolean) => void) {
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
 
   // Lock body scroll and restore focus when the overlay unmounts.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     previouslyFocused.current = document.activeElement as HTMLElement | null;
 
@@ -34,15 +34,12 @@ export function useModal(open: boolean, onOpenChange: (open: boolean) => void) {
   }, [open]);
 
   // Move focus into the overlay once it is mounted.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
-    const raf = window.requestAnimationFrame(() => {
-      const node = containerRef.current;
-      if (!node) return;
-      const focusable = node.querySelectorAll<HTMLElement>(FOCUSABLE);
-      (focusable[0] ?? node).focus();
-    });
-    return () => window.cancelAnimationFrame(raf);
+    const node = containerRef.current;
+    if (!node) return;
+    const focusable = node.querySelectorAll<HTMLElement>(FOCUSABLE);
+    (focusable[0] ?? node).focus();
   }, [open]);
 
   const onKeyDown = useCallback(

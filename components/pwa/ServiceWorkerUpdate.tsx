@@ -19,6 +19,7 @@ export function ServiceWorkerUpdate() {
   const [waiting, setWaiting] = useState<ServiceWorker | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const reloadingRef = useRef(false);
+  const updateRequestedRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -51,7 +52,7 @@ export function ServiceWorkerUpdate() {
     };
 
     const onControllerChange = () => {
-      if (reloadingRef.current) return;
+      if (!updateRequestedRef.current || reloadingRef.current) return;
       reloadingRef.current = true;
       window.location.reload();
     };
@@ -89,10 +90,12 @@ export function ServiceWorkerUpdate() {
         size="sm"
         className="gap-1.5"
         onClick={() => {
-          reloadingRef.current = true;
+          updateRequestedRef.current = true;
           waiting.postMessage({ type: "SKIP_WAITING" });
           // Fallback if the worker doesn't trigger controllerchange promptly.
-          window.setTimeout(() => window.location.reload(), 800);
+          window.setTimeout(() => {
+            if (!reloadingRef.current) { reloadingRef.current = true; window.location.reload(); }
+          }, 3000);
         }}
       >
         <RefreshCw className="h-3.5 w-3.5" /> Reload

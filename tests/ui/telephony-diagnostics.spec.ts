@@ -1,5 +1,5 @@
 import {test,expect} from './fixtures';
-import {fixtureInvite} from './invite-fixture';
+import {fixtureInvite,loginOperator} from './invite-fixture';
 
 test('phone inventory explains reviewed numbers and retains provider pagination',async({page})=>{
  const email='inventory-review-ui@example.test';
@@ -37,7 +37,8 @@ test('admin readiness exposes blockers and deployment mismatch on a narrow scree
   note:'Configuration and stored state only. Live provider acceptance requires separate verification.',
  }}));
  await page.setViewportSize({width:320,height:568});
- await page.goto('/dashboard/admin');
+ await loginOperator(page);
+ await page.goto('/admin/providers');
  await page.getByRole('button',{name:'Check readiness',exact:true}).click();
  await expect(page.getByText('Needs attention: Approved DID pricing and funding policy configured')).toBeVisible();
  await expect(page.getByText('The app and bridge report different commits.',{exact:false})).toBeVisible();

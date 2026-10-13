@@ -1,4 +1,5 @@
 import { HttpError, requireUserId } from '@/lib/auth/context';
+import { isPlatformAdminUserId } from '@/lib/auth/platform-admin';
 import { query,queryOne } from '@/db/client';
 import { transaction } from '@/db/transaction';
 import { getAccount,getNumber,wallet,initWallet,withOperationLock } from './store';
@@ -10,8 +11,7 @@ import { assertActivationAllowed,operationKey } from './policy';
 
 export async function requirePlatformAdmin(request: Request) {
   const user=await requireUserId(request);
-  const allowed=(process.env.PLATFORM_ADMIN_USER_IDS??'').split(',').map(v=>v.trim()).filter(Boolean);
-  if(!allowed.includes(user.id)) throw new HttpError(403,'Administrator access required');
+  if(!isPlatformAdminUserId(user.id)) throw new HttpError(403,'Administrator access required');
   return user;
 }
 export async function adminSnapshot(page=1) {

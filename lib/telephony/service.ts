@@ -15,7 +15,7 @@ import type { AccountRef, PhoneNumberRow, TelephonyAccountRow } from './types';
 
 function ref(account: TelephonyAccountRow): AccountRef {
   if (!account.provider_auth_id) throw new HttpError(409, 'Phone setup needs support. Please contact us.');
-  return { tenantId: account.tenant_id, authId: account.provider_auth_id };
+  return { tenantId: account.tenant_id, authId: account.provider_auth_id, accountId: account.provider_account_id ?? undefined };
 }
 export async function requirePhoneSetupEligibility(tenantId:string) {
  const row=await queryOne<{plan_code:string;status:string;phone_activation_approved:boolean;browser_test_completed_at:string|null}>(`select s.plan_code,s.status,s.phone_activation_approved,o.browser_test_completed_at
@@ -26,35 +26,37 @@ export async function requirePhoneSetupEligibility(tenantId:string) {
   if(!row.browser_test_completed_at)throw new HttpError(409,'Test your assistant in the browser before identity verification.');
  }
 }
-export async function ensureCustomerAccount(tenantId: string, request: Request) {
+export async function ensureCustomerAccount(tenantId: string, request: Request, providerName = 'vobiz') {
   await requireActiveTenant(tenantId);
   return withOperationLock(tenantId, async () => {
-    const existing = await getAccount(tenantId);
+    const existing = await getAccount(tenantId, providerName);
     if (existing?.provider_auth_id) return existing;
     if (existing) throw new HttpError(409, 'Phone setup needs support. No second account will be created.');
     await requirePhoneSetupEligibility(tenantId);
     const session = await getSession(request);
     if (!session?.user.email) throw new HttpError(400, 'An email address is required for identity verification.');
     const tenant = await queryOne<{ name: string }>('select name from tenants where id=$1',[tenantId]);
-    const provider=getTelephonyProvider();
+    const provider=getTelephonyProvider(providerName);
     if(!provider.configured) throw new HttpError(503,'Phone setup is not available yet.');
+    const accountInput = { name: providerName === 'voicelink' ? session.user.name ?? '' : tenant?.name ?? 'KeralAI customer', email: session.user.email };
+    await provider.preflightCustomerAccount?.(accountInput);
     const row = await queryOne<TelephonyAccountRow>(`insert into tenant_telephony_accounts (tenant_id,provider)
       values ($1,$2) returning *`,[tenantId,provider.name]);
     if (!row) throw new HttpError(503, 'Phone setup is unavailable');
     try {
-      const created = await provider.createCustomerAccount({ name: tenant?.name ?? 'KeralAI customer', email: session.user.email });
-      if (!created.authToken) throw new ProviderError('missing_runtime_credential',true);
-      const secret = encryptSecret(created.authToken);
+      const created = await provider.createCustomerAccount(accountInput);
+      if (providerName === 'vobiz' && !created.authToken) throw new ProviderError('missing_runtime_credential',true);
+      const secret = created.authToken ? encryptSecret(created.authToken) : null;
       await transaction(async (client) => {
-        await client.query(`insert into tenant_secrets (tenant_id,provider,key_name,ciphertext,iv,auth_tag,key_version)
+        if (secret) await client.query(`insert into tenant_secrets (tenant_id,provider,key_name,ciphertext,iv,auth_tag,key_version)
           values ($1,$6,'auth_token',$2,$3,$4,$5) on conflict (tenant_id,provider,key_name)
           do update set ciphertext=excluded.ciphertext,iv=excluded.iv,auth_tag=excluded.auth_tag,updated_at=now()`,
           [tenantId,secret.ciphertext,secret.iv,secret.authTag,secret.keyVersion,provider.name]);
         await client.query(`update tenant_telephony_accounts set provider_account_id=$2,provider_auth_id=$3,
           status=$4,updated_at=now() where tenant_id=$1 and id=$5`,[tenantId,created.accountId,created.authId,created.enabled ? 'active':'suspended',row.id]);
       });
-      observe('vobiz.subaccount.created',tenantId,row.id);
-      return (await getAccount(tenantId))!;
+      observe(`${providerName}.subaccount.created`,tenantId,row.id);
+      return (await getAccount(tenantId, providerName))!;
     } catch (error) {
       await query("update tenant_telephony_accounts set status='needs_review',error_code=$2,updated_at=now() where tenant_id=$1 and id=$3",
         [tenantId,error instanceof ProviderError ? error.code : 'persist_failed',row.id]);
@@ -62,8 +64,8 @@ export async function ensureCustomerAccount(tenantId: string, request: Request) 
     }
   });
 }
-export async function syncKyc(tenantId: string) {
-  const account = await getAccount(tenantId);
+export async function syncKyc(tenantId: string, providerName = 'vobiz') {
+  const account = await getAccount(tenantId, providerName);
   if (!account) throw new HttpError(409,'Start phone setup first.');
   const provider = getTelephonyProvider(account.provider);
   const checkedAt = new Date().toISOString();
@@ -72,14 +74,14 @@ export async function syncKyc(tenantId: string) {
     kyc_last_checked_at=$7,kyc_verified_at=case when $3=false then coalesce(kyc_verified_at,now()) else null end,
     status=$5,updated_at=now()
     where tenant_id=$1 and id=$6 and (kyc_last_checked_at is null or kyc_last_checked_at<=$7)`,[tenantId,status.status,status.callsBlocked,JSON.stringify(status.documents),remote.enabled ? 'active':'suspended',account.id,checkedAt]);
-  observe(`vobiz.kyc.${status.status}`,tenantId,account.id);
+  observe(`${providerName}.kyc.${status.status}`,tenantId,account.id);
   return status;
 }
-export async function startKyc(tenantId: string) {
+export async function startKyc(tenantId: string, providerName = 'vobiz') {
   await requireActiveTenant(tenantId);
   await requirePhoneSetupEligibility(tenantId);
   return withOperationLock(tenantId,async () => {
-    const account = await getAccount(tenantId);
+    const account = await getAccount(tenantId, providerName);
     if (!account) throw new HttpError(409,'Start phone setup first.');
     if (account.status !== 'active') throw new HttpError(409,'Phone setup needs support.');
     const origin = publicOrigin();
@@ -88,7 +90,7 @@ export async function startKyc(tenantId: string) {
     });
     await query(`update tenant_telephony_accounts set kyc_session_id=$2,kyc_session_status=$3,
       kyc_session_expires_at=$4,updated_at=now() where tenant_id=$1 and id=$5`,[tenantId,session.id,session.status,session.expiresAt,account.id]);
-    observe('vobiz.kyc.started',tenantId,account.id);
+    observe(`${providerName}.kyc.started`,tenantId,account.id);
     // Widget URL is returned once to the authenticated owner; never stored/logged.
     return { url: session.url, expiresAt: session.expiresAt };
   });
@@ -218,7 +220,7 @@ export async function retryNumber(tenantId: string, id: string) {
   await requireActiveTenant(tenantId);
   return withOperationLock(tenantId,() => retryNumberUnlocked(tenantId,id));
 }
-export async function phoneSummary(tenantId: string) {
+export async function phoneSummary(tenantId: string, providerName = 'vobiz') {
   const assistantState = getTenantGeminiApiKey(tenantId)
     .then(key => ({ configured:!!key, needsRepair:false }))
     .catch(error => {
@@ -226,7 +228,7 @@ export async function phoneSummary(tenantId: string) {
       if (!(error instanceof SecretDecryptionError)) throw error;
       return { configured:false, needsRepair:true };
     });
-  const [account,numbers,balance,assistant,subscription,phoneDecision] = await Promise.all([getAccount(tenantId),getNumbers(tenantId),wallet(tenantId),assistantState,queryOne<{plan_code:string;phone_activation_approved:boolean;browser_test_completed_at:string|null}>(`select s.plan_code,s.phone_activation_approved,o.browser_test_completed_at from tenant_subscriptions s left join tenant_onboarding o on o.tenant_id=s.tenant_id where s.tenant_id=$1`,[tenantId]),authorizeUsage(tenantId,'phone_inbound')]);
+  const [account,numbers,balance,assistant,subscription,phoneDecision] = await Promise.all([getAccount(tenantId, providerName),getNumbers(tenantId, providerName),wallet(tenantId),assistantState,queryOne<{plan_code:string;phone_activation_approved:boolean;browser_test_completed_at:string|null}>(`select s.plan_code,s.phone_activation_approved,o.browser_test_completed_at from tenant_subscriptions s left join tenant_onboarding o on o.tenant_id=s.tenant_id where s.tenant_id=$1`,[tenantId]),authorizeUsage(tenantId,'phone_inbound')]);
   return { account: account ? { kycStatus: account.kyc_status, callsBlocked: account.kyc_calls_blocked,
     documents: account.document_states, status:account.status, sessionStatus:account.kyc_session_status,
     sessionExpiresAt:account.kyc_session_expires_at, lastCheckedAt:account.kyc_last_checked_at } : null,
@@ -234,10 +236,10 @@ export async function phoneSummary(tenantId: string) {
       releaseRequested:!!n.release_requested_at,monthlyPriceMinor:Number(n.customer_monthly_price_minor) })), wallet:balance,
     phoneActivationApproved:!!subscription&&(subscription.plan_code!=='alpha'||subscription.phone_activation_approved),
     browserTestCompleted:!!subscription&&(subscription.plan_code!=='alpha'||!!subscription.browser_test_completed_at),
-    phoneCallsReady:phoneDecision.allowed&&numbers.some(n=>n.status==='active')&&account?.status==='active'&&account.kyc_calls_blocked===false&&assistant.configured&&balance.status==='active'&&balance.availableMinor>0,
+    phoneCallsReady:getTelephonyProvider(providerName).activationReady&&phoneDecision.allowed&&numbers.some(n=>n.status==='active')&&account?.status==='active'&&account.kyc_calls_blocked===false&&assistant.configured&&balance.status==='active'&&balance.availableMinor>0,
     phoneReadinessReason:phoneDecision.allowed?null:phoneDecision.reason,
-    kycAvailable:getTelephonyProvider().configured&&(()=>{try{publicOrigin();return true;}catch{return false;}})(),
-    configured:getTelephonyProvider().activationReady,
+    kycAvailable:getTelephonyProvider(providerName).configured&&(()=>{try{publicOrigin();return true;}catch{return false;}})(),
+    configured:getTelephonyProvider(providerName).activationReady,
     assistantConfigured:assistant.configured, assistantManaged:await isPlatformManagedAi(tenantId), assistantNeedsRepair:assistant.needsRepair, paymentsEnabled:false };
 }
 // Customer request is local only; provider release remains an explicit operator action.

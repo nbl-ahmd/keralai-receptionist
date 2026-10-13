@@ -27,6 +27,8 @@ try {
  }finally{client.release();}
  const url=new URL(base);url.hostname=url.hostname.replace('-pooler.','.');url.searchParams.set('options',`-csearch_path=${schema},public`);
  const env={...process.env,AI_ENVIRONMENT:'development',PLATFORM_BROWSER_VOICE_ENABLED:'1',PLATFORM_NEW_PHONE_CALLS_ENABLED:'1',PLATFORM_NUMBER_PURCHASE_ENABLED:'1',PLATFORM_GEMINI_API_KEY:'',BETTER_AUTH_URL:'https://app.example',NEXT_PUBLIC_APP_URL:'https://app.example',PUBLIC_APP_ORIGIN:'https://app.example',BETTER_AUTH_SECRET:crypto.randomBytes(32).toString('base64'),DATABASE_URL:url.href,TEST_SCHEMA:schema,KERALAI_TEST_SCHEMA:schema,BRIDGE_AUTH_SECRET:'integration-test-bridge-secret',TENANT_SECRETS_ENCRYPTION_KEY:crypto.randomBytes(32).toString('base64'),VOBIZ_CALLBACK_SIGNATURES_VERIFIED:'1',VOBIZ_AUTH_ID:'MA_TEST',VOBIZ_AUTH_TOKEN:'parent-test-secret',TELEPHONY_PUBLIC_ORIGIN:'https://app.example',BRIDGE_PUBLIC_URL:'https://bridge.example',ALPHA_MAX_DID_SETUP_COST_MINOR:'1000',ALPHA_MAX_DID_MONTHLY_COST_MINOR:'10000',ALPHA_DID_RELEASE_COST_MINOR:'0',ALPHA_MAX_DID_RELEASE_COST_MINOR:'0',ALPHA_MAX_DID_COMMITMENT_MONTHS:'0',ALPHA_MIN_VOBIZ_BALANCE_MINOR:'10000',PHONE_MONTHLY_PRICE_MINOR:'10000',PHONE_SETUP_PRICE_MINOR:'1000',CALL_PRICE_PER_MINUTE_MINOR:'100',PROVIDER_VOICE_RESERVE_MINOR_PER_MINUTE:'100',AI_VOICE_ESTIMATE_MINOR_PER_MINUTE:'100'};
+ // Never inherit a real VoiceLink credential into mocked/local integration tests.
+ env.VOICELINK_AUTH_TOKEN='';
  if(liveGemini) {
   // Only ephemeral data and real Gemini. Vobiz mutations remain impossible.
   Object.assign(env,{AI_ENVIRONMENT:'alpha',PLATFORM_GEMINI_API_KEY:process.env.PLATFORM_GEMINI_API_KEY,
@@ -72,7 +74,7 @@ try {
    code=await new Promise(resolve=>child.on('exit',resolve));
   }finally{if(server.exitCode===null && server.signalCode===null){server.kill('SIGTERM');await new Promise(resolve=>server.on('exit',resolve));}}
  }else {
-  const child=spawn(process.execPath,['--import','tsx','--test',...(process.argv.includes('--exposure')?['tests/did-exposure.integration.ts']:process.argv.includes('--alpha')?['tests/alpha.integration.ts']:process.argv.includes('--telephony')?['tests/telephony.integration.ts']:['tests/telephony.integration.ts','tests/alpha.integration.ts'])],{env,stdio:'inherit'});
+  const child=spawn(process.execPath,['--import','tsx','--test',...(process.argv.includes('--exposure')?['tests/did-exposure.integration.ts']:process.argv.includes('--alpha')?['tests/alpha.integration.ts']:process.argv.includes('--telephony')?['tests/telephony.integration.ts','tests/voicelink.integration.ts']:['tests/telephony.integration.ts','tests/alpha.integration.ts','tests/voicelink.integration.ts'])],{env,stdio:'inherit'});
   code=await new Promise(resolve=>child.on('exit',resolve));
  }
 }finally{

@@ -50,10 +50,10 @@ export default function VoiceLinkSetup() {
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-display text-2xl font-semibold">VoiceLink setup</h2>
-            <span className="rounded-full bg-warning-soft px-3 py-1 text-sm text-warning">Not ready for activation</span>
+            <span className="rounded-full bg-warning-soft px-3 py-1 text-sm text-warning">Calling awaiting verification</span>
           </div>
           <p className="text-sm leading-relaxed text-muted-foreground">VoiceLink can connect phone calls to your existing assistant. Your AI, knowledge and tools stay in this app.</p>
-          <Notice tone="info">VoiceLink account and identity setup is available when your operator connects the reseller API. Live phone activation is waiting for provider verification.</Notice>
+          <Notice tone="info">{status.configured ? 'VoiceLink is connected. Complete your account and identity setup below. Live calling is awaiting provider verification.' : 'Your organiser needs to connect VoiceLink before account setup is available.'}</Notice>
           <p className="text-sm leading-relaxed text-muted-foreground">The provider documents individual PAN/Aadhaar and business verification. Complete identity checks with VoiceLink; do not upload identity documents to this app.</p>
           <a href="https://app.voicelink.co.in/documentation/reseller-setup/" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center text-sm font-medium text-primary underline underline-offset-4">Read VoiceLink setup guide</a>
         </section>
@@ -63,10 +63,12 @@ export default function VoiceLinkSetup() {
             {status.currentPlan && <p className="text-sm text-muted-foreground">Provider plan: {status.currentPlan.name} · {status.currentPlan.availableChannels} unallocated channels · {status.currentPlan.pulseSeconds ?? 'Unconfirmed'} second billing pulse</p>}
             {!summary?.account ? <>
               <p className="text-sm text-muted-foreground">Create a separate customer account for this workspace. VoiceLink will send an email verification link; complete identity checks in its portal.</p>
+              <p className="text-sm text-muted-foreground">If your organiser already created your VoiceLink client, they can connect that existing client from administration. You do not need another account or channel.</p>
               <Button disabled={busy || !status.accountCreationAvailable || !summary?.phoneActivationApproved || !summary?.browserTestCompleted}
                 onClick={() => void run(async () => { setSummary(await phoneApi('/api/telephony/account?provider=voicelink', { provider: 'voicelink' })); })}>Create VoiceLink account</Button>
               {!status.accountCreationAvailable && <p className="text-sm text-muted-foreground">{status.accountCreationBlocker ?? 'Your operator must verify the reseller account and make a channel available first.'}</p>}
-              {summary && (!summary.phoneActivationApproved || !summary.browserTestCompleted) && <p className="text-sm text-muted-foreground">Alpha phone approval and a browser voice test are required before account creation.</p>}
+              {summary && !summary.phoneActivationApproved && <p className="text-sm text-muted-foreground">Your organiser must approve phone setup for this workspace.</p>}
+              {summary && !summary.browserTestCompleted && <Link href="/dashboard" className="inline-flex min-h-11 items-center text-sm text-primary underline">Complete a browser voice test to continue account setup.</Link>}
             </> : <>
               {summary.account.status==='needs_review' && <Notice tone="warning">Account creation needs operator recovery. No second account will be created.</Notice>}
               <p className="text-sm">Identity status: <strong>{summary.account.kycStatus.replaceAll('_', ' ')}</strong></p>

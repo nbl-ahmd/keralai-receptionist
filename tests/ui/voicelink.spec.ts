@@ -1,6 +1,26 @@
 import { test, expect } from './fixtures';
 import { fixtureInvite } from './invite-fixture';
 
+test('Connected VoiceLink setup gives the correct next step and enables eligible account creation', async ({ page }) => {
+  const email = 'voicelink-ready-account@example.test';
+  const signup = await page.request.post('/api/auth/sign-up/email', {
+    headers: { Origin: 'http://localhost:3210', 'x-alpha-invite-code': await fixtureInvite(email) },
+    data: { name: 'Ready Tester', email, password: 'fixture-password-123' },
+  });
+  expect(signup.ok()).toBeTruthy();
+  await page.request.post('/api/onboarding', { headers: { Origin: 'http://localhost:3210' }, data: { step: 'complete', purpose: 'personal' } });
+  await page.route('**/api/telephony/account?provider=voicelink', route => route.fulfill({ json: {
+    account: null, phoneActivationApproved: true, browserTestCompleted: true,
+  } }));
+  await page.route('**/api/telephony/voicelink', route => route.fulfill({ json: { configured: true, accountCreationAvailable: true,
+    accountCreationBlocker: null, currentPlan: { name: 'Trial Pack', availableChannels: 1, pulseSeconds: 60 }, quote: null, blockers: [] } }));
+  await page.goto('/dashboard/phone?provider=voicelink');
+  await expect(page.getByText('VoiceLink is connected.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Create VoiceLink account' })).toBeEnabled();
+  await expect(page.getByText('Calling awaiting verification', { exact: true })).toBeVisible();
+  await expect(page.getByText('available when your operator connects', { exact: false })).toHaveCount(0);
+});
+
 test('VoiceLink setup is separate from Vobiz and cannot spend or fall through', async ({ page }) => {
   expect((await page.request.get('/api/telephony/voicelink')).status()).toBe(401);
   const email = 'voicelink-choice@example.test';

@@ -105,7 +105,7 @@ test('VoiceLink account creation allocates existing capacity only and returns no
   await assert.rejects(createVoiceLinkProvider(empty.client).preflightCustomerAccount!({ name: 'Test Customer', email: 'customer@example.test' }), /channel/);
   assert.ok(empty.calls.every(call => call.method === 'GET'));
 });
-test('VoiceLink observed free trial profile displays known rates without enabling client provisioning', async () => {
+test('VoiceLink trial account setup uses verified capacity and rates instead of a blanket plan rejection', async () => {
   const trial = { ...profile, channels: { available: 0 }, active_plan: { ...profile.active_plan, plan_type: 'free', plan_name: 'Trial Pack' } };
   assert.equal(safeProfile(trial).planType, 'free');
   const { client } = fixture({ '/reseller/profile': trial });
@@ -119,13 +119,18 @@ test('VoiceLink observed free trial profile displays known rates without enablin
     assert.equal(result.quote?.channelMonthlyMinor, 19900);
     assert.equal(result.accountCreationAvailable, false);
     assert.equal(result.activationReady, false);
+    const capacity = fixture({ '/reseller/profile': { ...trial, channels: { available: 1 } } });
+    const ready = await loadVoiceLinkStatus(capacity.client);
+    assert.equal(ready.accountCreationAvailable, true); assert.equal(ready.accountCreationBlocker, null);
   } finally {
     if (previous === undefined) delete process.env.VOICELINK_AUTH_TOKEN;
     else process.env.VOICELINK_AUTH_TOKEN = previous;
   }
   const provider = createVoiceLinkProvider(fixture({ '/reseller/profile': { ...trial, channels: { available: 1 } } }).client);
-  await assert.rejects(provider.preflightCustomerAccount!({ name: 'Test Customer', email: 'test@example.test' }), /trial/);
-  await assert.rejects(provider.createCustomerAccount({ name: 'Test Customer', email: 'test@example.test' }), /trial/);
+  await provider.preflightCustomerAccount!({ name: 'Test Customer', email: 'test@example.test' });
+  assert.equal((await provider.createCustomerAccount({ name: 'Test Customer', email: 'test@example.test' })).enabled, true);
+  const duplicate = createVoiceLinkProvider(fixture({ '/reseller/clients': [{ id: 1, email: 'TEST@example.test' }] }).client);
+  await assert.rejects(duplicate.preflightCustomerAccount!({ name: 'Test Customer', email: 'test@example.test' }), /existing client/);
   assert.throws(() => safeProfile({ ...trial, active_plan: { ...trial.active_plan, plan_type: 'unexpected' } }));
 });
 test('VoiceLink plan quotes, inventory and ownership use documented independent number/channel amounts', async () => {

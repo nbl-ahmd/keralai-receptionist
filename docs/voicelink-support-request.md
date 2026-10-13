@@ -30,9 +30,9 @@ Please provide the following authoritative contracts:
    frames, whether returned `mark` means audio playback completed, and whether
    `clear` generates acknowledgments. Is stream closure guaranteed to terminate
    every carrier leg? How are outbound lead failures correlated with final CDRs?
-4. Trial Pack (`plan_type=free`, prepaid): current reads show one unallocated
-   channel. Can we create clients with that channel, and which plan/rate fields
-   apply? Can capacity be pooled across clients or must each have >=1 dedicated
+4. Trial Pack (`plan_type=free`, prepaid): the operator has created a client in
+   the portal with allocated capacity. Please confirm which API plan/rate fields
+   apply to trial client creation. Can capacity be pooled across clients or must each have >=1 dedicated
    channel? Does the first-purchase DID+channel requirement apply when capacity
    already exists? Explain client funding with wallet bypass off and controls
    that prevent client portal spending from unbounded reseller funds.

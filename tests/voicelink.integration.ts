@@ -168,6 +168,24 @@ test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted
   assert.equal((await reconcileVoiceLinkCheckout(c.tenantId)).code,'draft_reference_missing');
   await adminAction('fixture-operator',{tenantId:c.tenantId,provider:'voicelink',action:'close_voicelink_draft',providerDraftClosed:true,reference:'SUPPORT-FIXTURE-123',reason:'Provider fixture confirms unpaid closure'});
   assert.equal((await voiceLinkCheckoutStatus(c.tenantId)).checkout,null);
+  const d = await workspace('voicelink-manual-owner@example.test');
+  await query('update tenant_subscriptions set phone_activation_approved=true where tenant_id=$1', [d.tenantId]);
+  await query('update tenant_onboarding set browser_test_completed_at=now() where tenant_id=$1', [d.tenantId]);
+  clients.push({ id: 999, username: 'manual.client', email: 'wrong-owner@example.test', currency: 'INR', is_active: 1 });
+  const manualLink = { tenantId:d.tenantId, provider:'voicelink', action:'link_voicelink_client', providerClientId:'999',
+    reference:'fixture_manual_client_link', reason:'Connect provider client manually created for this workspace owner' };
+  await assert.rejects(adminAction('fixture-operator', manualLink), /does not match/);
+  assert.equal((await phoneSummary(d.tenantId,'voicelink')).account, null);
+  clients[clients.length-1].email = 'voicelink-manual-owner@example.test';
+  const postsBeforeLink = requests.filter(request=>request.method==='POST').length;
+  await adminAction('fixture-operator', manualLink);
+  await adminAction('fixture-operator', manualLink);
+  assert.equal(requests.filter(request=>request.method==='POST').length, postsBeforeLink);
+  const manual = await queryOne<{provider_auth_id:string;kyc_calls_blocked:boolean}>("select provider_auth_id,kyc_calls_blocked from tenant_telephony_accounts where tenant_id=$1 and provider='voicelink'",[d.tenantId]);
+  assert.equal(manual?.provider_auth_id,'999'); assert.equal(manual?.kyc_calls_blocked,true);
+  assert.equal((await phoneSummary(d.tenantId,'voicelink')).phoneCallsReady,false);
+  await syncKyc(d.tenantId,'voicelink');
+  assert.equal((await phoneSummary(d.tenantId,'voicelink')).account?.kycStatus,'verified');
   const audit=await queryOne<{reference:string}>("select reference from platform_audit_events where tenant_id=$1 and action='close_voicelink_draft.completed'",[c.tenantId]);
   assert.equal(audit!.reference,'SUPPORT-FIXTURE-123');
   await query("insert into voicelink_checkouts(tenant_id,telephony_account_id,e164,provider_did_id,idempotency_key,state,updated_at) select tenant_id,id,'+918012345680','9','fixture_scheduled_unknown','draft_unknown',now()-interval '3 minutes' from tenant_telephony_accounts where tenant_id=$1 and provider='voicelink'",[c.tenantId]);

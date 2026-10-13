@@ -101,8 +101,14 @@ Use actual operator-approved pricing; fixture values are not recommendations.
 Managed keys and signing/encryption/database configuration match. Operator
 allowlist was resolved locally without printing credentials. Phone origins were prepared locally using the user-selected production URLs;
 both remote health checks returned 200. No hosting settings were changed.
-Local acceptance still needs AI_ENVIRONMENT=alpha and approved invitation issuance; phone gates
-and provider attestation remain off. No policy price was guessed or enabled.
+Local development keeps AI_ENVIRONMENT=development. Prepared private Vercel/Render
+copies use alpha and operator invitation issuance is enabled in app configuration.
+The operator subsequently approved DID ceilings/sponsored prices and balance floor;
+live read-only account pricing confirms INR ₹0.38/minute. Per-minute sponsored
+debit is ₹0.42 and provider reserve ₹0.50. All ten pricing/policy fields are now
+filled. Phone gates and provider attestation remain off. No production deploy or
+real phone acceptance follows from configuration alone. See
+[environment preparation and exact values](./production-environment-preparation.md).
 
 ## Validation
 

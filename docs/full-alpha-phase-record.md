@@ -198,3 +198,26 @@ Local-health smoke failed because configured localhost services were stopped;
 this was corrected by selecting the already approved hosted health origins.
 Final schema cleanup: zero remaining test schemas. Support ticket was not sent;
 the unsent editor was cancelled and the clarification remains in the blocker doc.
+
+Hosted environment preparation preserved existing shared secrets/database;
+the operator approved this database for hosted closed Alpha. Private Git-ignored
+Vercel/Render copies use HTTPS/WSS origins and Alpha AI configuration. On the
+subsequent request to make features available, operator invitation issuance was
+enabled locally and in the Vercel copy; signup still requires a hashed invitation.
+A read-only inventory refresh returned ₹100 setup, ₹500–600 monthly, ₹700 release,
+zero minimum commitment. Operator explicitly confirmed only zero commitment,
+which is configured. Other monetary limits and both per-minute rates remain
+pending confirmation. No hosting deployment, actual invite creation, purchase,
+carrier call or callback attestation was performed.
+
+The operator subsequently confirmed the proposed setup/monthly/release amounts
+and balance floor, and requested official Vobiz lookup plus a small margin for
+per-minute credit accounting. Official docs MCP identified authenticated
+`GET /api/v1/auth/me`; the live read-only response returned INR ₹0.38/minute,
+60-second billing increment, zero minimum duration. Credentials were discarded.
+All ten configuration fields are now filled: setup ₹100, monthly ₹600, release
+₹700 cost/ceiling, zero commitment, ₹1,400 balance floor, ₹0.42/minute sponsored
+debit and ₹0.50/minute provider reserve. Rates and limits were applied to the
+appropriate local and hosting-copy files. Existing Gemini estimate/budget is
+unchanged. Full phone acceptance still awaits KYC/signature evidence and the
+separately approved funded DID/carrier/deployment actions. No paid gates changed.

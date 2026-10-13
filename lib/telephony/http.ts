@@ -36,7 +36,8 @@ export async function domainRoute(request: Request, work: (tenantId: string, pro
       }
     }
     if (provider === 'voicelink' && !['/api/telephony/account', '/api/telephony/kyc', '/api/telephony/kyc/session',
-      '/api/telephony/voicelink', '/api/telephony/voicelink/inventory'].includes(new URL(request.url).pathname)) {
+      '/api/telephony/voicelink', '/api/telephony/voicelink/inventory', '/api/telephony/voicelink/checkout',
+      '/api/telephony/voicelink/checkout/confirm'].includes(new URL(request.url).pathname)) {
       throw new HttpError(503, VOICELINK_UNAVAILABLE);
     }
     await limitOperation(tenantId,new URL(request.url).pathname,mutate ? mutationLimit:60);

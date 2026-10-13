@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { VoiceLinkClient } from '../lib/telephony/providers/voicelink/client';
 import { createVoiceLinkProvider } from '../lib/telephony/providers/voicelink/provider';
 import { safeKyc, safeProfile, rupeesMinor } from '../lib/telephony/providers/voicelink/schemas';
+import { ProviderError, providerErrorDetails } from '../lib/telephony/errors';
 
 const profile = { id: 10, is_active: 1, is_verified: true, currency: 'INR', billing_mode: 'prepaid', wallet: { balance: 1400, currency: 'INR' },
   channels: { available: 1 }, active_plan: { plan_name: 'Synthetic plan', plan_type: 'limited', monthly_channel_rate: 199,
@@ -22,7 +23,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
     const u = new URL(String(url));
     assert.equal(u.origin, 'https://app.voicelink.co.in');
     assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer synthetic-test-token');
-    assert.equal(init?.redirect, 'error');
+    assert.equal(init?.redirect, 'manual');
     const path = u.pathname.replace('/api/v1', '');
     calls.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : null });
     assert.ok(path in responses, `Unexpected provider operation: ${path}`);
@@ -38,6 +39,37 @@ test('VoiceLink API validates envelope, uses fixed origin and never exposes upst
   await assert.rejects(client.request('https://evil.example/collect'));
   const timeout = new VoiceLinkClient('synthetic-token', (async () => { throw new Error('secret response'); }) as typeof fetch);
   await assert.rejects(timeout.profile(), error => error instanceof Error && !error.message.includes('secret response'));
+});
+test('VoiceLink rejects malformed credentials before sending and distinguishes safe connection failures', async () => {
+  let requests = 0;
+  const fetcher = (async () => { requests++; return Response.json({ status: true, data: profile }); }) as typeof fetch;
+  for (const token of ['Bearer 1|secret', '"1|secret"', '{"access_token":"secret"}', '1|secret\nother', 'VOICELINK_AUTH_TOKEN=secret']) {
+    await assert.rejects(new VoiceLinkClient(token, fetcher).profile(), error =>
+      error instanceof ProviderError && error.code === 'invalid_credential_format' && !error.message.includes('secret'));
+  }
+  assert.equal(requests, 0);
+  for (const [runtimeCode, expected] of [['ENOTFOUND', 'network_dns'], ['CERT_HAS_EXPIRED', 'network_tls'],
+    ['ECONNRESET', 'network_connection'], ['UND_ERR_CONNECT_TIMEOUT', 'network_timeout'], ['PRIVATE-CODE', 'network_or_response']]) {
+    const failed = new VoiceLinkClient('synthetic-token', (async () => {
+      throw new Error('private token and URL', { cause: { code: runtimeCode } });
+    }) as typeof fetch);
+    await assert.rejects(failed.profile(), error => {
+      assert.ok(error instanceof ProviderError);
+      assert.equal(providerErrorDetails(error).providerCode, expected);
+      assert.equal(error.uncertain, false);
+      assert.ok(!error.message.includes('private'));
+      return true;
+    });
+  }
+  const timed = new VoiceLinkClient('synthetic-token', (async () => { throw new DOMException('private', 'TimeoutError'); }) as typeof fetch);
+  await assert.rejects(timed.profile(), error => error instanceof ProviderError && error.code === 'network_timeout');
+  const redirected = new VoiceLinkClient('synthetic-token', (async (_url, init) => {
+    assert.equal(init?.redirect, 'manual');
+    return new Response(null, { status: 302, headers: { location: 'https://other.example/private' } });
+  }) as typeof fetch);
+  await assert.rejects(redirected.profile(), error => error instanceof ProviderError && error.code === 'redirect_rejected');
+  const denied = new VoiceLinkClient('synthetic-token', (async () => new Response(null, { status: 401 })) as typeof fetch);
+  await assert.rejects(denied.profile(), error => error instanceof ProviderError && error.code === 'http_401');
 });
 test('VoiceLink reads scoped customer KYC and strips all identity data', async () => {
   const { client, calls } = fixture(); const provider = createVoiceLinkProvider(client);

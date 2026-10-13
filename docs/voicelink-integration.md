@@ -41,6 +41,30 @@ capacity. Unknown creation outcomes retain `needs_review`; never blindly recreat
 VOICELINK_AUTH_TOKEN=
 ```
 
+In Vercel's value field, save only `data.access_token`, including its `1|` prefix
+if present. Do not include `Bearer`, surrounding quotes, JSON or the dotenv
+assignment. Local dotenv syntax may use quotes because the dotenv parser removes
+them. Redeploy after changing a hosting variable.
+
+The authenticated status GET reads `/api/v1/reseller/profile`. Server logs contain
+only allowlisted diagnostics, never the token, request headers or upstream error
+messages:
+
+- `invalid_credential_format`: malformed value rejected before any request.
+- `http_401`/`http_403`: provider returned an access denial.
+- `network_timeout`: the request exceeded the timeout or connection timed out.
+- `network_dns`: provider hostname resolution failed.
+- `network_tls`: certificate validation failed; repair the provider certificate,
+  never disable TLS validation.
+- `network_connection`: connection refused, reset or unreachable. Check provider
+  firewall/access policy for the hosting region.
+- `redirect_rejected`: provider redirected the API request. No redirect is
+  followed and no credential is sent to the redirect destination.
+- `network_or_response`: unclassified fetch failure; the original error is not
+  logged because it may contain secrets.
+
+The generic fetch error alone does not prove a token problem or firewall block.
+
 A read-only profile test in the logged-in portal's API playground returned 401
 without a Bearer token. No credential was extracted from browser cookies/storage,
 no API token was generated and no live configuration was changed.

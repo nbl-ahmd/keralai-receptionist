@@ -7,22 +7,32 @@ import { Button } from '@/components/ui/button';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
 import PhoneProviderChoice from './PhoneProviderChoice';
-import { money, phoneApi } from '@/lib/telephony/client-ui';
+import { money, phoneApi, type PhoneSummary } from '@/lib/telephony/client-ui';
 import type { voiceLinkStatus } from '@/lib/telephony/providers/voicelink/status';
 
 type Status = ReturnType<typeof voiceLinkStatus>;
 export default function VoiceLinkSetup() {
   const [status, setStatus] = useState<Status | null>(null);
+  const [summary, setSummary] = useState<PhoneSummary | null>(null);
+  const [inventory, setInventory] = useState<Array<{ e164: string; region: string; monthlyCost: string; channelMonthlyCost: string }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
     setBusy(true);
-    try { setStatus(await phoneApi('/api/telephony/voicelink')); setError(null); }
+    try {
+      const [provider, workspace] = await Promise.all([phoneApi('/api/telephony/voicelink'), phoneApi('/api/telephony/account?provider=voicelink')]);
+      setStatus(provider); setSummary(workspace); setError(null);
+    }
     catch (error) { setError(error instanceof Error ? error.message : 'Unable to load VoiceLink setup.'); }
     finally { setBusy(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
   const quote = status?.quote;
+  const run = async (work: () => Promise<void>) => {
+    setBusy(true); setError(null);
+    try { await work(); } catch (error) { setError(error instanceof Error ? error.message : 'Unable to complete VoiceLink setup.'); }
+    finally { setBusy(false); }
+  };
   return <AppShell title="Phone" description="Connect a phone provider to your assistant." activeRoute="phone" routeMode contentWidth="narrow"
     actions={<Button variant="outline" size="sm" disabled={busy} onClick={() => void load()}>Refresh</Button>}>
     <div className="space-y-8">
@@ -34,15 +44,38 @@ export default function VoiceLinkSetup() {
             <span className="rounded-full bg-warning-soft px-3 py-1 text-sm text-warning">Not ready for activation</span>
           </div>
           <p className="text-sm leading-relaxed text-muted-foreground">VoiceLink can connect phone calls to your existing assistant. Your AI, knowledge and tools stay in this app.</p>
-          <Notice tone="info">VoiceLink activation is being prepared. Account creation, identity verification and number purchases are not available here yet.</Notice>
+          <Notice tone="info">VoiceLink account and identity setup is available when your operator connects the reseller API. Live phone activation is waiting for provider verification.</Notice>
           <p className="text-sm leading-relaxed text-muted-foreground">The provider documents individual PAN/Aadhaar and business verification. Complete identity checks with VoiceLink; do not upload identity documents to this app.</p>
           <a href="https://app.voicelink.co.in/documentation/reseller-setup/" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center text-sm font-medium text-primary underline underline-offset-4">Read VoiceLink setup guide</a>
+        </section>
+        <section className="space-y-4 border-t border-border pt-6">
+          <h2 className="font-display text-xl font-semibold">Your VoiceLink account</h2>
+          {!status.configured ? <Notice tone="info">Your operator needs to configure VoiceLink API access on the server. Logging into the VoiceLink portal does not connect this app automatically.</Notice> : <>
+            {status.currentPlan && <p className="text-sm text-muted-foreground">Provider plan: {status.currentPlan.name} · {status.currentPlan.availableChannels} unallocated channels · {status.currentPlan.pulseSeconds ?? 'Unconfirmed'} second billing pulse</p>}
+            {!summary?.account ? <>
+              <p className="text-sm text-muted-foreground">Create a separate customer account for this workspace. VoiceLink will send an email verification link; complete identity checks in its portal.</p>
+              <Button disabled={busy || !status.accountCreationAvailable || !summary?.phoneActivationApproved || !summary?.browserTestCompleted}
+                onClick={() => void run(async () => { setSummary(await phoneApi('/api/telephony/account?provider=voicelink', { provider: 'voicelink' })); })}>Create VoiceLink account</Button>
+              {!status.accountCreationAvailable && <p className="text-sm text-muted-foreground">Your operator must verify the reseller account and make a channel available first.</p>}
+              {summary && (!summary.phoneActivationApproved || !summary.browserTestCompleted) && <p className="text-sm text-muted-foreground">Alpha phone approval and a browser voice test are required before account creation.</p>}
+            </> : <>
+              <p className="text-sm">Identity status: <strong>{summary.account.kycStatus.replaceAll('_', ' ')}</strong></p>
+              <p className="text-sm text-muted-foreground">Verify the email sent by VoiceLink, then sign in to its portal for PAN/Aadhaar or business KYC. Use VoiceLink’s password-reset flow if needed. Return here to check verification.</p>
+              <div className="flex flex-wrap gap-3">
+                <Button disabled={busy || summary.account.status !== 'active'} onClick={() => void run(async () => {
+                  const session = await phoneApi('/api/telephony/kyc/session?provider=voicelink', { provider: 'voicelink' });
+                  window.location.assign(session.url);
+                })}>Open VoiceLink verification</Button>
+                <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setSummary(await phoneApi('/api/telephony/kyc?provider=voicelink', { provider: 'voicelink' })); })}>Check verification</Button>
+              </div>
+            </>}
+          </>}
         </section>
         <section className="space-y-4 border-t border-border pt-6">
           <h2 className="font-display text-xl font-semibold">Number, capacity and calling costs</h2>
           <p className="text-sm leading-relaxed text-muted-foreground">VoiceLink charges separately for the number, concurrent-call channels and usage. One channel supports one simultaneous call. Your AI and hosting costs are additional.</p>
           {!quote ? <Notice tone="warning">Quote required. VoiceLink’s public manuals do not publish rates. Ask your operator for the number rental, channel rental and incoming/outgoing call prices before activating.</Notice> : <>
-            <p className="text-xs text-muted-foreground">Operator-entered quote · {quote.reference} · Confirm terms with VoiceLink</p>
+            <p className="text-xs text-muted-foreground">{status.quoteSource === 'provider_api' ? 'Current provider plan' : 'Operator-entered quote'} · {quote.reference} · Confirm terms with VoiceLink</p>
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <dt>Number rental</dt><dd className="text-right">{money(quote.numberMonthlyMinor)}/month</dd>
               <dt>One channel</dt><dd className="text-right">{money(quote.channelMonthlyMinor)}/month</dd>
@@ -55,6 +88,11 @@ export default function VoiceLinkSetup() {
               <tbody>{[60, 300, 1000].map(minutes => <tr key={minutes} className="border-t border-border"><td className="py-3">{minutes}</td><td className="text-right tabular-nums">{money(quote.numberMonthlyMinor + quote.channelMonthlyMinor + minutes * quote.inboundMinuteMinor)}</td></tr>)}</tbody>
             </table></div>
             <p className="text-xs leading-relaxed text-muted-foreground">Illustrative usage estimate, not a purchase quote. Excludes setup, release, taxes, minimum commitments, AI, hosting and additional call legs. Confirm billing increments and bundled usage separately.</p>
+          </>}
+          {status.configured && <>
+            <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setInventory((await phoneApi('/api/telephony/voicelink/inventory')).items); })}>Browse VoiceLink numbers</Button>
+            <p className="text-xs text-muted-foreground">Browsing is read-only. Number purchases remain unavailable until live calling and commercial terms are verified.</p>
+            <ul className="divide-y divide-border">{inventory.map(item => <li key={item.e164} className="py-3 text-sm"><p className="font-semibold tabular-nums">{item.e164}</p><p className="text-muted-foreground">{item.region} · ₹{item.monthlyCost}/month number + ₹{item.channelMonthlyCost}/month channel</p></li>)}</ul>
           </>}
         </section>
         <section className="space-y-3 border-t border-border pt-6">

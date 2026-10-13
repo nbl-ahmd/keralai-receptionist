@@ -4,16 +4,18 @@ import { resolveTenantContext, HttpError } from '@/lib/auth/context';
 import { limitOperation } from './store';
 import { ProviderError,providerErrorDetails } from './errors';
 import { getTelephonyProvider } from './provider';
-import { isPhoneProvider } from './provider-options';
+import { isPhoneProvider, VOICELINK_UNAVAILABLE, type PhoneProvider } from './provider-options';
 
-export async function domainRoute(request: Request, work: (tenantId: string) => Promise<unknown>, mutate = false, mutationLimit = 6) {
+export async function domainRoute(request: Request, work: (tenantId: string, provider: PhoneProvider) => Promise<unknown>, mutate = false, mutationLimit = 6) {
   try {
     const { tenantId } = await resolveTenantContext(request, mutate ? { roles:['owner','admin'] } : {});
     // Explicit provider requests must never silently fall through to Vobiz.
     const requestedProvider = new URL(request.url).searchParams.get('provider');
+    let provider: PhoneProvider = 'vobiz';
     if (requestedProvider !== null) {
       if (!isPhoneProvider(requestedProvider)) throw new HttpError(400, 'Unknown phone provider');
       getTelephonyProvider(requestedProvider);
+      provider = requestedProvider;
     }
     if (mutate) {
       const origin = request.headers.get('origin');
@@ -28,11 +30,17 @@ export async function domainRoute(request: Request, work: (tenantId: string) => 
         if (body && typeof body === 'object' && 'provider' in body) {
           if (!isPhoneProvider(body.provider)) throw new HttpError(400, 'Unknown phone provider');
           getTelephonyProvider(body.provider);
+          if (requestedProvider !== null && requestedProvider !== body.provider) throw new HttpError(400, 'Conflicting phone providers');
+          provider = body.provider;
         }
       }
     }
+    if (provider === 'voicelink' && !['/api/telephony/account', '/api/telephony/kyc', '/api/telephony/kyc/session',
+      '/api/telephony/voicelink', '/api/telephony/voicelink/inventory'].includes(new URL(request.url).pathname)) {
+      throw new HttpError(503, VOICELINK_UNAVAILABLE);
+    }
     await limitOperation(tenantId,new URL(request.url).pathname,mutate ? mutationLimit:60);
-    return NextResponse.json(await work(tenantId),{ headers:{'Cache-Control':'private, no-store'} });
+    return NextResponse.json(await work(tenantId, provider),{ headers:{'Cache-Control':'private, no-store'} });
   } catch (error) {
     const status = error instanceof HttpError || error instanceof AlphaAccessError ? error.status:500;
     const requestId=crypto.randomUUID();

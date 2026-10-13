@@ -66,7 +66,9 @@ test('VoiceLink quote never falls back to Vobiz prices and accepts only complete
 });
 test('VoiceLink stays unavailable even with flags and quotes; Vobiz remains the default', async () => {
   assert.equal(voiceLinkStatus({ VOICELINK_ENABLED: '1', VOICELINK_CALLBACK_SIGNATURES_VERIFIED: '1' }).activationReady, false);
-  assert.throws(() => getTelephonyProvider('voicelink'), /VoiceLink activation is pending/);
+  assert.equal(getTelephonyProvider('voicelink').name, 'voicelink');
+  assert.equal(getTelephonyProvider('voicelink').activationReady, false);
+  await assert.rejects(getTelephonyProvider('voicelink').purchaseNumber({ tenantId: 'A', authId: '1' }, '+918012345678'), /VoiceLink calling needs/);
   assert.equal(getTelephonyProvider().name, 'vobiz');
   assert.throws(() => getTelephonyProvider('unknown'));
   assert.equal(await authorizePhoneBridge({ provider: 'voicelink' }), null);

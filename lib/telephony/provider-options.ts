@@ -4,4 +4,4 @@ export type PhoneProvider = typeof PHONE_PROVIDERS[number];
 export function isPhoneProvider(value: unknown): value is PhoneProvider {
   return typeof value === 'string' && PHONE_PROVIDERS.some(provider => provider === value);
 }
-export const VOICELINK_UNAVAILABLE = 'VoiceLink activation is pending its provisioning API and authenticated callback contracts. Vobiz remains available separately.';
+export const VOICELINK_UNAVAILABLE = 'VoiceLink activation is pending verified media authentication, live call lookup and carrier hangup controls. Vobiz remains available separately.';

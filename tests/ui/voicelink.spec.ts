@@ -12,19 +12,20 @@ test('VoiceLink setup is separate from Vobiz and cannot spend or fall through', 
   await page.request.post('/api/onboarding', { headers: { Origin: 'http://localhost:3210' }, data: { step: 'complete', purpose: 'personal' } });
   const status = await page.request.get('/api/telephony/voicelink');
   expect(status.headers()['cache-control']).toBe('private, no-store');
-  expect(await status.json()).toMatchObject({ provider: 'voicelink', activationReady: false, provisioningSupported: false, quote: null });
-  for (const path of ['/api/telephony/voicelink', '/api/telephony/account', '/api/telephony/numbers/purchase']) {
+  expect(await status.json()).toMatchObject({ provider: 'voicelink', activationReady: false, provisioningSupported: false, accountSetupSupported: true, configured: false, quote: null });
+  for (const path of ['/api/telephony/voicelink', '/api/telephony/numbers/purchase']) {
     const response = await page.request.post(path, { headers: { Origin: 'http://localhost:3210' }, data: { provider: 'voicelink' } });
     expect(response.status()).toBe(503);
     expect((await response.json()).error).toContain('VoiceLink activation is pending');
   }
+  expect((await page.request.post('/api/telephony/account?provider=voicelink', { headers: { Origin: 'http://localhost:3210' }, data: { provider: 'vobiz' } })).status()).toBe(400);
   expect((await page.request.post('/api/telephony/voicelink', { headers: { Origin: 'https://other.example' }, data: {} })).status()).toBe(403);
   expect((await page.request.get('/api/telephony/account?provider=unknown')).status()).toBe(400);
-  expect((await page.request.get('/api/telephony/account?provider=voicelink')).status()).toBe(503);
+  expect((await (await page.request.get('/api/telephony/account?provider=voicelink')).json()).account).toBeNull();
   expect((await (await page.request.get('/api/telephony/account')).json()).account).toBeNull();
 
   let vobizRequests = 0;
-  page.on('request', request => { if (request.url().includes('/api/telephony/account')) vobizRequests++; });
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname === '/api/telephony/account' && url.searchParams.get('provider') !== 'voicelink') vobizRequests++; });
   await page.goto('/dashboard/phone?provider=voicelink');
   await expect(page.getByRole('heading', { name: 'VoiceLink setup' })).toBeVisible();
   await expect(page.getByText('Quote required.', { exact: false })).toBeVisible();

@@ -41,9 +41,9 @@ export async function reconcileTelephony() {
     provisioning_status in ('purchasing','purchase_unknown','purchased','configuring','configuration_failed','release_unknown')
     and updated_at<now()-interval '2 minutes' order by updated_at limit 5`);
   for(const number of numbers){if(!hasBudget())break;try{await (number.provisioning_status==='release_unknown' ? releaseNumber(number.tenant_id,number.id):retryNumber(number.tenant_id,number.id));report.numbers++;}catch{report.failures++;}}
-  const accounts=await query<{tenant_id:string}>(`select tenant_id from tenant_telephony_accounts where status='active'
+  const accounts=await query<{tenant_id:string;provider:string}>(`select tenant_id,provider from tenant_telephony_accounts where status='active'
     and (kyc_last_checked_at is null or kyc_last_checked_at<now()-interval '1 hour') order by kyc_last_checked_at nulls first limit 10`);
-  for(const account of accounts){if(!hasBudget())break;try{await syncKyc(account.tenant_id);report.kyc++;}catch{report.failures++;}}
+  for(const account of accounts){if(!hasBudget())break;try{await syncKyc(account.tenant_id,account.provider);report.kyc++;}catch{report.failures++;}}
   // Retain nonce digests for a week, including used bridge tokens; no PII/raw bodies.
   await query("delete from telephony_nonces where expires_at<now()-interval '7 days'");
   await query("delete from telephony_rate_limits where window_start<now()-interval '1 day'");

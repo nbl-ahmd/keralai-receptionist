@@ -1,5 +1,8 @@
-/** Public manuals describe capabilities, not authenticated provisioning endpoints.
- * No key or environment flag can turn an unimplemented provider into a live one.
+import { VoiceLinkClient } from './client';
+import { safeProfile } from './schemas';
+
+/** Authenticated Developer Hub contracts are implemented for account/KYC reads.
+ * Media authentication, live lookup and carrier hangup still require confirmation.
  */
 export interface VoiceLinkQuote {
   reference: string;
@@ -26,9 +29,26 @@ export function readVoiceLinkQuote(env: Record<string, string | undefined> = pro
 export function voiceLinkStatus(env: Record<string, string | undefined> = process.env) {
   return {
     provider: 'voicelink' as const, activationReady: false, provisioningSupported: false,
-    status: 'awaiting_provider_contract' as const,
+    accountSetupSupported: true, numberPurchaseSupported: false,
+    configured: !!env.VOICELINK_AUTH_TOKEN?.trim(), accountCreationAvailable: false,
+    currentPlan: null as null | { name: string; availableChannels: number; pulseSeconds: number | null },
+    quoteSource: 'operator_quote' as 'operator_quote' | 'provider_api',
+    status: 'awaiting_media_contract' as const,
     quote: readVoiceLinkQuote(env),
-    blockers: ['Provisioning and hosted KYC API documentation', 'Authenticated call metadata, WebSocket and webhook contract',
-      'Authoritative call billing and number ownership API', 'Account-specific number, channel and usage quote'],
+    blockers: ['Provider-confirmed WebSocket and webhook authentication', 'Authoritative live call lookup before AI admission',
+      'Carrier hangup and maximum billable call duration controls', 'Billing duration, timezone and release/renewal terms'],
   };
+}
+export async function loadVoiceLinkStatus(client = new VoiceLinkClient()) {
+  const status = voiceLinkStatus();
+  if (!status.configured) return status;
+  const profile = safeProfile(await client.profile());
+  const rate = profile.didRates.find(row => row.typeId === '3');
+  return { ...status, currentPlan: { name: profile.planName, availableChannels: profile.availableChannels, pulseSeconds: profile.pulseSeconds },
+    accountCreationAvailable: profile.active && profile.verified && profile.availableChannels > 0 && profile.billingMode === 'prepaid',
+    quoteSource: 'provider_api' as const,
+    quote: rate && profile.planType === 'limited' && profile.pulseSeconds === 60 && profile.inboundMinuteMinor !== null && profile.outboundMinuteMinor !== null ? {
+      reference: profile.planName, numberMonthlyMinor: rate.monthlyMinor, channelMonthlyMinor: profile.channelMonthlyMinor,
+      inboundMinuteMinor: profile.inboundMinuteMinor, outboundMinuteMinor: profile.outboundMinuteMinor,
+    } : null };
 }

@@ -5,14 +5,15 @@ export interface CustomerAccount {
 export interface KycStatus {
   status: KycState; callsBlocked: boolean; documents: Record<string, KycState>;
 }
-export interface KycSession { id: string; url: string; expiresAt: string; status: string }
+export interface KycSession { id: string | null; url: string; expiresAt: string | null; status: string }
 export interface AvailableNumber {
   id: string; e164: string; country: string; region: string;
   monthlyCost: string; setupCost: string; currency: string; voice: boolean;
   releaseCost?: string; commitmentMonths?: number; available?: boolean; restricted?: boolean;
+  channelMonthlyCost?: string;
 }
 export interface NumberInventory { items: AvailableNumber[]; total: number; page: number }
-export interface AccountRef { tenantId: string; authId: string }
+export interface AccountRef { tenantId: string; authId: string; accountId?: string }
 export interface ProviderCall {
   id: string; from: string; to: string; direction: 'inbound' | 'outbound'; status: string;
   startedAt?: string; answeredAt?: string; endedAt?: string;
@@ -22,6 +23,7 @@ export interface TelephonyProvider {
   readonly name: string;
   readonly configured: boolean;
   readonly activationReady: boolean;
+  preflightCustomerAccount?(input: { name: string; email: string }): Promise<void>;
   createCustomerAccount(input: { name: string; email: string }): Promise<CustomerAccount>;
   getCustomerAccount(account: AccountRef): Promise<CustomerAccount>;
   createKycSession(account: AccountRef, input: { returnUrl: string; webhookUrl: string }): Promise<KycSession>;

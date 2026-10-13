@@ -9,8 +9,8 @@ export const getAccount = (tenantId: string, provider = process.env.TELEPHONY_PR
   'select * from tenant_telephony_accounts where tenant_id=$1 and provider=$2', [tenantId, provider]);
 export const getNumber = (tenantId: string, id: string) => queryOne<PhoneNumberRow>(
   'select * from phone_numbers where tenant_id=$1 and id=$2', [tenantId,id]);
-export const getNumbers = (tenantId: string) => query<PhoneNumberRow>(
-  "select * from phone_numbers where tenant_id=$1 and status <> 'released' order by created_at desc", [tenantId]);
+export const getNumbers = (tenantId: string, provider?: string) => query<PhoneNumberRow>(
+  "select * from phone_numbers where tenant_id=$1 and ($2::text is null or provider=$2) and status <> 'released' order by created_at desc", [tenantId, provider ?? null]);
 
 export async function withOperationLock<T>(tenantId: string, work: () => Promise<T>): Promise<T> {
   return transaction(async (client) => {

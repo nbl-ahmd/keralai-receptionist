@@ -1,5 +1,6 @@
 "use client";
 import AlphaUsageCard from './AlphaUsageCard';
+import PhoneProviderChoice from './PhoneProviderChoice';
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -65,6 +66,7 @@ export default function PhoneSetup() {
   return <AppShell title="Phone" description="A dedicated number. Your assistant takes it from here." activeRoute="phone" routeMode contentWidth="narrow"
     actions={<Button variant="outline" size="sm" onClick={()=>void load()} disabled={busy}><RefreshCw className="mr-2 h-4 w-4"/>Refresh</Button>}>
     <div className="space-y-8">
+      <PhoneProviderChoice selected="vobiz"/>
       <AlphaUsageCard compact/>
     {error && <Notice tone="error"><div role="alert">{error}<Button variant="ghost" size="sm" onClick={()=>void load()}>Try again</Button></div></Notice>}
       {!summary ? <div aria-label="Loading phone setup"><Skeleton className="h-10 w-48"/><Skeleton className="mt-6 h-52"/></div> : <>

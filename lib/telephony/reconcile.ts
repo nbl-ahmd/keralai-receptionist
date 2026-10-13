@@ -2,10 +2,11 @@ import { query } from '@/db/client';
 import { transaction } from '@/db/transaction';
 import { reconcileCall } from './inbound';
 import { retryNumber,syncKyc,releaseNumber } from './service';
+import { reconcileVoiceLinkCheckout, reconcileVoiceLinkAccount } from './providers/voicelink/recovery';
 import { observe } from './store';
 
 export async function reconcileTelephony() {
-  const report={calls:0,numbers:0,kyc:0,rentals:0,failures:0,timeLimited:false};
+  const report={calls:0,numbers:0,kyc:0,rentals:0,voicelinkCheckouts:0,voicelinkAccounts:0,voicelinkReviews:0,failures:0,timeLimited:false};
   const deadline=Date.now()+240000;
   const hasBudget=()=>Date.now()<deadline;
   const rentals=await query<{tenant_id:string;id:string}>(`select tenant_id,id from phone_numbers
@@ -31,16 +32,27 @@ export async function reconcileTelephony() {
     });}catch{report.failures++;}
   }
   const pending=await query<{tenant_id:string;provider_call_id:string}>(`select tenant_id,provider_call_id from telephony_usage_events
-    where billing_status='pending' and started_at<now()-interval '2 minutes' order by updated_at limit 20`);
+    where provider='vobiz' and billing_status='pending' and started_at<now()-interval '2 minutes' order by updated_at limit 20`);
   for(const call of pending) {
     if(!hasBudget())break;
     try{await reconcileCall(call.tenant_id,call.provider_call_id);report.calls++;}
     catch{report.failures++;}
   }
-  const numbers=await query<{tenant_id:string;id:string;provisioning_status:string}>(`select tenant_id,id,provisioning_status from phone_numbers where
+  const numbers=await query<{tenant_id:string;id:string;provisioning_status:string}>(`select tenant_id,id,provisioning_status from phone_numbers where provider='vobiz' and
     provisioning_status in ('purchasing','purchase_unknown','purchased','configuring','configuration_failed','release_unknown')
     and updated_at<now()-interval '2 minutes' order by updated_at limit 5`);
   for(const number of numbers){if(!hasBudget())break;try{await (number.provisioning_status==='release_unknown' ? releaseNumber(number.tenant_id,number.id):retryNumber(number.tenant_id,number.id));report.numbers++;}catch{report.failures++;}}
+  const checkouts=await query<{tenant_id:string}>(`select tenant_id from voicelink_checkouts
+    where state in ('creating','draft_unknown','quoted','confirming','purchase_unknown','purchased','assignment_unknown')
+    and updated_at<now()-interval '2 minutes' and (recovery_checked_at is null or recovery_checked_at<now()-interval '5 minutes')
+    order by recovery_checked_at nulls first,updated_at limit 5`);
+  for(const checkout of checkouts){if(!hasBudget())break;try{const result=await reconcileVoiceLinkCheckout(checkout.tenant_id,deadline);report.voicelinkCheckouts++;
+    if(['draft_reference_missing','ownership_unconfirmed','draft_expired','operator_review_required'].includes(result.code))report.voicelinkReviews++;}catch{report.failures++;}}
+  const unknownAccounts=await query<{tenant_id:string}>(`select tenant_id from tenant_telephony_accounts
+    where provider='voicelink' and status in ('creating','needs_review') and provider_auth_id is null
+    and provider_username is not null and updated_at<now()-interval '5 minutes' order by updated_at limit 5`);
+  for(const account of unknownAccounts){if(!hasBudget())break;try{await reconcileVoiceLinkAccount(account.tenant_id);report.voicelinkAccounts++;}catch{report.failures++;
+    await query("update tenant_telephony_accounts set updated_at=now() where tenant_id=$1 and provider='voicelink' and provider_auth_id is null",[account.tenant_id]);}}
   const accounts=await query<{tenant_id:string;provider:string}>(`select tenant_id,provider from tenant_telephony_accounts where status='active'
     and (kyc_last_checked_at is null or kyc_last_checked_at<now()-interval '1 hour') order by kyc_last_checked_at nulls first limit 10`);
   for(const account of accounts){if(!hasBudget())break;try{await syncKyc(account.tenant_id,account.provider);report.kyc++;}catch{report.failures++;}}

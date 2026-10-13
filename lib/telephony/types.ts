@@ -24,7 +24,7 @@ export interface TelephonyProvider {
   readonly configured: boolean;
   readonly activationReady: boolean;
   preflightCustomerAccount?(input: { name: string; email: string }): Promise<void>;
-  createCustomerAccount(input: { name: string; email: string }): Promise<CustomerAccount>;
+  createCustomerAccount(input: { name: string; email: string; providerUsername?: string }): Promise<CustomerAccount>;
   getCustomerAccount(account: AccountRef): Promise<CustomerAccount>;
   createKycSession(account: AccountRef, input: { returnUrl: string; webhookUrl: string }): Promise<KycSession>;
   getKycStatus(account: AccountRef): Promise<KycStatus>;

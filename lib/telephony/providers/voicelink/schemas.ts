@@ -40,3 +40,18 @@ export function safeKyc(raw: VoiceLinkData): KycStatus {
     documents: { pan: raw.pan_verified ? 'verified' : 'not_started', aadhaar: raw.aadhaar_verified ? 'verified' : 'not_started',
       ...(business ? { gst: raw.gst_verified ? 'verified' as const : 'not_started' as const } : {}) } };
 }
+
+/** The live inventory uses safe numeric 91-prefixed DIDs/country codes;
+ * docs use strings. Never add a country prefix to an ambiguous national number.
+ */
+export function voiceLinkDidE164(value: unknown): string {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new ProviderError('invalid_inventory');
+    value = String(value);
+  }
+  if (typeof value !== 'string' || !/^\+?91\d{10}$/.test(value)) throw new ProviderError('invalid_inventory');
+  return value.startsWith('+') ? value : `+${value}`;
+}
+export function isVoiceLinkIndiaCode(value: unknown) {
+  return value === '+91' || value === '91' || value === 91;
+}

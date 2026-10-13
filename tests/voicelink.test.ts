@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeALaw, encodeALaw } from '../bridge/transports/audio.mjs';
+import { phoneTransport } from '../bridge/transports/phone.mjs';
 import { VoiceLinkTransport } from '../bridge/transports/voicelink.mjs';
 import { readVoiceLinkQuote, voiceLinkStatus } from '../lib/telephony/providers/voicelink/status';
 import { getTelephonyProvider } from '../lib/telephony/provider';
@@ -72,4 +73,14 @@ test('VoiceLink stays unavailable even with flags and quotes; Vobiz remains the 
   assert.equal(getTelephonyProvider().name, 'vobiz');
   assert.throws(() => getTelephonyProvider('unknown'));
   assert.equal(await authorizePhoneBridge({ provider: 'voicelink' }), null);
+});
+
+test('Shared phone transport factory selects the provider without exposing VoiceLink admission', async () => {
+  const ws={readyState:1,send:()=>{},close:()=>{}};
+  const claims={provider:'voicelink',provider_call_id:'fixture-call',provider_account_id:'42',from:'+919876543210',to:'+918012345678'};
+  assert.equal(phoneTransport(ws,claims).name,'voicelink');
+  assert.equal(phoneTransport(ws,{...claims,provider:'vobiz'}).name,'vobiz');
+  assert.equal(phoneTransport(ws,null).name,'exotel');
+  assert.throws(()=>phoneTransport(ws,{...claims,provider:'unknown'}));
+  assert.equal(await authorizePhoneBridge({...claims,scope:'phone'}),null);
 });

@@ -93,7 +93,7 @@ import { extractExotelToken, verifyBridgeToken, verifyExotelToken } from './brid
 import { auditTenantGeminiKeys, getSecretsKeyFingerprint } from './secrets.mjs';
 import { BrowserSession } from './browser-session.mjs';
 import { ExotelTransport } from './transports/exotel-legacy.mjs';
-import { VobizTransport } from './transports/vobiz.mjs';
+import { phoneTransport } from './transports/phone.mjs';
 import { installVoiceGuard } from './voice-guard.mjs';
 import { admitVoiceSession, claimVoiceSession, rollingVoiceAuthorization, finishVoiceSession, recordVoiceTokens, emitAlpha } from './entitlements.mjs';
 import { withTransaction } from './db.mjs';
@@ -1087,7 +1087,7 @@ class CallSession {
       try {
         this.transport.stop();
       } catch { /* ignore */ }
-      if(this.transport.name!=='vobiz') void runBackground('phone-tool-close', () => this.close());
+      if(!this.phoneClaims) void runBackground('phone-tool-close', () => this.close());
     }, END_CALL_GRACE_MS);
     this._endCallTimer.unref?.();
   }
@@ -1568,7 +1568,7 @@ async function main() {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
     } catch (error) {
-      console.error('[bridge] Upgrade handler failed:', error?.message ?? error);
+      console.error('[bridge] Upgrade handler failed:', safeError(error));
       try { socket.destroy(); } catch { /* ignore */ }
     }
   });
@@ -1658,7 +1658,7 @@ async function main() {
       `[bridge] New phone WebSocket connection from ${req.socket.remoteAddress} (tenant ${tenant?.slug ?? 'unknown'})`,
     );
 
-    const transport=req._phoneClaims ? new VobizTransport(ws,req._phoneClaims) : new ExotelTransport(ws);
+    const transport=phoneTransport(ws,req._phoneClaims);
     let startTimer=setTimeout(()=>{if(!session && ws.readyState===1)ws.close(1008,'Media handshake timeout');},10000);
     startTimer.unref?.();
     const phoneGuard=req._voiceAuthorization ? installVoiceGuard({expiresAt:req._voiceAuthorization.expires_at,

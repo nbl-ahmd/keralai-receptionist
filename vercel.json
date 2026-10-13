@@ -1,9 +1,50 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "app/api/telephony/voicelink/route.ts": { "regions": ["bom1"] },
-    "app/api/telephony/voicelink/inventory/route.ts": { "regions": ["bom1"] },
-    "app/api/telephony/voicelink/checkout/route.ts": { "regions": ["bom1"] },
-    "app/api/telephony/voicelink/checkout/confirm/route.ts": { "regions": ["bom1"] }
+    "app/api/telephony/voicelink/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/telephony/voicelink/inventory/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/telephony/voicelink/checkout/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/telephony/voicelink/checkout/confirm/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/telephony/account/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/telephony/kyc/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/telephony/kyc/session/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/admin/telephony/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/jobs/telephony/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    }
   }
 }

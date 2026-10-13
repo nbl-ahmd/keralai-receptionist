@@ -1,8 +1,7 @@
 import { HttpError } from '@/lib/auth/context';
 import { ProviderError } from '../../errors';
-import { normalizeE164 } from '../../policy';
 import { VoiceLinkClient, record, providerId } from './client';
-import { rupeesMinor } from './schemas';
+import { rupeesMinor, voiceLinkDidE164 } from './schemas';
 
 export interface VoiceLinkOrderQuote {
   totalMinor: number; subtotalMinor: number; discountMinor: number;
@@ -18,7 +17,7 @@ export class VoiceLinkCommerce {
     const orderId = providerId(data.order_id);
     if (!Array.isArray(data.locked_dids) || data.locked_dids.length !== 1) throw new ProviderError('purchase_mismatch', true);
     const selected = record(data.locked_dids[0]);
-    if (providerId(selected.did_id) !== didId || normalizeE164(selected.did_number) !== e164) throw new ProviderError('purchase_mismatch', true);
+    if (providerId(selected.did_id) !== didId || voiceLinkDidE164(selected.did_number) !== e164) throw new ProviderError('purchase_mismatch', true);
     return { orderId, monthlyMinor: rupeesMinor(selected.monthly_rate) };
   }
   async quote(orderId: string, monthlyMinor: number): Promise<VoiceLinkOrderQuote> {
@@ -54,7 +53,17 @@ export function voiceLinkPurchaseTerms() {
   const commitment = process.env.VOICELINK_COMMITMENT_MONTHS;
   if (!reference || !/^[a-zA-Z0-9._-]{1,100}$/.test(reference) || !release || !/^\d+$/.test(release) ||
       !commitment || !/^\d+$/.test(commitment) || !Number.isSafeInteger(Number(release)) ||
-      Number(release) > 10000000 || !Number.isSafeInteger(Number(commitment)) || Number(commitment) > 12)
+      Number(release) > 10000000 || !Number.isSafeInteger(Number(commitment)) || Number(commitment) < 1 || Number(commitment) > 12)
     throw new HttpError(503, 'VoiceLink renewal, release and commitment terms need operator confirmation before purchase.');
   return { reference, releaseMinor: Number(release), commitmentMonths: Number(commitment) };
+}
+
+export function assertVoiceLinkRetailAcceptance(input: { acceptedChargeMinor: unknown; acceptedMonthlyMinor?: unknown; acceptedSetupMinor?: unknown }, retail: { initialChargeMinor: number; monthlyMinor: number; setupMinor: number }) {
+  if (input.acceptedChargeMinor !== retail.initialChargeMinor || input.acceptedMonthlyMinor !== retail.monthlyMinor || input.acceptedSetupMinor !== retail.setupMinor)
+    throw new HttpError(409, 'Your app price changed. Review the updated price before confirming.');
+}
+
+export function assertVoiceLinkTermsAcceptance(input: { acceptedTermsReference?: unknown; acceptedReleaseMinor?: unknown; acceptedCommitmentMonths?: unknown }, terms: { reference: string; releaseMinor: number; commitmentMonths: number }) {
+  if (input.acceptedTermsReference !== terms.reference || input.acceptedReleaseMinor !== terms.releaseMinor || input.acceptedCommitmentMonths !== terms.commitmentMonths)
+    throw new HttpError(409, 'Renewal terms changed. Review the updated terms before confirming.');
 }

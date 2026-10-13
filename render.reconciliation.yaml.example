@@ -1,0 +1,17 @@
+# Optional, separately approved deployment. This is not the active render.yaml.
+# Vercel Hobby cannot schedule reconciliation every five minutes.
+# This Render cron service incurs hosting charges; review before enabling it.
+services:
+  - type: cron
+    name: keralai-telephony-reconciliation
+    runtime: node
+    schedule: "*/5 * * * *"
+    buildCommand: node --version
+    startCommand: node scripts/run-telephony-reconciliation.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TELEPHONY_PUBLIC_ORIGIN
+        sync: false
+      - key: CRON_SECRET
+        sync: false

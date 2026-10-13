@@ -2,9 +2,8 @@ import crypto from 'node:crypto';
 import { HttpError } from '@/lib/auth/context';
 import type { AccountRef, AvailableNumber, TelephonyProvider } from '../../types';
 import { ProviderError } from '../../errors';
-import { normalizeE164 } from '../../policy';
 import { VoiceLinkClient, providerId, record } from './client';
-import { safeKyc, safeProfile, rupeesMinor } from './schemas';
+import { safeKyc, safeProfile, rupeesMinor, voiceLinkDidE164, isVoiceLinkIndiaCode } from './schemas';
 
 /** API operations confirmed in authenticated Developer Hub on 2026-10-12.
  * Live media admission/hangup is not documented: never treat portal login or a
@@ -41,7 +40,7 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
       const parts = input.name.trim().split(/\s+/);
       if (parts.length < 2) throw new HttpError(409, 'Add your full contact name before creating a VoiceLink account.');
       const payload = { first_name: parts[0], last_name: parts.slice(1).join(' '), email: input.email,
-        username: `ka_${crypto.randomUUID().replaceAll('-', '')}`, password: crypto.randomBytes(32).toString('base64url'),
+        username: input.providerUsername ?? `ka_${crypto.randomUUID().replaceAll('-', '')}`, password: crypto.randomBytes(32).toString('base64url'),
         // Hosted KYC requires a provider portal login. Do not give that login
         // unbounded access to the reseller wallet while completing identity.
         is_active: 1, channel_count: 1, negative_threshold: 0, wallet_balance: 0, wallet_bypass: 0,
@@ -81,8 +80,8 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
       const items: AvailableNumber[] = data.data.map(value => {
         const row = record(value);
         const monthlyMinor = rupeesMinor(row.monthly_rate);
-        const e164 = normalizeE164(row.did_number);
-        if (row.country_code !== '+91' || !e164.startsWith('+91')) throw new ProviderError('invalid_inventory');
+        const e164 = voiceLinkDidE164(row.did_number);
+        if (!isVoiceLinkIndiaCode(row.country_code) || !e164.startsWith('+91')) throw new ProviderError('invalid_inventory');
         return { id: providerId(row.id), e164, country: 'IN', region: String(row.type_label ?? '').slice(0, 100),
           monthlyCost: (monthlyMinor / 100).toFixed(2), setupCost: '', currency: 'INR', voice: true,
           // Commercial setup/release/commitment fields aren't in this schema.
@@ -97,7 +96,7 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
       const data = await client.purchased(account.authId, page);
       if (!Array.isArray(data.data) || !Number.isSafeInteger(data.total)) throw new ProviderError('invalid_inventory');
       const items = data.data.map(record).filter(row => String(row.client_id) === account.authId && row.status !== 6).map(row => ({
-        id: providerId(row.id), e164: normalizeE164(row.did_number), country: 'IN', region: String(row.type_label ?? ''),
+        id: providerId(row.id), e164: voiceLinkDidE164(row.did_number), country: 'IN', region: String(row.type_label ?? ''),
         monthlyCost: '', setupCost: '', currency: 'INR', voice: true,
         available: row.status === 2 && row.user_status === 2 && row.is_expired === false && row.is_user_expired === false,
       }));

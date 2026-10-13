@@ -31,15 +31,18 @@ try {
   await delay(250);
  }
  if(!healthy)throw new Error('Bridge did not start');
- const status=await new Promise((resolve,reject)=>{
-  const ws=new WebSocket(`ws://127.0.0.1:${port}/ws/vobiz?token=invalid`);
+ const rejected=path=>new Promise((resolve,reject)=>{
+  const ws=new WebSocket(`ws://127.0.0.1:${port}${path}?token=invalid`);
   const timer=setTimeout(()=>{ws.terminate();reject(new Error('Phone rejection timed out'));},5000);
   ws.on('unexpected-response',(_,response)=>{response.resume();clearTimeout(timer);resolve(response.statusCode);});
   ws.on('open',()=>{clearTimeout(timer);ws.close();reject(new Error('Unauthorized phone admitted'));});
   ws.on('error',()=>{});
  });
+ const status=await rejected('/ws/vobiz');
+ const voiceLinkStatus=await rejected('/ws/voicelink');
+ if(voiceLinkStatus!==404)throw new Error('Unverified VoiceLink path was mounted');
  if(status!==401)throw new Error('Phone did not reject invalid token');
- console.log(JSON.stringify({check:'bridge_health',status:200,unauthorizedPhoneStatus:status,providerCalls:'NOT_RUN'}));
+ console.log(JSON.stringify({check:'bridge_health',status:200,unauthorizedPhoneStatus:status,unmountedVoiceLinkStatus:voiceLinkStatus,providerCalls:'NOT_RUN'}));
  child.kill('SIGTERM');
  let timer;
  const result=await Promise.race([exited,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Shutdown timed out')),12000);})]).finally(()=>clearTimeout(timer));

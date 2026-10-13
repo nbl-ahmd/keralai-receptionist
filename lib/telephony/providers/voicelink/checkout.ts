@@ -7,11 +7,13 @@ import { requirePhoneSetupEligibility, syncKyc } from '../../service';
 import { assertActivationAllowed, normalizeE164, operationKey, price, publicOrigin } from '../../policy';
 import { assertParentFunding, didExposure } from '../../did-policy';
 import { voiceLinkProvider } from './provider';
-import { VoiceLinkCommerce, voiceLinkPurchaseTerms, type VoiceLinkOrderQuote } from './commerce';
+import { checkoutRecoveryMessage } from './recovery-message';
+import { VoiceLinkCommerce, voiceLinkPurchaseTerms, assertVoiceLinkRetailAcceptance, assertVoiceLinkTermsAcceptance, type VoiceLinkOrderQuote } from './commerce';
 
-interface Checkout {
+export interface Checkout {
   id: string; tenant_id: string; telephony_account_id: string; e164: string;
   provider_did_id: string; provider_order_id: string | null; provider_purchase_id: string | null;
+  locked_monthly_minor: string | null; recovery_checked_at: string | null; recovery_code: string | null;
   phone_number_id: string | null; state: string; quote: VoiceLinkOrderQuote | null; expires_at: string | null;
 }
 const commerce = new VoiceLinkCommerce();
@@ -45,7 +47,8 @@ function view(row: Checkout) {
   return { id: row.id, e164: row.e164, state: row.state, quote: row.quote, expiresAt: row.expires_at,
     customerPrice, terms,
     confirmationAvailable: !!customerPrice && row.state === 'quoted' && !!row.expires_at && Date.parse(row.expires_at) > Date.now() && !confirmationBlocker(),
-    confirmationBlocker: confirmationBlocker(), callsActive: false };
+    confirmationBlocker: confirmationBlocker(), recoveryCode: row.recovery_code, recoveryCheckedAt: row.recovery_checked_at,
+    recoveryMessage: checkoutRecoveryMessage(row), callsActive: false };
 }
 export async function voiceLinkCheckoutStatus(tenantId: string) {
   const row = await queryOne<Checkout>("select * from voicelink_checkouts where tenant_id=$1 and state<>'expired' order by created_at desc limit 1", [tenantId]);
@@ -70,7 +73,7 @@ export async function prepareVoiceLinkCheckout(tenantId: string, input: { e164: 
     try {
       const locked = await commerce.lock(selected.id, e164);
       // Persist the provider order before any subsequent read or paid operation.
-      await query('update voicelink_checkouts set provider_order_id=$3,updated_at=now() where tenant_id=$1 and id=$2', [tenantId, row.id, locked.orderId]);
+      await query('update voicelink_checkouts set provider_order_id=$3,locked_monthly_minor=$4,updated_at=now() where tenant_id=$1 and id=$2', [tenantId, row.id, locked.orderId, locked.monthlyMinor]);
       const quote = await commerce.quote(locked.orderId, locked.monthlyMinor);
       const quoted = await queryOne<Checkout>(`update voicelink_checkouts set state='quoted',quote=$3,
         expires_at=created_at+interval '8 minutes',updated_at=now() where tenant_id=$1 and id=$2 returning *`, [tenantId, row.id, JSON.stringify(quote)]);
@@ -81,7 +84,7 @@ export async function prepareVoiceLinkCheckout(tenantId: string, input: { e164: 
     }
   });
 }
-export async function confirmVoiceLinkCheckout(tenantId: string, input: { id: unknown; acceptsAutoRenew: unknown; acceptedChargeMinor: unknown; acceptedTermsReference?: unknown }) {
+export async function confirmVoiceLinkCheckout(tenantId: string, input: { id: unknown; acceptsAutoRenew: unknown; acceptedChargeMinor: unknown; acceptedMonthlyMinor?: unknown; acceptedSetupMinor?: unknown; acceptedTermsReference?: unknown; acceptedReleaseMinor?: unknown; acceptedCommitmentMonths?: unknown }) {
   if (typeof input.id !== 'string' || !/^[a-f0-9-]{36}$/.test(input.id)) throw new HttpError(400, 'Invalid number quote.');
   if (input.acceptsAutoRenew !== true) throw new HttpError(400, 'Confirm the recurring renewal terms before purchasing.');
   return withOperationLock(tenantId, async () => {
@@ -90,10 +93,10 @@ export async function confirmVoiceLinkCheckout(tenantId: string, input: { id: un
     if (row.state !== 'quoted' || !row.quote || !row.provider_order_id) throw new HttpError(409, 'This purchase cannot be repeated. Your operator must review its current state.');
     if (!row.expires_at || Date.parse(row.expires_at) <= Date.now()) throw new HttpError(409, 'This quote expired. Your operator must resolve the draft before a new reservation.');
     const terms = voiceLinkPurchaseTerms();
-    if (input.acceptedTermsReference !== terms.reference) throw new HttpError(409, 'Renewal terms changed. Review the updated terms before confirming.');
+    assertVoiceLinkTermsAcceptance(input, terms);
     if (!voiceLinkProvider.activationReady) throw new HttpError(503, confirmationBlocker()!);
     const retail = customerPrices();
-    if (input.acceptedChargeMinor !== retail.initialChargeMinor) throw new HttpError(409, 'Your app price changed. Review the updated price before confirming.');
+    assertVoiceLinkRetailAcceptance(input, retail);
     const { account, ref } = await eligible(tenantId);
     if (account.id !== row.telephony_account_id) throw new HttpError(409, 'The provider account changed.');
     const fresh = await commerce.quote(row.provider_order_id, row.quote.monthlyMinor);

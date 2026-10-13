@@ -1,6 +1,6 @@
 # VoiceLink integration — authenticated API review
 
-Reviewed 2026-10-12 using the operator-authorized logged-in reseller portal.
+Reviewed 2026-10-13 using the operator-authorized logged-in reseller portal.
 Vobiz remains available separately. VoiceLink media is compatible with the bridge,
 but production calling is still blocked on provider authentication/live-call/hangup
 contracts. Do not set Vobiz signature flags to activate VoiceLink.
@@ -46,7 +46,7 @@ Alpha approval, browser testing and purchase entitlement. The server locks the
 selected DID once and persists the provider order ID before fetching its summary.
 The quote displays provider totals separately from explicit app retail prices.
 No channels are added to a DID order: each client already needs allocated reseller
-capacity. Operators can provision channel capacity in batches; individual DID
+capacity. Operators provision channel capacity through the provider portal; individual DID
 selection and assignment are handled by checkout instead of manual console work.
 
 Paid confirmation uses only the tenant-owned saved order, fresh matching provider
@@ -75,7 +75,7 @@ VOICELINK_CUSTOMER_MONTHLY_PRICE_MINOR=
 VOICELINK_CUSTOMER_SETUP_PRICE_MINOR=
 ```
 
-Only use zero release cost/commitment after provider confirmation. The existing
+Only use zero release cost after provider confirmation. Minimum subscription is one month; a configured commitment below one month is rejected. The existing
 Alpha DID ceilings, parent balance floor, purchase controls and sponsored wallet
 credit also apply. A customer-supplied boolean cannot approve unknown terms or
 activate VoiceLink. This checkout implementation does not resolve the outstanding
@@ -118,7 +118,7 @@ rates and keeps trial client creation unavailable pending provider confirmation.
 The observed profile has zero unallocated channels. No private account identity
 or token is retained as a fixture.
 
-Production reports `network_timeout`. The two VoiceLink profile/inventory routes
+Earlier production requests reported `network_timeout`. On 2026-10-13 the deployed BOM1 profile/inventory routes loaded successfully; the historical cause remains unconfirmed. The two VoiceLink profile/inventory routes
 use per-function `vercel.json` configuration for Mumbai (`bom1`) as a regional connectivity test instead of the default US
 function region. This is not evidence that a regional firewall caused the timeout
 or that the timeout is fixed. Redeploy, check the actual function region, and
@@ -211,3 +211,15 @@ operator review, not hard-coded into the application or published as universal r
 - [Client management](https://app.voicelink.co.in/documentation/client-management/)
 - [WebSocket events](https://app.voicelink.co.in/documentation/websocket-events/)
 - [Bot configuration](https://app.voicelink.co.in/documentation/websocket-bots/)
+
+
+## Recovery review and current deployment
+
+See [13 October release evidence](./voicelink-review-2026-10-13.md) for deployed
+commits, pending migrations, confirmed BOM1 connectivity, lifecycle ownership,
+KYC/commercial discrepancies, remaining live acceptance and scheduler preparation.
+Migration 018 adds durable client/draft correlation and read-only recovery.
+Operators can reconcile exact client ownership or record support-confirmed unpaid
+draft closure. Neither operation activates calls, repeats a purchase/mapping,
+captures a wallet hold, or assumes a missing resource proves a failed purchase.
+The [support request](./voicelink-support-request.md) is prepared but unsent.

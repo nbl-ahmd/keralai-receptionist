@@ -141,3 +141,22 @@ test('VoiceLink plan quotes, inventory and ownership use documented independent 
   assert.equal(rupeesMinor('0.5000'), 50); assert.equal(rupeesMinor('0.0001'), 1);
   assert.throws(() => rupeesMinor('-1')); assert.throws(() => safeProfile({ ...profile, currency: 'USD' }));
 });
+
+test('Observed numeric DID/country-code inventory normalizes strictly and rejects ambiguous data', async () => {
+  const { voiceLinkDidE164, isVoiceLinkIndiaCode } = await import('@/lib/telephony/providers/voicelink/schemas');
+  // Synthetic values with the actual provider response types, no live inventory.
+  assert.equal(voiceLinkDidE164(918012345678), '+918012345678');
+  assert.equal(voiceLinkDidE164('918012345678'), '+918012345678');
+  assert.equal(voiceLinkDidE164('+918012345678'), '+918012345678');
+  for (const value of [8012345678, '08012345678', null, 918012345678.5, Number.MAX_SAFE_INTEGER+1, '+14155550100', '91evil']) assert.throws(()=>voiceLinkDidE164(value));
+  for (const code of [91,'91','+91']) assert.equal(isVoiceLinkIndiaCode(code),true);
+  for (const code of ['IN',1,'+1',null]) assert.equal(isVoiceLinkIndiaCode(code),false);
+  const base=fixture();
+  const client=new VoiceLinkClient('fixture', (async(input,init)=>{
+    const path=new URL(String(input)).pathname;
+    if(path==='/api/v1/reseller/purchase/dids')return Response.json({status:true,data:{data:[{id:7,did_number:918012345678,country_code:91,monthly_rate:299,type_label:'Landline'}],total:25,current_page:1,per_page:25}});
+    return base.client.request(path.replace('/api/v1','')).then(data=>Response.json({status:true,data}));
+  }) as typeof fetch);
+  const inventory=await createVoiceLinkProvider(client).searchAvailableNumbers({});
+  assert.equal(inventory.items[0].e164,'+918012345678');assert.equal(inventory.total,25);
+});

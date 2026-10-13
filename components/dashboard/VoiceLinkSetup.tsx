@@ -15,7 +15,7 @@ type Checkout = { id: string; e164: string; state: string; expiresAt: string | n
   quote: null | { totalMinor: number; monthlyMinor: number; autoRenew: true };
   customerPrice: null | { monthlyMinor: number; setupMinor: number; initialChargeMinor: number };
   terms: null | { reference: string; releaseMinor: number; commitmentMonths: number };
-  confirmationAvailable: boolean; confirmationBlocker: string | null };
+  recoveryMessage?: string | null; recoveryCheckedAt?: string | null; confirmationAvailable: boolean; confirmationBlocker: string | null };
 export default function VoiceLinkSetup() {
   const [status, setStatus] = useState<Status | null>(null);
   const [summary, setSummary] = useState<PhoneSummary | null>(null);
@@ -27,9 +27,9 @@ export default function VoiceLinkSetup() {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [provider, workspace] = await Promise.all([phoneApi('/api/telephony/voicelink'), phoneApi('/api/telephony/account?provider=voicelink')]);
+      const [provider, workspace, saved] = await Promise.all([phoneApi('/api/telephony/voicelink'), phoneApi('/api/telephony/account?provider=voicelink'), phoneApi('/api/telephony/voicelink/checkout')]);
       setStatus(provider); setSummary(workspace); setError(null);
-      setCheckout((await phoneApi('/api/telephony/voicelink/checkout')).checkout);
+      setCheckout(saved.checkout); setAcceptsRenewal(false);
     }
     catch (error) { setError(error instanceof Error ? error.message : 'Unable to load VoiceLink setup.'); }
     finally { setBusy(false); }
@@ -45,7 +45,8 @@ export default function VoiceLinkSetup() {
     actions={<Button variant="outline" size="sm" disabled={busy} onClick={() => void load()}>Refresh</Button>}>
     <div className="space-y-8">
       <PhoneProviderChoice selected="voicelink"/>
-      {error ? <Notice tone="error">{error}</Notice> : !status ? <Skeleton className="h-52"/> : <>
+      {error && <Notice tone="error">{error}</Notice>}
+      {!status ? <Skeleton className="h-52"/> : <>
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-display text-2xl font-semibold">VoiceLink setup</h2>
@@ -64,9 +65,10 @@ export default function VoiceLinkSetup() {
               <p className="text-sm text-muted-foreground">Create a separate customer account for this workspace. VoiceLink will send an email verification link; complete identity checks in its portal.</p>
               <Button disabled={busy || !status.accountCreationAvailable || !summary?.phoneActivationApproved || !summary?.browserTestCompleted}
                 onClick={() => void run(async () => { setSummary(await phoneApi('/api/telephony/account?provider=voicelink', { provider: 'voicelink' })); })}>Create VoiceLink account</Button>
-              {!status.accountCreationAvailable && <p className="text-sm text-muted-foreground">Your operator must verify the reseller account and make a channel available first.</p>}
+              {!status.accountCreationAvailable && <p className="text-sm text-muted-foreground">{status.accountCreationBlocker ?? 'Your operator must verify the reseller account and make a channel available first.'}</p>}
               {summary && (!summary.phoneActivationApproved || !summary.browserTestCompleted) && <p className="text-sm text-muted-foreground">Alpha phone approval and a browser voice test are required before account creation.</p>}
             </> : <>
+              {summary.account.status==='needs_review' && <Notice tone="warning">Account creation needs operator recovery. No second account will be created.</Notice>}
               <p className="text-sm">Identity status: <strong>{summary.account.kycStatus.replaceAll('_', ' ')}</strong></p>
               <p className="text-sm text-muted-foreground">Verify the email sent by VoiceLink, then sign in to its portal for PAN/Aadhaar or business KYC. Use VoiceLink’s password-reset flow if needed. Return here to check verification.</p>
               <div className="flex flex-wrap gap-3">
@@ -108,10 +110,12 @@ export default function VoiceLinkSetup() {
         </section>
         <section className="space-y-4 border-t border-border pt-6">
           <h2 className="font-display text-xl font-semibold">Customer number checkout</h2>
-          <p className="text-sm text-muted-foreground">You choose your number here. The platform purchases it through its reseller account and assigns it to your verified VoiceLink client. Your organiser provisions shared channel capacity separately.</p>
+          <p className="text-sm text-muted-foreground">You choose your number here. The platform purchases it through its reseller account and assigns it to your verified VoiceLink client. Your organiser purchases channel capacity separately; this integration allocates one channel to each client. Sharing channels across clients has not been confirmed.</p>
           {!checkout ? <p className="text-sm text-muted-foreground">Complete client verification, then browse numbers and request a quote. Requesting a quote temporarily reserves the number but does not pay for it.</p> : <>
             <p className="font-semibold tabular-nums">{checkout.e164}</p>
             <p className="text-sm">Checkout status: {checkout.state.replaceAll('_', ' ')}</p>
+            {checkout.recoveryMessage && <Notice tone="info">{checkout.recoveryMessage}</Notice>}
+            {checkout.recoveryCheckedAt && <p className="text-xs text-muted-foreground">Last recovery check: {new Date(checkout.recoveryCheckedAt).toLocaleString()}</p>}
             {checkout.quote && <dl className="grid grid-cols-2 gap-3 text-sm"><dt>Provider order total</dt><dd className="text-right">{money(checkout.quote.totalMinor)}</dd><dt>Provider number rental</dt><dd className="text-right">{money(checkout.quote.monthlyMinor)}/month</dd></dl>}
             <Notice tone="warning">VoiceLink requires automatic renewal. The provider order total is separate from your app’s final plan price.
               {checkout.terms ? ` Reviewed exit fee: ${money(checkout.terms.releaseMinor)}; minimum commitment: ${checkout.terms.commitmentMonths} months. Reference: ${checkout.terms.reference}.` : ' Release fees and minimum commitment are awaiting confirmation.'}</Notice>
@@ -120,7 +124,7 @@ export default function VoiceLinkSetup() {
             <label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={acceptsRenewal} disabled={!checkout.confirmationAvailable || busy}
               onChange={event => setAcceptsRenewal(event.target.checked)}/>I accept the reviewed recurring renewal and exit terms.</label>
             <Button disabled={busy || !checkout.confirmationAvailable || !acceptsRenewal} onClick={() => void run(async () => {
-              const result = await phoneApi('/api/telephony/voicelink/checkout/confirm', { id: checkout.id, acceptsAutoRenew: true, acceptedChargeMinor: checkout.customerPrice?.initialChargeMinor, acceptedTermsReference: checkout.terms?.reference });
+              const result = await phoneApi('/api/telephony/voicelink/checkout/confirm', { id: checkout.id, acceptsAutoRenew: true, acceptedChargeMinor: checkout.customerPrice?.initialChargeMinor, acceptedMonthlyMinor: checkout.customerPrice?.monthlyMinor, acceptedSetupMinor: checkout.customerPrice?.setupMinor, acceptedTermsReference: checkout.terms?.reference, acceptedReleaseMinor: checkout.terms?.releaseMinor, acceptedCommitmentMonths: checkout.terms?.commitmentMonths });
               setCheckout(result.checkout);
             })}>Purchase and assign number</Button>
             <p className="text-xs text-muted-foreground">A paid confirmation is never replayed after an uncertain response. A purchased number becomes callable only after verified assistant routing.</p>

@@ -44,7 +44,9 @@ export async function ensureCustomerAccount(tenantId: string, request: Request, 
       values ($1,$2) returning *`,[tenantId,provider.name]);
     if (!row) throw new HttpError(503, 'Phone setup is unavailable');
     try {
-      const created = await provider.createCustomerAccount(accountInput);
+      const providerUsername = providerName === 'voicelink' ? `ka_${row.id.replaceAll('-', '')}` : undefined;
+      if (providerUsername) await query('update tenant_telephony_accounts set provider_username=$3 where tenant_id=$1 and id=$2', [tenantId,row.id,providerUsername]);
+      const created = await provider.createCustomerAccount({ ...accountInput, providerUsername });
       if (providerName === 'vobiz' && !created.authToken) throw new ProviderError('missing_runtime_credential',true);
       const secret = created.authToken ? encryptSecret(created.authToken) : null;
       await transaction(async (client) => {

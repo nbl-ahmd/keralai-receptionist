@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requirePlatformAdmin,adminAction,adminSnapshot } from '@/lib/telephony/admin';
+import { limitOperation } from '@/lib/telephony/store';
 import { HttpError } from '@/lib/auth/context';
 export const dynamic='force-dynamic';
 export const maxDuration=60;
@@ -12,6 +13,7 @@ async function handle(r:Request,mutate:boolean){
    if((await r.clone().text()).length>8192)throw new HttpError(413,'Request too large');
    const b=await r.json();
    if(typeof b.tenantId!=='string'||!/^[a-f0-9-]{36}$/i.test(b.tenantId)||typeof b.action!=='string'||(b.numberId&&!/^[a-f0-9-]{36}$/i.test(b.numberId)))throw new HttpError(400,'Invalid action');
+   await limitOperation(b.tenantId,`admin:telephony:${actor.id}`,6);
    await adminAction(actor.id,b);
    return NextResponse.json({ok:true},{headers:{'Cache-Control':'no-store'}});
   }

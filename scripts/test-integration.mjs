@@ -74,7 +74,7 @@ try {
    code=await new Promise(resolve=>child.on('exit',resolve));
   }finally{if(server.exitCode===null && server.signalCode===null){server.kill('SIGTERM');await new Promise(resolve=>server.on('exit',resolve));}}
  }else {
-  const child=spawn(process.execPath,['--import','tsx','--test',...(process.argv.includes('--exposure')?['tests/did-exposure.integration.ts']:process.argv.includes('--alpha')?['tests/alpha.integration.ts']:process.argv.includes('--telephony')?['tests/telephony.integration.ts','tests/voicelink.integration.ts']:['tests/telephony.integration.ts','tests/alpha.integration.ts','tests/voicelink.integration.ts'])],{env,stdio:'inherit'});
+  const child=spawn(process.execPath,['--import','tsx','--test',...(process.argv.includes('--voicelink')?['tests/voicelink.integration.ts']:process.argv.includes('--exposure')?['tests/did-exposure.integration.ts']:process.argv.includes('--alpha')?['tests/alpha.integration.ts']:process.argv.includes('--telephony')?['tests/telephony.integration.ts','tests/voicelink.integration.ts']:['tests/telephony.integration.ts','tests/alpha.integration.ts','tests/voicelink.integration.ts'])],{env,stdio:'inherit'});
   code=await new Promise(resolve=>child.on('exit',resolve));
  }
 }finally{

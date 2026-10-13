@@ -11,8 +11,10 @@ export async function domainRoute(request: Request, work: (tenantId: string, pro
     const { tenantId } = await resolveTenantContext(request, mutate ? { roles:['owner','admin'] } : {});
     // Explicit provider requests must never silently fall through to Vobiz.
     const requestedProvider = new URL(request.url).searchParams.get('provider');
-    let provider: PhoneProvider = 'vobiz';
+    const fixedVoiceLink = new URL(request.url).pathname.startsWith('/api/telephony/voicelink');
+    let provider: PhoneProvider = fixedVoiceLink ? 'voicelink' : 'vobiz';
     if (requestedProvider !== null) {
+      if (fixedVoiceLink && requestedProvider !== 'voicelink') throw new HttpError(400, 'Conflicting phone providers');
       if (!isPhoneProvider(requestedProvider)) throw new HttpError(400, 'Unknown phone provider');
       getTelephonyProvider(requestedProvider);
       provider = requestedProvider;
@@ -28,6 +30,7 @@ export async function domainRoute(request: Request, work: (tenantId: string, pro
         let body: unknown;
         try { body = JSON.parse(text); } catch { throw new HttpError(400, 'Invalid JSON'); }
         if (body && typeof body === 'object' && 'provider' in body) {
+          if (fixedVoiceLink && body.provider !== 'voicelink') throw new HttpError(400, 'Conflicting phone providers');
           if (!isPhoneProvider(body.provider)) throw new HttpError(400, 'Unknown phone provider');
           getTelephonyProvider(body.provider);
           if (requestedProvider !== null && requestedProvider !== body.provider) throw new HttpError(400, 'Conflicting phone providers');

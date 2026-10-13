@@ -31,6 +31,7 @@ export function voiceLinkStatus(env: Record<string, string | undefined> = proces
     provider: 'voicelink' as const, activationReady: false, provisioningSupported: false,
     accountSetupSupported: true, numberPurchaseSupported: false,
     configured: !!env.VOICELINK_AUTH_TOKEN?.trim(), accountCreationAvailable: false,
+    accountCreationBlocker: 'Connect the server API before creating an account.' as string | null,
     currentPlan: null as null | { name: string; availableChannels: number; pulseSeconds: number | null },
     quoteSource: 'operator_quote' as 'operator_quote' | 'provider_api',
     status: 'awaiting_media_contract' as const,
@@ -46,6 +47,7 @@ export async function loadVoiceLinkStatus(client = new VoiceLinkClient()) {
   const rate = profile.didRates.find(row => row.typeId === '3');
   return { ...status, currentPlan: { name: profile.planName, availableChannels: profile.availableChannels, pulseSeconds: profile.pulseSeconds },
     accountCreationAvailable: profile.active && profile.verified && profile.availableChannels > 0 && profile.billingMode === 'prepaid' && profile.planType !== 'free',
+    accountCreationBlocker: !profile.active || !profile.verified ? 'The reseller account needs provider verification.' : profile.billingMode !== 'prepaid' ? 'Managed setup requires prepaid reseller billing.' : profile.availableChannels < 1 ? 'Your operator must make an unallocated channel available.' : profile.planType === 'free' ? 'Trial Pack client creation requires confirmation from VoiceLink.' : null,
     quoteSource: 'provider_api' as const,
     quote: rate && ['free', 'limited'].includes(profile.planType) && profile.pulseSeconds === 60 && profile.inboundMinuteMinor !== null && profile.outboundMinuteMinor !== null ? {
       reference: profile.planName, numberMonthlyMinor: rate.monthlyMinor, channelMonthlyMinor: profile.channelMonthlyMinor,

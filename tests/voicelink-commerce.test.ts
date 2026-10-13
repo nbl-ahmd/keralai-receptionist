@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VoiceLinkClient } from '@/lib/telephony/providers/voicelink/client';
-import { VoiceLinkCommerce, voiceLinkPurchaseTerms } from '@/lib/telephony/providers/voicelink/commerce';
+import { VoiceLinkCommerce, voiceLinkPurchaseTerms, assertVoiceLinkRetailAcceptance, assertVoiceLinkTermsAcceptance } from '@/lib/telephony/providers/voicelink/commerce';
 
 test('VoiceLink checkout uses reseller draft, quote, confirmation and explicit client mapping contracts', async () => {
   const paths: string[] = [];
@@ -45,7 +45,23 @@ test('Unknown release fees and commitment never become zero by default', () => {
     for (const key of keys) delete process.env[key];
     assert.throws(voiceLinkPurchaseTerms, /operator confirmation/);
     process.env.VOICELINK_COMMERCIAL_TERMS_REFERENCE = 'fixture-confirmed';
-    process.env.VOICELINK_RELEASE_COST_MINOR = '0'; process.env.VOICELINK_COMMITMENT_MONTHS = '0';
+    process.env.VOICELINK_RELEASE_COST_MINOR = '0'; process.env.VOICELINK_COMMITMENT_MONTHS = '1';
     assert.equal(voiceLinkPurchaseTerms().releaseMinor, 0);
+    process.env.VOICELINK_COMMITMENT_MONTHS = '0';
+    assert.throws(voiceLinkPurchaseTerms, /operator confirmation/);
   } finally { keys.forEach((key, i) => { if (prior[i] === undefined) delete process.env[key]; else process.env[key] = prior[i]; }); }
+});
+
+test('Retail acceptance detects changed recurring/setup split even when the initial total matches', () => {
+  const accepted = { acceptedChargeMinor: 11000, acceptedMonthlyMinor: 10000, acceptedSetupMinor: 1000 };
+  assert.doesNotThrow(() => assertVoiceLinkRetailAcceptance(accepted, { initialChargeMinor: 11000, monthlyMinor: 10000, setupMinor: 1000 }));
+  assert.throws(() => assertVoiceLinkRetailAcceptance(accepted, { initialChargeMinor: 11000, monthlyMinor: 9000, setupMinor: 2000 }), /price changed/);
+  assert.throws(() => assertVoiceLinkRetailAcceptance({ acceptedChargeMinor: 11000 }, { initialChargeMinor: 11000, monthlyMinor: 10000, setupMinor: 1000 }), /price changed/);
+});
+
+test('Renewal acceptance checks actual exit/commitment values even if a reference is reused', () => {
+  const accepted={acceptedTermsReference:'reviewed',acceptedReleaseMinor:0,acceptedCommitmentMonths:1};
+  assert.doesNotThrow(()=>assertVoiceLinkTermsAcceptance(accepted,{reference:'reviewed',releaseMinor:0,commitmentMonths:1}));
+  assert.throws(()=>assertVoiceLinkTermsAcceptance(accepted,{reference:'reviewed',releaseMinor:100,commitmentMonths:1}),/terms changed/);
+  assert.throws(()=>assertVoiceLinkTermsAcceptance(accepted,{reference:'reviewed',releaseMinor:0,commitmentMonths:12}),/terms changed/);
 });

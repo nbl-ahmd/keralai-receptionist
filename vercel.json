@@ -2,6 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "app/api/telephony/voicelink/route.ts": { "regions": ["bom1"] },
-    "app/api/telephony/voicelink/inventory/route.ts": { "regions": ["bom1"] }
+    "app/api/telephony/voicelink/inventory/route.ts": { "regions": ["bom1"] },
+    "app/api/telephony/voicelink/checkout/route.ts": { "regions": ["bom1"] },
+    "app/api/telephony/voicelink/checkout/confirm/route.ts": { "regions": ["bom1"] }
   }
 }

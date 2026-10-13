@@ -35,6 +35,52 @@ capacity. Unknown creation outcomes retain `needs_review`; never blindly recreat
 
 ## Server configuration
 
+### Customer checkout
+
+Migration `017_voicelink_checkout.sql` adds tenant-scoped durable order intents;
+apply it through the migration runner before deploying the checkout UI. No
+production database migration is performed by this code change.
+
+Customers browse inventory and request a one-month DID quote after fresh KYC,
+Alpha approval, browser testing and purchase entitlement. The server locks the
+selected DID once and persists the provider order ID before fetching its summary.
+The quote displays provider totals separately from explicit app retail prices.
+No channels are added to a DID order: each client already needs allocated reseller
+capacity. Operators can provision channel capacity in batches; individual DID
+selection and assignment are handled by checkout instead of manual console work.
+
+Paid confirmation uses only the tenant-owned saved order, fresh matching provider
+pricing, renewal acceptance, reviewed exit/commitment terms, bounded parent funds,
+platform and tenant limits, and an atomic app wallet reservation. Before confirming,
+VoiceLink call readiness must also pass; an inactive unusable auto-renewing number
+must not be bought merely to demonstrate checkout. It currently remains blocked.
+Purchases are confirmed once, then assigned through `map-did` and read back from
+client-owned inventory. Neither purchase nor assignment marks calls active or
+captures the app hold; verified routing remains a separate activation step.
+
+An uncertain draft, paid confirmation or mapping is retained for operator review.
+Double clicks return the existing draft. Confirmation is never replayed for
+`confirming`, `purchase_unknown`, `purchased`, `assignment_unknown` or `assigned`.
+Expired drafts also require operator review; no cancellation API is invented.
+The UI states that requesting a quote temporarily reserves inventory. No draft or
+paid request is made just by opening the page.
+
+Required reviewed commercial variables (blank means unknown):
+
+```dotenv
+VOICELINK_COMMERCIAL_TERMS_REFERENCE=
+VOICELINK_RELEASE_COST_MINOR=
+VOICELINK_COMMITMENT_MONTHS=
+VOICELINK_CUSTOMER_MONTHLY_PRICE_MINOR=
+VOICELINK_CUSTOMER_SETUP_PRICE_MINOR=
+```
+
+Only use zero release cost/commitment after provider confirmation. The existing
+Alpha DID ceilings, parent balance floor, purchase controls and sponsored wallet
+credit also apply. A customer-supplied boolean cannot approve unknown terms or
+activate VoiceLink. This checkout implementation does not resolve the outstanding
+live media/termination/settlement contracts.
+
 ```dotenv
 # From VoiceLink's documented POST /api/v1/auth/login response data.access_token.
 # The logged-in browser cookie is NOT this credential. Do not paste it in chat.

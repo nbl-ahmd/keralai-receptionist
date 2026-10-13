@@ -8,6 +8,7 @@ import { ensureCustomerAccount, syncKyc, phoneSummary } from '@/lib/telephony/se
 import { GET as getAccount } from '@/app/api/telephony/account/route';
 import { POST as startKyc } from '@/app/api/telephony/kyc/session/route';
 import { GET as getStatus } from '@/app/api/telephony/voicelink/route';
+import { prepareVoiceLinkCheckout, confirmVoiceLinkCheckout, voiceLinkCheckoutStatus } from '@/lib/telephony/providers/voicelink/checkout';
 
 test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted KYC preserve Vobiz', async t => {
   assert.match(process.env.TEST_SCHEMA!, /^keralai_test_[a-f0-9]{16}$/);
@@ -38,7 +39,11 @@ test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted
       data = { account_type: 'individual', is_complete: verified, kyc_status: verified ? 1 : 0,
         current_step: verified ? 'complete' : 'pan', pan_verified: verified, aadhaar_verified: verified,
         pan_number: 'PRIVATE-PAN-DO-NOT-STORE', aadhaar_number: 'PRIVATE-AADHAAR-DO-NOT-STORE', documents: { pan: { url: 'https://private.example/identity' } } };
-    } else throw new Error('Unexpected VoiceLink mutation or request');
+    } else if (path === '/reseller/purchase/dids') data = { data: [{ id: 7, did_number: '+918012345678', monthly_rate: 299, type_label: 'Landline', country_code: '+91' }] };
+    else if (path === '/reseller/purchase/lock-did') data = { order_id: 9, locked_dids: [{ did_id: 7, did_number: '+918012345678', monthly_rate: 299 }] };
+    else if (path === '/reseller/purchase/summary/9') data = { order_id: 9, months: 1, did_count: 1, channel_count: 0,
+      total: 299, subtotal: 299, did_cost: 299, channel_cost: 0, discount: 0 };
+    else throw new Error('Unexpected VoiceLink mutation or request');
     return Response.json({ status: true, data });
   };
   t.after(async () => {
@@ -90,4 +95,18 @@ test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted
   assert.equal(status.activationReady, false);
   assert.equal(requests.filter(request => request.method === 'POST').length, 2);
   assert.ok(!requests.some(request => /purchase|routing|websocket-bot|release/.test(request.path)));
+  const quote = await prepareVoiceLinkCheckout(a.tenantId, { e164: '+918012345678', key: 'fixture_checkout_0001' });
+  assert.equal(quote.quote?.totalMinor, 29900); assert.equal(quote.confirmationAvailable, false);
+  const repeated = await prepareVoiceLinkCheckout(a.tenantId, { e164: '+918012345678', key: 'fixture_checkout_0002' });
+  assert.equal(repeated.id, quote.id);
+  assert.equal(requests.filter(request => request.path === '/reseller/purchase/lock-did').length, 1);
+  assert.equal((await voiceLinkCheckoutStatus(b.tenantId)).checkout, null);
+  await assert.rejects(confirmVoiceLinkCheckout(b.tenantId, { id: quote.id, acceptsAutoRenew: true, acceptedChargeMinor: 0 }), /not found/);
+  delete process.env.VOICELINK_COMMERCIAL_TERMS_REFERENCE;
+  await assert.rejects(confirmVoiceLinkCheckout(a.tenantId, { id: quote.id, acceptsAutoRenew: true, acceptedChargeMinor: 0 }), /operator confirmation/);
+  process.env.VOICELINK_COMMERCIAL_TERMS_REFERENCE = 'fixture-confirmed'; process.env.VOICELINK_RELEASE_COST_MINOR = '0'; process.env.VOICELINK_COMMITMENT_MONTHS = '0';
+  await assert.rejects(confirmVoiceLinkCheckout(a.tenantId, { id: quote.id, acceptsAutoRenew: true, acceptedChargeMinor: 0, acceptedTermsReference: 'fixture-confirmed' }), /authentication and controls/);
+  assert.ok(!requests.some(request => request.path === '/reseller/purchase/confirm' || request.path === '/reseller/client/map-did'));
+  assert.equal((await queryOne<{ count: string }>('select count(*) from wallet_holds where tenant_id=$1', [a.tenantId]))!.count, '0');
+  assert.equal((await queryOne<{ count: string }>('select count(*) from phone_numbers where tenant_id=$1', [a.tenantId]))!.count, '0');
 });

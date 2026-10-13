@@ -145,8 +145,8 @@ async function configureNumber(account: TelephonyAccountRow, number: PhoneNumber
     await query("update phone_numbers set status='configuring',provisioning_status='configuring',updated_at=now() where tenant_id=$1 and id=$2",[number.tenant_id,number.id]);
     await provider.configureInboundRouting(ref(account),number.e164,appId);
     if (!await provider.verifyInboundRouting(ref(account),number.e164,appId)) throw new ProviderError('routing_unconfirmed');
-    await syncKyc(number.tenant_id);
-    assertActivationAllowed(await getAccount(number.tenant_id));
+    await syncKyc(number.tenant_id, account.provider);
+    assertActivationAllowed(await getAccount(number.tenant_id, account.provider));
     await requireActiveTenant(number.tenant_id);
     if(!await getTenantGeminiApiKey(number.tenant_id)) throw new HttpError(409,'Connect your AI account before completing phone setup.');
     if (!provider.activationReady) throw new HttpError(503,'Phone activation is awaiting provider readiness checks.');
@@ -208,9 +208,9 @@ async function retryNumberUnlocked(tenantId: string, id: string) {
   if (!getTelephonyProvider(number.provider).activationReady) throw new HttpError(503,'Phone activation is awaiting provider readiness checks.');
   if (number.status==='active') return number;
   if (number.status==='released' || number.status==='releasing' || number.status==='suspended') throw new HttpError(409,'This number cannot be activated. Contact support.');
-  const account = (await getAccount(tenantId))!;
-  await syncKyc(tenantId);
-  assertActivationAllowed(await getAccount(tenantId));
+  const account = (await getAccount(tenantId, number.provider))!;
+  await syncKyc(tenantId, number.provider);
+  assertActivationAllowed(await getAccount(tenantId, number.provider));
   if (['purchase_unknown','purchasing'].includes(number.provisioning_status)) await reconcilePurchase(account,number);
   await configureNumber(account,(await getNumber(tenantId,id))!);
   return getNumber(tenantId,id);
@@ -256,7 +256,8 @@ export async function requestNumberRelease(tenantId:string,id:string,userId:stri
 }
 export async function releaseNumber(tenantId: string, id: string) {
   return withOperationLock(tenantId,async () => {
-    const number = await getNumber(tenantId,id), account = await getAccount(tenantId);
+    const number = await getNumber(tenantId,id);
+    const account = number ? await getAccount(tenantId, number.provider) : null;
     if (!number || !account) throw new HttpError(404,'Phone number not found');
     if (number.status==='released') return;
     if (['purchasing','purchase_unknown'].includes(number.provisioning_status)) throw new HttpError(409,'Confirm the reservation before releasing it.');

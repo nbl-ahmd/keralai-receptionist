@@ -11,17 +11,25 @@ import { money, phoneApi, type PhoneSummary } from '@/lib/telephony/client-ui';
 import type { voiceLinkStatus } from '@/lib/telephony/providers/voicelink/status';
 
 type Status = ReturnType<typeof voiceLinkStatus>;
+type Checkout = { id: string; e164: string; state: string; expiresAt: string | null;
+  quote: null | { totalMinor: number; monthlyMinor: number; autoRenew: true };
+  customerPrice: null | { monthlyMinor: number; setupMinor: number; initialChargeMinor: number };
+  terms: null | { reference: string; releaseMinor: number; commitmentMonths: number };
+  confirmationAvailable: boolean; confirmationBlocker: string | null };
 export default function VoiceLinkSetup() {
   const [status, setStatus] = useState<Status | null>(null);
   const [summary, setSummary] = useState<PhoneSummary | null>(null);
   const [inventory, setInventory] = useState<Array<{ e164: string; region: string; monthlyCost: string; channelMonthlyCost: string }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [checkout, setCheckout] = useState<Checkout | null>(null);
+  const [acceptsRenewal, setAcceptsRenewal] = useState(false);
   const load = useCallback(async () => {
     setBusy(true);
     try {
       const [provider, workspace] = await Promise.all([phoneApi('/api/telephony/voicelink'), phoneApi('/api/telephony/account?provider=voicelink')]);
       setStatus(provider); setSummary(workspace); setError(null);
+      setCheckout((await phoneApi('/api/telephony/voicelink/checkout')).checkout);
     }
     catch (error) { setError(error instanceof Error ? error.message : 'Unable to load VoiceLink setup.'); }
     finally { setBusy(false); }
@@ -92,7 +100,30 @@ export default function VoiceLinkSetup() {
           {status.configured && <>
             <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setInventory((await phoneApi('/api/telephony/voicelink/inventory')).items); })}>Browse VoiceLink numbers</Button>
             <p className="text-xs text-muted-foreground">Browsing is read-only. Number purchases remain unavailable until live calling and commercial terms are verified.</p>
-            <ul className="divide-y divide-border">{inventory.map(item => <li key={item.e164} className="py-3 text-sm"><p className="font-semibold tabular-nums">{item.e164}</p><p className="text-muted-foreground">{item.region} · ₹{item.monthlyCost}/month number + ₹{item.channelMonthlyCost}/month channel</p></li>)}</ul>
+            <ul className="divide-y divide-border">{inventory.map(item => <li key={item.e164} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"><div><p className="font-semibold tabular-nums">{item.e164}</p><p className="text-muted-foreground">{item.region} · ₹{item.monthlyCost}/month number + ₹{item.channelMonthlyCost}/month channel</p></div>
+              <Button variant="outline" disabled={busy || !!checkout || !summary?.account || summary.account.callsBlocked || summary.account.status !== 'active'}
+                onClick={() => void run(async () => { setCheckout(await phoneApi('/api/telephony/voicelink/checkout', { e164: item.e164 }, crypto.randomUUID())); })}>Request number quote</Button>
+            </li>)}</ul>
+          </>}
+        </section>
+        <section className="space-y-4 border-t border-border pt-6">
+          <h2 className="font-display text-xl font-semibold">Customer number checkout</h2>
+          <p className="text-sm text-muted-foreground">You choose your number here. The platform purchases it through its reseller account and assigns it to your verified VoiceLink client. Your organiser provisions shared channel capacity separately.</p>
+          {!checkout ? <p className="text-sm text-muted-foreground">Complete client verification, then browse numbers and request a quote. Requesting a quote temporarily reserves the number but does not pay for it.</p> : <>
+            <p className="font-semibold tabular-nums">{checkout.e164}</p>
+            <p className="text-sm">Checkout status: {checkout.state.replaceAll('_', ' ')}</p>
+            {checkout.quote && <dl className="grid grid-cols-2 gap-3 text-sm"><dt>Provider order total</dt><dd className="text-right">{money(checkout.quote.totalMinor)}</dd><dt>Provider number rental</dt><dd className="text-right">{money(checkout.quote.monthlyMinor)}/month</dd></dl>}
+            <Notice tone="warning">VoiceLink requires automatic renewal. The provider order total is separate from your app’s final plan price.
+              {checkout.terms ? ` Reviewed exit fee: ${money(checkout.terms.releaseMinor)}; minimum commitment: ${checkout.terms.commitmentMonths} months. Reference: ${checkout.terms.reference}.` : ' Release fees and minimum commitment are awaiting confirmation.'}</Notice>
+            {checkout.customerPrice ? <p className="text-sm">Your app price: {money(checkout.customerPrice.monthlyMinor)}/month + {money(checkout.customerPrice.setupMinor)} setup. Initial balance reservation: {money(checkout.customerPrice.initialChargeMinor)}.</p> : <p className="text-sm text-muted-foreground">Your organiser must configure your app plan price before purchase.</p>}
+            {checkout.confirmationBlocker && <p className="text-sm text-muted-foreground">{checkout.confirmationBlocker}</p>}
+            <label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={acceptsRenewal} disabled={!checkout.confirmationAvailable || busy}
+              onChange={event => setAcceptsRenewal(event.target.checked)}/>I accept the reviewed recurring renewal and exit terms.</label>
+            <Button disabled={busy || !checkout.confirmationAvailable || !acceptsRenewal} onClick={() => void run(async () => {
+              const result = await phoneApi('/api/telephony/voicelink/checkout/confirm', { id: checkout.id, acceptsAutoRenew: true, acceptedChargeMinor: checkout.customerPrice?.initialChargeMinor, acceptedTermsReference: checkout.terms?.reference });
+              setCheckout(result.checkout);
+            })}>Purchase and assign number</Button>
+            <p className="text-xs text-muted-foreground">A paid confirmation is never replayed after an uncertain response. A purchased number becomes callable only after verified assistant routing.</p>
           </>}
         </section>
         <section className="space-y-3 border-t border-border pt-6">

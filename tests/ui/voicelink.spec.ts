@@ -63,3 +63,39 @@ test('VoiceLink operator quote includes channel costs and is labelled as an esti
   await expect(page.getByText('Illustrative usage estimate, not a purchase quote.', { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
+
+test('VoiceLink customer can request a quote but cannot pay with unknown exit terms', async ({ page }) => {
+  const email = 'voicelink-checkout-ui@example.test';
+  const signup = await page.request.post('/api/auth/sign-up/email', {
+    headers: { Origin: 'http://localhost:3210', 'x-alpha-invite-code': await fixtureInvite(email) },
+    data: { name: 'Checkout Tester', email, password: 'fixture-password-123' },
+  });
+  expect(signup.ok()).toBeTruthy();
+  await page.request.post('/api/onboarding', { headers: { Origin: 'http://localhost:3210' }, data: { step: 'complete', purpose: 'personal' } });
+  await page.route('**/api/telephony/account?provider=voicelink', route => route.fulfill({ json: {
+    account: { status: 'active', kycStatus: 'verified', callsBlocked: false }, phoneActivationApproved: true, browserTestCompleted: true,
+  } }));
+  await page.route('**/api/telephony/voicelink', route => route.fulfill({ json: { configured: true, quote: null, blockers: [] } }));
+  await page.route('**/api/telephony/voicelink/inventory', route => route.fulfill({ json: {
+    items: [{ e164: '+918012345678', region: 'Synthetic', monthlyCost: '299.00', channelMonthlyCost: '199.00' }],
+  } }));
+  let drafts = 0, confirmations = 0;
+  await page.route('**/api/telephony/voicelink/checkout', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: { checkout: null } });
+    drafts++;
+    expect(route.request().headers()['idempotency-key']).toMatch(/^[a-f0-9-]{36}$/);
+    expect(route.request().postDataJSON().e164).toBe('+918012345678');
+    await route.fulfill({ json: { id: 'fixture-checkout', e164: '+918012345678', state: 'quoted', quote: { totalMinor: 29900, monthlyMinor: 29900 },
+      terms: null, customerPrice: null, confirmationAvailable: false, confirmationBlocker: 'Release terms need confirmation.' } });
+  });
+  await page.route('**/api/telephony/voicelink/checkout/confirm', async route => { confirmations++; await route.abort(); });
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto('/dashboard/phone?provider=voicelink');
+  await page.getByRole('button', { name: 'Browse VoiceLink numbers' }).click();
+  await page.getByRole('button', { name: 'Request number quote' }).click();
+  await expect(page.getByText('Checkout status: quoted')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Purchase and assign number' })).toBeDisabled();
+  await expect(page.getByRole('checkbox')).toBeDisabled();
+  expect(drafts).toBe(1); expect(confirmations).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});

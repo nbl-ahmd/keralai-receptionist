@@ -29,6 +29,7 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
       if (profile.billingMode !== 'prepaid') throw new HttpError(409, 'Managed VoiceLink setup currently requires prepaid reseller billing.');
       if (!profile.active || !profile.verified) throw new HttpError(409, 'The VoiceLink reseller account needs verification.');
       if (profile.availableChannels < 1) throw new HttpError(409, 'Your VoiceLink operator must allocate an available channel before creating a customer account.');
+      if (profile.planType === 'free') throw new HttpError(409, 'VoiceLink trial client provisioning needs provider confirmation before account creation.');
       if (input.name.trim().split(/\s+/).length < 2) throw new HttpError(409, 'Add your full contact name before creating a VoiceLink account.');
     },
     async createCustomerAccount(input) {
@@ -36,6 +37,7 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
       if (profile.billingMode !== 'prepaid') throw new HttpError(409, 'Managed VoiceLink setup currently requires prepaid reseller billing.');
       if (!profile.active || !profile.verified) throw new HttpError(409, 'The VoiceLink reseller account needs verification.');
       if (profile.availableChannels < 1) throw new HttpError(409, 'Your VoiceLink operator must allocate an available channel before creating a customer account.');
+      if (profile.planType === 'free') throw new HttpError(409, 'VoiceLink trial client provisioning needs provider confirmation before account creation.');
       const parts = input.name.trim().split(/\s+/);
       if (parts.length < 2) throw new HttpError(409, 'Add your full contact name before creating a VoiceLink account.');
       const payload = { first_name: parts[0], last_name: parts.slice(1).join(' '), email: input.email,

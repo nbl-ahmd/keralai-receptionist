@@ -4,6 +4,7 @@ import { VoiceLinkClient } from '../lib/telephony/providers/voicelink/client';
 import { createVoiceLinkProvider } from '../lib/telephony/providers/voicelink/provider';
 import { safeKyc, safeProfile, rupeesMinor } from '../lib/telephony/providers/voicelink/schemas';
 import { ProviderError, providerErrorDetails } from '../lib/telephony/errors';
+import { loadVoiceLinkStatus } from '../lib/telephony/providers/voicelink/status';
 
 const profile = { id: 10, is_active: 1, is_verified: true, currency: 'INR', billing_mode: 'prepaid', wallet: { balance: 1400, currency: 'INR' },
   channels: { available: 1 }, active_plan: { plan_name: 'Synthetic plan', plan_type: 'limited', monthly_channel_rate: 199,
@@ -103,6 +104,29 @@ test('VoiceLink account creation allocates existing capacity only and returns no
   const empty = fixture({ '/reseller/profile': { ...profile, channels: { available: 0 } } });
   await assert.rejects(createVoiceLinkProvider(empty.client).preflightCustomerAccount!({ name: 'Test Customer', email: 'customer@example.test' }), /channel/);
   assert.ok(empty.calls.every(call => call.method === 'GET'));
+});
+test('VoiceLink observed free trial profile displays known rates without enabling client provisioning', async () => {
+  const trial = { ...profile, channels: { available: 0 }, active_plan: { ...profile.active_plan, plan_type: 'free', plan_name: 'Trial Pack' } };
+  assert.equal(safeProfile(trial).planType, 'free');
+  const { client } = fixture({ '/reseller/profile': trial });
+  const previous = process.env.VOICELINK_AUTH_TOKEN;
+  process.env.VOICELINK_AUTH_TOKEN = 'synthetic-token';
+  try {
+    const result = await loadVoiceLinkStatus(client);
+    assert.equal(result.currentPlan?.name, 'Trial Pack');
+    assert.equal(result.currentPlan?.availableChannels, 0);
+    assert.equal(result.quote?.numberMonthlyMinor, 29900);
+    assert.equal(result.quote?.channelMonthlyMinor, 19900);
+    assert.equal(result.accountCreationAvailable, false);
+    assert.equal(result.activationReady, false);
+  } finally {
+    if (previous === undefined) delete process.env.VOICELINK_AUTH_TOKEN;
+    else process.env.VOICELINK_AUTH_TOKEN = previous;
+  }
+  const provider = createVoiceLinkProvider(fixture({ '/reseller/profile': { ...trial, channels: { available: 1 } } }).client);
+  await assert.rejects(provider.preflightCustomerAccount!({ name: 'Test Customer', email: 'test@example.test' }), /trial/);
+  await assert.rejects(provider.createCustomerAccount({ name: 'Test Customer', email: 'test@example.test' }), /trial/);
+  assert.throws(() => safeProfile({ ...trial, active_plan: { ...trial.active_plan, plan_type: 'unexpected' } }));
 });
 test('VoiceLink plan quotes, inventory and ownership use documented independent number/channel amounts', async () => {
   const { client, calls } = fixture(); const provider = createVoiceLinkProvider(client);

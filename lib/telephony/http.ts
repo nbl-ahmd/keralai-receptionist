@@ -46,6 +46,7 @@ export async function domainRoute(request: Request, work: (tenantId: string, pro
     const requestId=crypto.randomUUID();
     // Provider/DB payloads are never surfaced or logged here.
     console.warn(JSON.stringify({ event:'telephony.request.failed',status,path:new URL(request.url).pathname,requestId,
+      ...(/^[a-z]{3}\d$/.test(process.env.VERCEL_REGION ?? '') ? { region: process.env.VERCEL_REGION } : {}),
       ...(error instanceof ProviderError?providerErrorDetails(error):{}) }));
     return NextResponse.json({ error:error instanceof HttpError || error instanceof AlphaAccessError ? error.message:'Unable to complete phone setup. Please try again.',requestId },
       { status,headers:{'Cache-Control':'private, no-store'} });

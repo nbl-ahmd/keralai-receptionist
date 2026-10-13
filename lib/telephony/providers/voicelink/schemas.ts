@@ -15,7 +15,7 @@ export function safeProfile(raw: VoiceLinkData) {
   const wallet = record(raw.wallet), channels = record(raw.channels), plan = record(raw.active_plan);
   if (raw.currency !== 'INR' || wallet.currency !== 'INR' || !Array.isArray(plan.did_type_rates) ||
       !Number.isSafeInteger(channels.available) || Number(channels.available) < 0 ||
-      !['limited', 'unlimited'].includes(String(plan.plan_type)) || !['prepaid', 'postpaid'].includes(String(raw.billing_mode))) throw new ProviderError('invalid_response');
+      !['free', 'limited', 'unlimited'].includes(String(plan.plan_type)) || !['prepaid', 'postpaid'].includes(String(raw.billing_mode))) throw new ProviderError('invalid_response');
   return { id: providerId(raw.id), active: raw.is_active === 1, verified: raw.is_verified === true,
     balanceMinor: rupeesMinor(wallet.balance), billingMode: String(raw.billing_mode), availableChannels: Number(channels.available),
     planName: typeof plan.plan_name === 'string' ? plan.plan_name.slice(0, 100) : 'VoiceLink plan',

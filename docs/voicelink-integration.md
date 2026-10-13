@@ -65,6 +65,20 @@ messages:
 
 The generic fetch error alone does not prove a token problem or firewall block.
 
+On 2026-10-13 the user-supplied token in the official browser playground returned
+HTTP 200 for the reseller profile. The actual trial schema uses `plan_type: free`
+with explicit per-minute and recurring rates; the adapter now displays those
+rates and keeps trial client creation unavailable pending provider confirmation.
+The observed profile has zero unallocated channels. No private account identity
+or token is retained as a fixture.
+
+Production reports `network_timeout`. The two VoiceLink profile/inventory routes
+use per-function `vercel.json` configuration for Mumbai (`bom1`) as a regional connectivity test instead of the default US
+function region. This is not evidence that a regional firewall caused the timeout
+or that the timeout is fixed. Redeploy, check the actual function region, and
+repeat the authenticated status GET. If it still times out, provider network
+access clarification is needed. Failure logs include only a validated region ID.
+
 A read-only profile test in the logged-in portal's API playground returned 401
 without a Bearer token. No credential was extracted from browser cookies/storage,
 no API token was generated and no live configuration was changed.

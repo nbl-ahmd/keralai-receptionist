@@ -45,9 +45,9 @@ export async function loadVoiceLinkStatus(client = new VoiceLinkClient()) {
   const profile = safeProfile(await client.profile());
   const rate = profile.didRates.find(row => row.typeId === '3');
   return { ...status, currentPlan: { name: profile.planName, availableChannels: profile.availableChannels, pulseSeconds: profile.pulseSeconds },
-    accountCreationAvailable: profile.active && profile.verified && profile.availableChannels > 0 && profile.billingMode === 'prepaid',
+    accountCreationAvailable: profile.active && profile.verified && profile.availableChannels > 0 && profile.billingMode === 'prepaid' && profile.planType !== 'free',
     quoteSource: 'provider_api' as const,
-    quote: rate && profile.planType === 'limited' && profile.pulseSeconds === 60 && profile.inboundMinuteMinor !== null && profile.outboundMinuteMinor !== null ? {
+    quote: rate && ['free', 'limited'].includes(profile.planType) && profile.pulseSeconds === 60 && profile.inboundMinuteMinor !== null && profile.outboundMinuteMinor !== null ? {
       reference: profile.planName, numberMonthlyMinor: rate.monthlyMinor, channelMonthlyMinor: profile.channelMonthlyMinor,
       inboundMinuteMinor: profile.inboundMinuteMinor, outboundMinuteMinor: profile.outboundMinuteMinor,
     } : null };

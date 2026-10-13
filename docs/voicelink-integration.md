@@ -114,8 +114,11 @@ The generic fetch error alone does not prove a token problem or firewall block.
 On 2026-10-13 the user-supplied token in the official browser playground returned
 HTTP 200 for the reseller profile. The actual trial schema uses `plan_type: free`
 with explicit per-minute and recurring rates; the adapter now displays those
-rates and keeps trial client creation unavailable pending provider confirmation.
-The observed profile has zero unallocated channels. No private account identity
+rates. A later portal observation confirms an active verified client under the
+Trial Pack with allocated capacity. Account setup now follows reseller verification,
+prepaid status, available capacity and valid rates rather than rejecting `free`.
+The initial observed profile had zero unallocated channels; later reads showed
+capacity after operator provisioning. No private account identity
 or token is retained as a fixture.
 
 Earlier production requests reported `network_timeout`. On 2026-10-13 the deployed BOM1 profile/inventory routes loaded successfully; the historical cause remains unconfirmed. The two VoiceLink profile/inventory routes
@@ -223,3 +226,13 @@ Operators can reconcile exact client ownership or record support-confirmed unpai
 draft closure. Neither operation activates calls, repeats a purchase/mapping,
 captures a wallet hold, or assumes a missing resource proves a failed purchase.
 The [support request](./voicelink-support-request.md) is prepared but unsent.
+
+Platform operators can explicitly connect an existing portal-created client from
+administration. This uses authenticated reseller listing, requires an active INR
+client whose email matches a workspace owner, and rejects an already claimed
+client or an existing conflicting account intent. Operator reason/reference and
+requested/completed audit entries are required. Linking changes local identifiers
+only; it does not buy/allocate capacity, overwrite Vobiz, move wallet funds or
+activate calls. KYC starts blocked and must be freshly polled afterward. Customers
+cannot supply arbitrary client IDs through their setup route. Duplicate-email
+preflight prevents a second provider creation attempt before recording an intent.

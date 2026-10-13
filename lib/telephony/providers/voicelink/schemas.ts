@@ -28,6 +28,15 @@ export function safeProfile(raw: VoiceLinkData) {
     }; }),
   };
 }
+/** Account setup and live call activation have separate readiness conditions. */
+export function accountCreationBlocker(profile: ReturnType<typeof safeProfile>): string | null {
+  if (!profile.active || !profile.verified) return 'The VoiceLink reseller account needs verification.';
+  if (profile.billingMode !== 'prepaid') return 'Managed VoiceLink setup requires prepaid reseller billing.';
+  if (profile.availableChannels < 1) return 'Your operator must make an unallocated channel available.';
+  if (profile.planType !== 'unlimited' && (!profile.pulseSeconds || profile.inboundMinuteMinor === null || profile.outboundMinuteMinor === null))
+    return 'VoiceLink client rates and billing pulse need confirmation.';
+  return null;
+}
 /** Drops document numbers, URLs, file names, addresses and all identity attributes. */
 export function safeKyc(raw: VoiceLinkData): KycStatus {
   if (!['individual', 'business'].includes(String(raw.account_type)) || typeof raw.is_complete !== 'boolean' ||

@@ -1,7 +1,8 @@
 import { query, queryOne } from '@/db/client';
 import { transaction } from '@/db/transaction';
 import { HttpError } from '@/lib/auth/context';
-import { getAccount, withOperationLock } from '../../store';
+import { getAccount, withOperationLock, requireActiveTenant } from '../../store';
+import { requirePhoneSetupEligibility } from '../../service';
 import { ProviderError } from '../../errors';
 import { VoiceLinkClient, providerId } from './client';
 import { safeProfile } from './schemas';
@@ -92,6 +93,39 @@ export async function reconcileVoiceLinkAccount(tenantId: string, client = new V
       kyc_verified_at=null,error_code=null,updated_at=now() where tenant_id=$1 and id=$2 and provider_auth_id is null`,
       [tenantId,account.id,id,`${profile.id}:${id}`,candidate.is_active === 1 ? 'active' : 'suspended']);
     return { recovered: true };
+  });
+}
+
+/** Explicit platform-operator import for a client created in the provider portal.
+ * Never called by self-service customer routes or inferred from a typed client ID.
+ */
+export async function linkExistingVoiceLinkClient(tenantId: string, clientId: unknown, client = new VoiceLinkClient()) {
+  const id = providerId(clientId);
+  await requireActiveTenant(tenantId);
+  await requirePhoneSetupEligibility(tenantId);
+  return withOperationLock(tenantId, async () => {
+    const profile = safeProfile(await client.profile());
+    if (!profile.active || !profile.verified) throw new HttpError(409, 'The reseller account needs verification.');
+    const existing = await getAccount(tenantId, 'voicelink');
+    if (existing) {
+      if (existing.provider_auth_id === id && existing.provider_account_id === `${profile.id}:${id}`) return { linked: true };
+      throw new HttpError(409, 'This workspace already has a VoiceLink account intent. Recover that original account instead.');
+    }
+    const matches = (await client.clients()).filter(row => providerId(row.id) === id);
+    if (matches.length !== 1) throw new HttpError(409, 'That client is not uniquely owned by the configured reseller.');
+    const candidate = matches[0];
+    if (candidate.currency !== 'INR' || candidate.is_active !== 1 || typeof candidate.email !== 'string')
+      throw new HttpError(409, 'The existing client must be active with valid INR account details.');
+    const owner = await queryOne(`select m.user_id from tenant_memberships m join "user" u on u.id=m.user_id
+      where m.tenant_id=$1 and m.role='owner' and lower(u.email)=lower($2) limit 1`, [tenantId, candidate.email.trim()]);
+    if (!owner) throw new HttpError(409, 'The VoiceLink client email does not match a workspace owner.');
+    const claimed = await queryOne('select tenant_id from tenant_telephony_accounts where provider=$1 and provider_auth_id=$2', ['voicelink', id]);
+    if (claimed) throw new HttpError(409, 'That provider client is already linked to a workspace.');
+    await query(`insert into tenant_telephony_accounts(tenant_id,provider,provider_auth_id,provider_account_id,provider_username,status)
+      values($1,'voicelink',$2,$3,$4,'active')`, [tenantId,id,`${profile.id}:${id}`,typeof candidate.username === 'string' ? candidate.username : null]);
+    // The insert starts KYC blocked. A subsequent fresh poll establishes status.
+    // Import never changes wallets, channels, DID ownership or call activation.
+    return { linked: true };
   });
 }
 

@@ -1,5 +1,5 @@
 import { VoiceLinkClient } from './client';
-import { safeProfile } from './schemas';
+import { safeProfile, accountCreationBlocker } from './schemas';
 
 /** Authenticated Developer Hub contracts are implemented for account/KYC reads.
  * Media authentication, live lookup and carrier hangup still require confirmation.
@@ -46,8 +46,8 @@ export async function loadVoiceLinkStatus(client = new VoiceLinkClient()) {
   const profile = safeProfile(await client.profile());
   const rate = profile.didRates.find(row => row.typeId === '3');
   return { ...status, currentPlan: { name: profile.planName, availableChannels: profile.availableChannels, pulseSeconds: profile.pulseSeconds },
-    accountCreationAvailable: profile.active && profile.verified && profile.availableChannels > 0 && profile.billingMode === 'prepaid' && profile.planType !== 'free',
-    accountCreationBlocker: !profile.active || !profile.verified ? 'The reseller account needs provider verification.' : profile.billingMode !== 'prepaid' ? 'Managed setup requires prepaid reseller billing.' : profile.availableChannels < 1 ? 'Your operator must make an unallocated channel available.' : profile.planType === 'free' ? 'Trial Pack client creation requires confirmation from VoiceLink.' : null,
+    accountCreationAvailable: accountCreationBlocker(profile) === null,
+    accountCreationBlocker: accountCreationBlocker(profile),
     quoteSource: 'provider_api' as const,
     quote: rate && ['free', 'limited'].includes(profile.planType) && profile.pulseSeconds === 60 && profile.inboundMinuteMinor !== null && profile.outboundMinuteMinor !== null ? {
       reference: profile.planName, numberMonthlyMinor: rate.monthlyMinor, channelMonthlyMinor: profile.channelMonthlyMinor,

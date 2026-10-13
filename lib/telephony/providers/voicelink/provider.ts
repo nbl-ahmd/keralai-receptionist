@@ -3,7 +3,7 @@ import { HttpError } from '@/lib/auth/context';
 import type { AccountRef, AvailableNumber, TelephonyProvider } from '../../types';
 import { ProviderError } from '../../errors';
 import { VoiceLinkClient, providerId, record } from './client';
-import { safeKyc, safeProfile, rupeesMinor, voiceLinkDidE164, isVoiceLinkIndiaCode } from './schemas';
+import { safeKyc, safeProfile, rupeesMinor, voiceLinkDidE164, isVoiceLinkIndiaCode, accountCreationBlocker } from './schemas';
 
 /** API operations confirmed in authenticated Developer Hub on 2026-10-12.
  * Live media admission/hangup is not documented: never treat portal login or a
@@ -25,18 +25,16 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
     get activationReady() { return false; },
     async preflightCustomerAccount(input) {
       const profile = safeProfile(await client.profile());
-      if (profile.billingMode !== 'prepaid') throw new HttpError(409, 'Managed VoiceLink setup currently requires prepaid reseller billing.');
-      if (!profile.active || !profile.verified) throw new HttpError(409, 'The VoiceLink reseller account needs verification.');
-      if (profile.availableChannels < 1) throw new HttpError(409, 'Your VoiceLink operator must allocate an available channel before creating a customer account.');
-      if (profile.planType === 'free') throw new HttpError(409, 'VoiceLink trial client provisioning needs provider confirmation before account creation.');
+      const blocker = accountCreationBlocker(profile);
+      if (blocker) throw new HttpError(409, blocker);
       if (input.name.trim().split(/\s+/).length < 2) throw new HttpError(409, 'Add your full contact name before creating a VoiceLink account.');
+      if ((await client.clients()).some(row => typeof row.email === 'string' && row.email.toLowerCase() === input.email.trim().toLowerCase()))
+        throw new HttpError(409, 'VoiceLink already has a client for your email. Ask your operator to connect the existing client instead of creating another.');
     },
     async createCustomerAccount(input) {
       const profile = safeProfile(await client.profile());
-      if (profile.billingMode !== 'prepaid') throw new HttpError(409, 'Managed VoiceLink setup currently requires prepaid reseller billing.');
-      if (!profile.active || !profile.verified) throw new HttpError(409, 'The VoiceLink reseller account needs verification.');
-      if (profile.availableChannels < 1) throw new HttpError(409, 'Your VoiceLink operator must allocate an available channel before creating a customer account.');
-      if (profile.planType === 'free') throw new HttpError(409, 'VoiceLink trial client provisioning needs provider confirmation before account creation.');
+      const blocker = accountCreationBlocker(profile);
+      if (blocker) throw new HttpError(409, blocker);
       const parts = input.name.trim().split(/\s+/);
       if (parts.length < 2) throw new HttpError(409, 'Add your full contact name before creating a VoiceLink account.');
       const payload = { first_name: parts[0], last_name: parts.slice(1).join(' '), email: input.email,
@@ -48,7 +46,7 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
           pulse_seconds: profile.pulseSeconds, inbound_rate: (profile.inboundMinuteMinor ?? 0) / 100,
           outbound_rate: (profile.outboundMinuteMinor ?? 0) / 100,
         }) };
-      if (profile.planType === 'limited' && (!profile.pulseSeconds || profile.inboundMinuteMinor === null || profile.outboundMinuteMinor === null)) throw new ProviderError('invalid_price');
+      if (profile.planType !== 'unlimited' && (!profile.pulseSeconds || profile.inboundMinuteMinor === null || profile.outboundMinuteMinor === null)) throw new ProviderError('invalid_price');
       const data = record(await client.request('/reseller/client/create', { method: 'POST', body: payload, operation: 'create_account' }));
       const id = providerId(data.client_id);
       // Password is sent only to VoiceLink, never retained or returned. Customers

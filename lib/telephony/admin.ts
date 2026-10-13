@@ -3,7 +3,7 @@ import { query,queryOne } from '@/db/client';
 import { transaction } from '@/db/transaction';
 import { getAccount,getNumber,wallet,initWallet,withOperationLock } from './store';
 import { getTelephonyProvider } from './provider';
-import { reconcileVoiceLinkCheckout,reconcileVoiceLinkAccount,closeVoiceLinkDraft } from './providers/voicelink/recovery';
+import { reconcileVoiceLinkCheckout,reconcileVoiceLinkAccount,closeVoiceLinkDraft,linkExistingVoiceLinkClient } from './providers/voicelink/recovery';
 import { isPhoneProvider } from './provider-options';
 import { syncKyc,retryNumber } from './service';
 import { assertActivationAllowed,operationKey } from './policy';
@@ -28,7 +28,7 @@ export async function adminSnapshot(page=1) {
     left join phone_numbers n on n.tenant_id=t.id and n.telephony_account_id=a.id and n.status<>'released'
     order by t.created_at desc,a.provider`,[(page-1)*25]);
 }
-export async function adminAction(actorId:string,input:{tenantId:string;action:string;provider?:string;numberId?:string;amountMinor?:number;reference?:string;providerDraftClosed?:boolean;reason?:string}) {
+export async function adminAction(actorId:string,input:{tenantId:string;action:string;provider?:string;numberId?:string;providerClientId?:string;amountMinor?:number;reference?:string;providerDraftClosed?:boolean;reason?:string}) {
   const provider=input.provider??'vobiz';
   if(!isPhoneProvider(provider))throw new HttpError(400,'Unknown phone provider');
   if(input.reference!==undefined && (typeof input.reference!=='string'||input.reference.length>100))throw new HttpError(400,'Invalid operator reference');
@@ -38,6 +38,10 @@ export async function adminAction(actorId:string,input:{tenantId:string;action:s
   await query('insert into platform_audit_events(actor_id,tenant_id,action,resource_id,reason,reference) values($1,$2,$3,$4,$5,$6)',
     [actorId,input.tenantId,`${input.action}.requested`,input.numberId??null,input.reason.trim(),input.reference??null]);
   if(input.action==='sync_kyc') await syncKyc(input.tenantId,provider);
+  else if(input.action==='link_voicelink_client' && provider==='voicelink') {
+    operationKey(input.reference);
+    await linkExistingVoiceLinkClient(input.tenantId,input.providerClientId);
+  }
   else if(input.action==='reconcile_voicelink_checkout' && provider==='voicelink') await reconcileVoiceLinkCheckout(input.tenantId);
   else if(input.action==='reconcile_voicelink_account' && provider==='voicelink') await reconcileVoiceLinkAccount(input.tenantId);
   else if(input.action==='close_voicelink_draft' && provider==='voicelink') await closeVoiceLinkDraft(input.tenantId,input.reference,input.providerDraftClosed);

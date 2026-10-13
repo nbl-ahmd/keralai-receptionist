@@ -13,7 +13,8 @@ import AssistantHomeStatus from "@/components/dashboard/AssistantHomeStatus";
 import InstructionsSection from "@/components/dashboard/InstructionsSection";
 import KnowledgeSection from "@/components/dashboard/KnowledgeSection";
 import OverviewSection from "@/components/dashboard/OverviewSection";
-import VoiceConsole from "@/components/dashboard/VoiceConsole";
+import dynamic from "next/dynamic";
+const VoiceConsole = dynamic(() => import("@/components/dashboard/VoiceConsole"), { ssr: false });
 import VoiceSection from "@/components/dashboard/VoiceSection";
 import { toDate } from "@/components/dashboard/shared";
 import { Button } from "@/components/ui/button";
@@ -150,20 +151,22 @@ export default function DashboardPage() {
   }, [router]);
 
   // ── Data loading ──────────────────────────────────────────────────────────
+  const loadingRef = useRef<Promise<void> | null>(null);
   const loadAll = useCallback(
-    async (silent = false) => {
+    async (silent = false, activityOnly = false) => {
+      while (loadingRef.current) {
+        if (activityOnly) return;
+        await loadingRef.current;
+      }
+      let release = () => {};
+      loadingRef.current = new Promise<void>(resolve => { release = resolve; });
       if (!silent) setIsRefreshing(true);
       try {
-        const [profileRes, knowledgeRes, appointmentsRes, callsRes, metricsRes, contactsRes, inboxRes] =
-          await Promise.all([
-            fetch("/api/company-profile", { cache: "no-store" }).then((r) => r.json()),
-            fetch("/api/knowledge", { cache: "no-store" }).then((r) => r.json()),
-            fetch("/api/appointments", { cache: "no-store" }).then((r) => r.json()),
-            fetch("/api/calls", { cache: "no-store" }).then((r) => r.json()),
-            fetch("/api/metrics", { cache: "no-store" }).then((r) => r.json()),
-            fetch("/api/contacts", { cache: "no-store" }).then((r) => r.json()),
-            fetch("/api/inbox", { cache: "no-store" }).then((r) => r.json()),
-          ]);
+        const response = await fetch(activityOnly ? "/api/dashboard?scope=activity" : "/api/dashboard", { cache: "no-store" });
+        if (!response.ok) throw new Error("Dashboard request failed");
+        const snapshot = await response.json();
+        const { profile: profileRes, knowledge: knowledgeRes, appointments: appointmentsRes,
+          calls: callsRes, settings: metricsRes, contacts: contactsRes, inbox: inboxRes } = snapshot;
 
         if (profileRes && !profileRes.error && !profileDirtyRef.current) {
           setProfile({ ...EMPTY_PROFILE, ...profileRes });
@@ -189,6 +192,8 @@ export default function DashboardPage() {
         console.error("Failed to load dashboard data", error);
         if (!silent) toast({ message: "Could not load dashboard data.", tone: "error" });
       } finally {
+        loadingRef.current = null;
+        release();
         setIsLoading(false);
         setIsRefreshing(false);
       }
@@ -202,8 +207,10 @@ export default function DashboardPage() {
 
   // Poll for new calls/messages so the dashboard stays current.
   useEffect(() => {
-    const interval = window.setInterval(() => loadAll(true), 10000);
-    return () => window.clearInterval(interval);
+    const refreshVisible = () => { if (document.visibilityState === "visible") void loadAll(true, true); };
+    const interval = window.setInterval(refreshVisible, 20000);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", refreshVisible); };
   }, [loadAll]);
 
   useEffect(() => {
@@ -678,7 +685,7 @@ export default function DashboardPage() {
         )}
       </AppShell>
 
-      <VoiceConsole
+      {showVoiceConsole && <VoiceConsole
         open={showVoiceConsole}
         onClose={() => {
           setShowVoiceConsole(false);
@@ -689,7 +696,7 @@ export default function DashboardPage() {
         onBookAppointment={handleBookedFromCall}
         autoConnect={voiceAutoConnect}
         onAutoConnectHandled={() => setVoiceAutoConnect(false)}
-      />
+      />}
     </>
   );
 }

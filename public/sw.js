@@ -19,8 +19,9 @@ const STATIC_CACHE = "keralai-static-v2";
 const STATIC_PREFIXES = ["/_next/static/", "/icons/"];
 
 self.addEventListener("install", () => {
-  // Activate as soon as the page asks us to, via SKIP_WAITING.
-  self.skipWaiting();
+  // A first install can claim static assets without reloading the page.
+  // Subsequent updates wait for the user's explicit Reload action.
+  if (!self.registration.active) self.skipWaiting();
 });
 
 self.addEventListener("message", (event) => {

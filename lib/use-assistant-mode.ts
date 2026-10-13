@@ -92,8 +92,10 @@ export function useAssistantMode(pollMs = 30000): AssistantModeState {
   useEffect(() => {
     void reload();
     if (!pollMs) return;
-    const interval = window.setInterval(() => void reload(), pollMs);
-    return () => window.clearInterval(interval);
+    const refreshVisible = () => { if (document.visibilityState === "visible") void reload(); };
+    const interval = window.setInterval(refreshVisible, pollMs);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", refreshVisible); };
   }, [reload, pollMs]);
 
   const setMode = useCallback(

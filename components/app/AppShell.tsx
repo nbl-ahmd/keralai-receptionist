@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import type { Route } from "next";
-import { LogOut, RefreshCw } from "lucide-react";
+import { LogOut, RefreshCw, ShieldCheck } from "lucide-react";
+import { useWorkspaceAccess } from './WorkspaceAccess';
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -130,6 +131,7 @@ export function AppShellFrame({
   children,
 }: AppShellProps) {
   const { counts } = useAttention();
+  const access = useWorkspaceAccess();
 
   return (
     <div className="min-h-app bg-background">
@@ -147,6 +149,8 @@ export function AppShellFrame({
               </p>
               <div className="mt-2 space-y-0.5">
                 {NAV_ITEMS.map((item) => (
+                  routeMode ? <SidebarLink key={item.key} href={`/dashboard#${item.key}`} active={activeTab===item.key}
+                    icon={item.icon} label={item.label} description={item.description} badge={item.key==='calls'?counts.missedCalls:0}/> :
                   <button
                     key={item.key}
                     type="button"
@@ -201,6 +205,8 @@ export function AppShellFrame({
               </div>
             </div>
           </nav>
+
+          {access?.isAdmin && <SidebarLink href="/admin" active={false} icon={ShieldCheck} label="Administration" description="Platform controls and workspaces"/>}
 
           {status && (
             <div className="mt-4 rounded-xl border border-border bg-surface-2 p-3">
@@ -275,6 +281,7 @@ export function AppShellFrame({
                   </Button>
                 )}
                 <NotificationBell />
+                {access?.isAdmin && <Button asChild variant="ghost" size="icon" className="lg:hidden"><Link href="/admin" aria-label="Administration" title="Administration"><ShieldCheck className="h-5 w-5"/></Link></Button>}
                 {actions}
                 {onSignOut && (
                   <Button

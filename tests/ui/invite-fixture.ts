@@ -12,3 +12,8 @@ export async function fixtureInvite(email?:string,options:{expired?:boolean;cons
   return token;
  }finally{await pool.end();}
 }
+
+export async function loginOperator(page: import('@playwright/test').Page) {
+ const response=await page.request.post('/api/auth/sign-in/email',{headers:{Origin:'http://localhost:3210'},data:{email:'platform-operator@example.test',password:'fixture-operator-password-123'}});
+ if(!response.ok())throw new Error('Operator fixture login failed');
+}

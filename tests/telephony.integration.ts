@@ -12,6 +12,7 @@ import {ensureCustomerAccount,syncKyc,startKyc,purchaseNumber,retryNumber,releas
 import {getNumber,initWallet,wallet} from '@/lib/telephony/store';
 import {GET as phoneAccountGet} from '@/app/api/telephony/account/route';
 import {GET as knowledgeGet} from '@/app/api/knowledge/route';
+import {GET as dashboardGet} from '@/app/api/dashboard/route';
 import {GET as profileGet} from '@/app/api/company-profile/route';
 import {GET as callsGet} from '@/app/api/calls/route';
 import {GET as secretsGet} from '@/app/api/tenant/secrets/route';
@@ -81,6 +82,11 @@ test('isolated database: auth, KYC gates, provision retries, signed routing and 
  await query("update company_profile set name='Private A Profile' where tenant_id=$1",[a.tenantId]);
  await query("insert into knowledge_items(tenant_id,type,title,content) values($1,'text','Private A Knowledge','Only tenant A knows this')",[a.tenantId]);
  await query("insert into calls(tenant_id,call_sid,caller) values($1,'private-a-call','Private A Caller')",[a.tenantId]);
+ const aSnapshot=await dashboardGet(new Request(process.env.BETTER_AUTH_URL+'/api/dashboard',{headers:{cookie:a.cookie}}));
+ const bSnapshot=await dashboardGet(new Request(process.env.BETTER_AUTH_URL+'/api/dashboard',{headers:{cookie:b.cookie,'x-tenant-id':a.tenantId}}));
+ assert.equal(aSnapshot.status,200);assert.equal(bSnapshot.status,200);
+ assert.match(JSON.stringify(await aSnapshot.json()),/Private A Knowledge/);
+ assert.ok(!JSON.stringify(await bSnapshot.json()).includes('Private A'),'aggregate isolates profile, knowledge and calls');
  await saveTenantSecret({tenantId:a.tenantId,provider:'gemini',keyName:'api_key',value:'private-gemini-A'});
  // An unreadable credential must not crash the phone summary or become usable.
  await query("update tenant_secrets set auth_tag=$2 where tenant_id=$1 and provider='gemini' and key_name='api_key'",[a.tenantId,Buffer.alloc(16).toString('base64')]);

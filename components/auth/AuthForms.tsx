@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -12,14 +12,9 @@ import { Label } from "@/components/ui/field";
 import { Notice } from "@/components/ui/notice";
 import { signIn, signUp } from "@/lib/auth/client";
 
-/** Only allow same-origin relative redirects, so `?next=` can't be abused. */
-function safeNext(value: string | null): string {
-  if (value && value.startsWith("/") && !value.startsWith("//")) return value;
-  return "/dashboard";
-}
+import { safeNext } from "@/lib/auth/redirect";
 
 export function LoginForm() {
-  const router = useRouter();
   const params = useSearchParams();
   const next = safeNext(params.get("next"));
 
@@ -33,18 +28,19 @@ export function LoginForm() {
     if (isSubmitting) return;
     setError(null);
     setIsSubmitting(true);
+    let navigating = false;
     try {
       const result = await signIn.email({ email: email.trim(), password });
       if (result.error) {
         setError(result.error.message || "That email and password combination did not work.");
         return;
       }
-      router.replace(next as Route);
-      router.refresh();
+      window.location.assign(next);
+      navigating = true;
     } catch {
       setError("Could not sign you in. Please try again.");
     } finally {
-      setIsSubmitting(false);
+      if (!navigating) setIsSubmitting(false);
     }
   };
 
@@ -105,7 +101,6 @@ export function LoginForm() {
 }
 
 export function RegisterForm({ alpha = false }: { alpha?: boolean }) {
-  const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") ? safeNext(params.get("next")) : "/dashboard/onboarding";
 
@@ -144,6 +139,7 @@ export function RegisterForm({ alpha = false }: { alpha?: boolean }) {
     }
 
     setIsSubmitting(true);
+    let navigating = false;
     try {
       const result = await signUp.email({
         email: email.trim(),
@@ -155,12 +151,12 @@ export function RegisterForm({ alpha = false }: { alpha?: boolean }) {
         setError(result.error.message || "Could not create your account. Try a different email.");
         return;
       }
-      router.replace(next as Route);
-      router.refresh();
+      window.location.assign(next);
+      navigating = true;
     } catch {
       setError("Could not create your account. Please try again.");
     } finally {
-      setIsSubmitting(false);
+      if (!navigating) setIsSubmitting(false);
     }
   };
 

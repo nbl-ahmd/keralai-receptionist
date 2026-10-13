@@ -11,14 +11,31 @@ export function providerId(value: unknown): string {
   return id;
 }
 
+/** Classify only fixed runtime codes; never retain error messages or headers. */
+function connectionCode(error: unknown): string {
+  const value = error as { name?: string; cause?: { code?: string } } | null;
+  const code = value?.cause?.code;
+  if (value?.name === 'TimeoutError' || value?.name === 'AbortError' ||
+      code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'ETIMEDOUT') return 'network_timeout';
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'network_dns';
+  if (['CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(code ?? '')) return 'network_tls';
+  if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_SOCKET'].includes(code ?? '')) return 'network_connection';
+  return 'network_or_response';
+}
+
 /** Sanctum API documented in the authenticated VoiceLink Developer Hub.
  * Fixed origin, no redirects and no payload/URL/credential logging.
  */
 export class VoiceLinkClient {
   constructor(private token?: string, private fetcher?: typeof fetch) {}
   async request(path: string, options: { method?: 'GET' | 'POST'; body?: unknown; query?: Record<string, string>; operation?: string } = {}): Promise<unknown> {
-    const token = this.token ?? process.env.VOICELINK_AUTH_TOKEN?.trim();
+    const token = (this.token ?? process.env.VOICELINK_AUTH_TOKEN)?.trim();
     if (!token) throw new ProviderError('not_configured');
+    // Vercel stores the raw value, not the dotenv assignment or a JSON response.
+    // Reject malformed header values locally without disclosing their contents.
+    if (!/^[\x21-\x7e]+$/.test(token) || /^(?:Bearer\b|VOICELINK_AUTH_TOKEN=)/i.test(token) ||
+        /["'{}]/.test(token)) throw new ProviderError('invalid_credential_format', false, undefined, options.operation);
     if (!/^\/(?:reseller|auth|websocket-bot|call-routing|call-log)\/[a-z0-9/_-]+$/.test(path)) throw new ProviderError('invalid_response');
     const url = new URL(`/api/v1${path}`, 'https://app.voicelink.co.in');
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, value);
@@ -26,10 +43,12 @@ export class VoiceLinkClient {
     const operation = options.operation ?? 'provider_request';
     let response: Response;
     try {
-      response = await (this.fetcher ?? fetch)(url, { method, redirect: 'error', cache: 'no-store',
+      response = await (this.fetcher ?? fetch)(url, { method, redirect: 'manual', cache: 'no-store',
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }), signal: AbortSignal.timeout(10000) });
-    } catch { throw new ProviderError('network_or_response', method !== 'GET', undefined, operation); }
+    } catch (error) { throw new ProviderError(connectionCode(error), method !== 'GET', undefined, operation); }
+    // Observe redirects as a distinct failure. Never follow them with a credential.
+    if (response.status >= 300 && response.status < 400) throw new ProviderError('redirect_rejected', method !== 'GET', undefined, operation);
     if (!response.ok) throw new ProviderError(`http_${response.status}`, method !== 'GET', response.status, operation);
     try {
       const text = await response.text();

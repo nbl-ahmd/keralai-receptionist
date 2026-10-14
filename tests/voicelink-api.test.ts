@@ -79,7 +79,7 @@ test('VoiceLink reads scoped customer KYC and strips all identity data', async (
   assert.equal(status.callsBlocked, false); assert.equal(status.status, 'verified');
   assert.ok(!JSON.stringify(status).includes('PRIVATE'));
   assert.ok(!JSON.stringify(status).includes('private.example'));
-  assert.equal((await provider.createKycSession(account, { returnUrl: 'https://app.example', webhookUrl: 'https://app.example' })).url, 'https://app.voicelink.co.in/login');
+  assert.equal((await provider.createKycSession(account, { returnUrl: 'https://app.example', webhookUrl: 'https://app.example' })).url, 'https://app.example/dashboard/phone?provider=voicelink');
   assert.ok(calls.every(call => call.method === 'GET'));
   await assert.rejects(provider.getKycStatus({ ...account, accountId: 'other:101' }));
   await assert.rejects(provider.getKycStatus({ ...account, authId: '999', accountId: '10:999' }));

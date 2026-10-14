@@ -6,7 +6,7 @@
  */
 
 export const PRIVACY_EFFECTIVE_DATE = `23 September 2026`;
-export const PRIVACY_LAST_UPDATED = `23 September 2026`;
+export const PRIVACY_LAST_UPDATED = `14 October 2026`;
 export const PRIVACY_CONTACT_EMAIL = `nblphoneography@gmail.com`;
 export const PRIVACY_SERVICE_NAME = `KeralaI`;
 
@@ -33,6 +33,10 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
     title: `1. Information We Collect`,
     blocks: [
       { kind: `p`, text: `Depending on how the Services are used, we may collect the following categories of information.` },
+      { kind: `sub`, title: `Managed phone identity verification`, blocks: [
+        { kind: `p`, text: `When you choose managed VoiceLink identity verification, the legal details, PAN or GSTIN and supporting documents you submit are transmitted securely through our server to VoiceLink for verification. Identity numbers and supporting document files are processed temporarily in memory and are not saved in your workspace, application database or application logs. We retain provider account references and verification status. VoiceLink retains and processes the submitted information under its own policies and telecom requirements.` },
+        { kind: `p`, text: `Aadhaar verification takes place with DigiLocker through the provider's verification flow. We do not ask you to enter an Aadhaar number in our application. We retrieve verification progress from VoiceLink; returning to our website does not itself establish successful verification.` },
+      ] },
       {
         kind: `sub`,
         title: `1.1 Account and Business Information`,

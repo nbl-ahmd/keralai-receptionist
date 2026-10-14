@@ -39,6 +39,10 @@ export function accountCreationBlocker(profile: ReturnType<typeof safeProfile>):
 }
 /** Drops document numbers, URLs, file names, addresses and all identity attributes. */
 export function safeKyc(raw: VoiceLinkData): KycStatus {
+  // Live client status before step 1 has a null account type, not an invalid identity.
+  if (raw.account_type === null && raw.current_step === 'register' && raw.kyc_status === 0 &&
+      raw.is_complete === false && raw.pan_verified === false && raw.aadhaar_verified === false)
+    return { status: 'not_started', callsBlocked: true, documents: { pan: 'not_started', aadhaar: 'not_started' } };
   if (!['individual', 'business'].includes(String(raw.account_type)) || typeof raw.is_complete !== 'boolean' ||
       typeof raw.pan_verified !== 'boolean' || typeof raw.aadhaar_verified !== 'boolean') throw new ProviderError('invalid_kyc_account');
   const business = raw.account_type === 'business';

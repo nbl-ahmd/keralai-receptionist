@@ -44,8 +44,8 @@ export class VoiceLinkClient {
     let response: Response;
     try {
       response = await (this.fetcher ?? fetch)(url, { method, redirect: 'manual', cache: 'no-store',
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
-        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }), signal: AbortSignal.timeout(10000) });
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
+        ...(options.body === undefined ? {} : { body: options.body instanceof FormData ? options.body : JSON.stringify(options.body) }), signal: AbortSignal.timeout(10000) });
     } catch (error) { throw new ProviderError(connectionCode(error), method !== 'GET', undefined, operation); }
     // Observe redirects as a distinct failure. Never follow them with a credential.
     if (response.status >= 300 && response.status < 400) throw new ProviderError('redirect_rejected', method !== 'GET', undefined, operation);

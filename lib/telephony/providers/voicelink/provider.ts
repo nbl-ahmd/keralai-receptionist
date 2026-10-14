@@ -39,8 +39,8 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
       if (parts.length < 2) throw new HttpError(409, 'Add your full contact name before creating a VoiceLink account.');
       const payload = { first_name: parts[0], last_name: parts.slice(1).join(' '), email: input.email,
         username: input.providerUsername ?? `ka_${crypto.randomUUID().replaceAll('-', '')}`, password: crypto.randomBytes(32).toString('base64url'),
-        // Hosted KYC requires a provider portal login. Do not give that login
-        // unbounded access to the reseller wallet while completing identity.
+        // Managed KYC uses the reseller API. Provider portal access must still
+        // never give clients unbounded access to the reseller wallet.
         is_active: 1, channel_count: 1, negative_threshold: 0, wallet_balance: 0, wallet_bypass: 0,
         ...(profile.planType === 'unlimited' ? { plan_type: 'unlimited' } : {
           pulse_seconds: profile.pulseSeconds, inbound_rate: (profile.inboundMinuteMinor ?? 0) / 100,
@@ -50,17 +50,20 @@ export function createVoiceLinkProvider(client = new VoiceLinkClient()): Telepho
       const data = record(await client.request('/reseller/client/create', { method: 'POST', body: payload, operation: 'create_account' }));
       const id = providerId(data.client_id);
       // Password is sent only to VoiceLink, never retained or returned. Customers
-      // verify their email and use VoiceLink's own login/reset flow for hosted KYC.
+      // verify their email and complete managed identity steps inside the app.
       return { accountId: `${profile.id}:${id}`, authId: id, enabled: true };
     },
     async getCustomerAccount(account) {
       const { customer } = await ownedClient(account);
       return { accountId: account.accountId!, authId: providerId(customer.id), enabled: customer.is_active === 1 };
     },
-    async createKycSession(account) {
+    async createKycSession(account, input) {
       await ownedClient(account);
-      // This is a provider portal handoff, not an invented hosted-session API.
-      return { id: null, url: 'https://app.voicelink.co.in/login', expiresAt: null, status: 'portal' };
+      // Return to the managed flow; VoiceLink does not expose a hosted session ID.
+      const returnUrl = new URL(input.returnUrl);
+      if (returnUrl.protocol !== 'https:') throw new HttpError(503, 'Phone verification origin is unavailable.');
+      const origin = returnUrl.origin;
+      return { id: null, url: `${origin}/dashboard/phone?provider=voicelink`, expiresAt: null, status: 'managed' };
     },
     async getKycStatus(account) {
       const { customer } = await ownedClient(account);

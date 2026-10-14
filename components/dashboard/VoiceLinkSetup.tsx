@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Notice } from '@/components/ui/notice';
 import { Skeleton } from '@/components/ui/skeleton';
 import PhoneProviderChoice from './PhoneProviderChoice';
+import VoiceLinkVerification from './VoiceLinkVerification';
 import { money, phoneApi, type PhoneSummary } from '@/lib/telephony/client-ui';
 import type { voiceLinkStatus } from '@/lib/telephony/providers/voicelink/status';
 
@@ -35,7 +36,10 @@ export default function VoiceLinkSetup() {
     finally { setBusy(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
-  const quote = status?.quote;
+  const verificationComplete = useCallback(async () => {
+    await phoneApi('/api/telephony/kyc?provider=voicelink', { provider: 'voicelink' });
+    await load();
+  }, [load]);
   const run = async (work: () => Promise<void>) => {
     setBusy(true); setError(null);
     try { await work(); } catch (error) { setError(error instanceof Error ? error.message : 'Unable to complete VoiceLink setup.'); }
@@ -53,54 +57,31 @@ export default function VoiceLinkSetup() {
             <span className="rounded-full bg-warning-soft px-3 py-1 text-sm text-warning">Calling awaiting verification</span>
           </div>
           <p className="text-sm leading-relaxed text-muted-foreground">VoiceLink can connect phone calls to your existing assistant. Your AI, knowledge and tools stay in this app.</p>
-          <Notice tone="info">{status.configured ? 'VoiceLink is connected. Complete your account and identity setup below. Live calling is awaiting provider verification.' : 'Your organiser needs to connect VoiceLink before account setup is available.'}</Notice>
-          <p className="text-sm leading-relaxed text-muted-foreground">The provider documents individual PAN/Aadhaar and business verification. Complete identity checks with VoiceLink; do not upload identity documents to this app.</p>
-          <a href="https://app.voicelink.co.in/documentation/reseller-setup/" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center text-sm font-medium text-primary underline underline-offset-4">Read VoiceLink setup guide</a>
+          <Notice tone="info">{status.configured ? 'VoiceLink is connected. Complete your account and identity setup below. Calling will open after the platform completes provider acceptance.' : 'Your organiser needs to connect VoiceLink before account setup is available.'}</Notice>
+          <p className="text-sm leading-relaxed text-muted-foreground">The provider documents individual PAN/Aadhaar and business verification. We create and manage the phone account for your workspace. Complete identity verification below.</p>
         </section>
         <section className="space-y-4 border-t border-border pt-6">
-          <h2 className="font-display text-xl font-semibold">Your VoiceLink account</h2>
+          <h2 className="font-display text-xl font-semibold">Your phone account</h2>
           {!status.configured ? <Notice tone="info">Your operator needs to configure VoiceLink API access on the server. Logging into the VoiceLink portal does not connect this app automatically.</Notice> : <>
-            {status.currentPlan && <p className="text-sm text-muted-foreground">Provider plan: {status.currentPlan.name} · {status.currentPlan.availableChannels} unallocated channels · {status.currentPlan.pulseSeconds ?? 'Unconfirmed'} second billing pulse</p>}
-            {!summary?.account ? <>
-              <p className="text-sm text-muted-foreground">Create a separate customer account for this workspace. VoiceLink will send an email verification link; complete identity checks in its portal.</p>
+              {!summary?.account ? <>
+              <p className="text-sm text-muted-foreground">Set up your managed phone account. We create the provider client and connect it to this workspace automatically.</p>
               <p className="text-sm text-muted-foreground">If your organiser already created your VoiceLink client, they can connect that existing client from administration. You do not need another account or channel.</p>
               <Button disabled={busy || !status.accountCreationAvailable || !summary?.phoneActivationApproved || !summary?.browserTestCompleted}
-                onClick={() => void run(async () => { setSummary(await phoneApi('/api/telephony/account?provider=voicelink', { provider: 'voicelink' })); })}>Create VoiceLink account</Button>
+                onClick={() => void run(async () => { setSummary(await phoneApi('/api/telephony/account?provider=voicelink', { provider: 'voicelink' })); })}>Set up phone account</Button>
               {!status.accountCreationAvailable && <p className="text-sm text-muted-foreground">{status.accountCreationBlocker ?? 'Your operator must verify the reseller account and make a channel available first.'}</p>}
               {summary && !summary.phoneActivationApproved && <p className="text-sm text-muted-foreground">Your organiser must approve phone setup for this workspace.</p>}
               {summary && !summary.browserTestCompleted && <Link href="/dashboard" className="inline-flex min-h-11 items-center text-sm text-primary underline">Complete a browser voice test to continue account setup.</Link>}
             </> : <>
               {summary.account.status==='needs_review' && <Notice tone="warning">Account creation needs operator recovery. No second account will be created.</Notice>}
               <p className="text-sm">Identity status: <strong>{summary.account.kycStatus.replaceAll('_', ' ')}</strong></p>
-              <p className="text-sm text-muted-foreground">Verify the email sent by VoiceLink, then sign in to its portal for PAN/Aadhaar or business KYC. Use VoiceLink’s password-reset flow if needed. Return here to check verification.</p>
-              <div className="flex flex-wrap gap-3">
-                <Button disabled={busy || summary.account.status !== 'active'} onClick={() => void run(async () => {
-                  const session = await phoneApi('/api/telephony/kyc/session?provider=voicelink', { provider: 'voicelink' });
-                  window.location.assign(session.url);
-                })}>Open VoiceLink verification</Button>
-                <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setSummary(await phoneApi('/api/telephony/kyc?provider=voicelink', { provider: 'voicelink' })); })}>Check verification</Button>
-              </div>
+              {summary.account.status==='active' && <VoiceLinkVerification onVerified={verificationComplete}/>}
+
             </>}
           </>}
         </section>
         <section className="space-y-4 border-t border-border pt-6">
-          <h2 className="font-display text-xl font-semibold">Number, capacity and calling costs</h2>
-          <p className="text-sm leading-relaxed text-muted-foreground">VoiceLink charges separately for the number, concurrent-call channels and usage. One channel supports one simultaneous call. Your AI and hosting costs are additional.</p>
-          {!quote ? <Notice tone="warning">Quote required. VoiceLink’s public manuals do not publish rates. Ask your operator for the number rental, channel rental and incoming/outgoing call prices before activating.</Notice> : <>
-            <p className="text-xs text-muted-foreground">{status.quoteSource === 'provider_api' ? 'Current provider plan' : 'Operator-entered quote'} · {quote.reference} · Confirm terms with VoiceLink</p>
-            <dl className="grid grid-cols-2 gap-3 text-sm">
-              <dt>Number rental</dt><dd className="text-right">{money(quote.numberMonthlyMinor)}/month</dd>
-              <dt>One channel</dt><dd className="text-right">{money(quote.channelMonthlyMinor)}/month</dd>
-              <dt>Incoming calls</dt><dd className="text-right">{money(quote.inboundMinuteMinor)}/min</dd>
-              <dt>Outgoing calls</dt><dd className="text-right">{money(quote.outboundMinuteMinor)}/min</dd>
-            </dl>
-            <div className="overflow-x-auto"><table className="w-full text-left text-sm">
-              <caption className="py-3 text-left text-muted-foreground">One number + one channel + incoming billed minutes</caption>
-              <thead><tr><th scope="col" className="py-2">Minutes/month</th><th scope="col" className="text-right">Carrier estimate</th></tr></thead>
-              <tbody>{[60, 300, 1000].map(minutes => <tr key={minutes} className="border-t border-border"><td className="py-3">{minutes}</td><td className="text-right tabular-nums">{money(quote.numberMonthlyMinor + quote.channelMonthlyMinor + minutes * quote.inboundMinuteMinor)}</td></tr>)}</tbody>
-            </table></div>
-            <p className="text-xs leading-relaxed text-muted-foreground">Illustrative usage estimate, not a purchase quote. Excludes setup, release, taxes, minimum commitments, AI, hosting and additional call legs. Confirm billing increments and bundled usage separately.</p>
-          </>}
+          <h2 className="font-display text-xl font-semibold">Choose your number</h2>
+          <p className="text-sm text-muted-foreground">We manage your number and calling capacity. Complete identity verification, then choose a number below. Your monthly price, setup charge and renewal terms are shown before you confirm.</p>
           {status.configured && <>
             <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setInventory((await phoneApi('/api/telephony/voicelink/inventory')).items); })}>Browse VoiceLink numbers</Button>
             <p className="text-xs text-muted-foreground">Browsing is read-only. Number purchases remain unavailable until live calling and commercial terms are verified.</p>
@@ -111,8 +92,8 @@ export default function VoiceLinkSetup() {
           </>}
         </section>
         <section className="space-y-4 border-t border-border pt-6">
-          <h2 className="font-display text-xl font-semibold">Customer number checkout</h2>
-          <p className="text-sm text-muted-foreground">You choose your number here. The platform purchases it through its reseller account and assigns it to your verified VoiceLink client. Your organiser purchases channel capacity separately; this integration allocates one channel to each client. Sharing channels across clients has not been confirmed.</p>
+          <h2 className="font-display text-xl font-semibold">Review and activate</h2>
+          <p className="text-sm text-muted-foreground">Your number is connected to this workspace and its assistant. We handle provider setup and calling capacity. Review your app price and renewal terms before confirming.</p>
           {!checkout ? <p className="text-sm text-muted-foreground">Complete client verification, then browse numbers and request a quote. Requesting a quote temporarily reserves the number but does not pay for it.</p> : <>
             <p className="font-semibold tabular-nums">{checkout.e164}</p>
             <p className="text-sm">Checkout status: {checkout.state.replaceAll('_', ' ')}</p>

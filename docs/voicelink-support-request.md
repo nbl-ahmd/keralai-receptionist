@@ -40,7 +40,13 @@ Please provide the following authoritative contracts:
    map-DID, renew and release; authoritative draft/purchase lookup and cancellation
    after a lost response. Does omitting `order_id` always create an independent
    draft? Give lock expiry timezone/TTL and purchase-history lookup by order ID.
-6. Commercial/eligibility: confirm one-month minimum, any longer commitments,
+6. Managed client KYC: steps 1–4, upload-document and status explicitly document
+   client_id. Final-submit lists no parameters. Confirm its exact client-scoped
+   request and ownership checks, plus agreement reacceptance requirements. We
+   need finalization for the existing client without a separate portal login.
+   Provide a publicly readable terms/privacy/agreement URL and the API contracts
+   for signature/live-photo/location steps described in the portal manual.
+7. Commercial/eligibility: confirm one-month minimum, any longer commitments,
    mandatory API auto-renew versus manual renewal-toggle docs, DID/channel release
    fees/cooldown/refunds, tax treatment (manual says taxes apply on wallet recharge),
    and final rental/usage rates for our plan. Confirm individual PAN/Aadhaar and

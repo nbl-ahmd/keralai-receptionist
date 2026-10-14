@@ -45,6 +45,16 @@
       "regions": [
         "bom1"
       ]
+    },
+    "app/api/telephony/voicelink/kyc/route.ts": {
+      "regions": [
+        "bom1"
+      ]
+    },
+    "app/api/telephony/voicelink/kyc/upload/route.ts": {
+      "regions": [
+        "bom1"
+      ]
     }
   }
 }

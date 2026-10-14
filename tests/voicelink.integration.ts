@@ -11,6 +11,8 @@ import { ensureCustomerAccount, syncKyc, phoneSummary } from '@/lib/telephony/se
 import { reconcileVoiceLinkCheckout, reconcileVoiceLinkAccount, closeVoiceLinkDraft } from '@/lib/telephony/providers/voicelink/recovery';
 import { adminSnapshot, adminAction } from '@/lib/telephony/admin';
 import { GET as getAccount } from '@/app/api/telephony/account/route';
+import { GET as managedGet, POST as managedPost } from '@/app/api/telephony/voicelink/kyc/route';
+import { POST as managedUpload } from '@/app/api/telephony/voicelink/kyc/upload/route';
 import { POST as startKyc } from '@/app/api/telephony/kyc/session/route';
 import { GET as getStatus } from '@/app/api/telephony/voicelink/route';
 import { prepareVoiceLinkCheckout, confirmVoiceLinkCheckout, voiceLinkCheckoutStatus } from '@/lib/telephony/providers/voicelink/checkout';
@@ -20,9 +22,11 @@ test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted
   await transaction(async client=>{ await client.query(readFileSync('db/migrations/018_voicelink_recovery.sql','utf8')); });
   process.env.ALPHA_INVITE_ISSUANCE_ENABLED = '1';
   process.env.VOICELINK_AUTH_TOKEN = 'fixture-voicelink-token';
+  process.env.VOICELINK_KYC_TERMS_URL='https://app.voicelink.co.in/fixture-terms';
   const originalFetch = globalThis.fetch;
   const clients: Array<Record<string, unknown>> = [];
   const requests: Array<{ path: string; method: string; clientId: string | null }> = [];
+  const managedStates=new Map<string,Record<string,unknown>>();const kycTargets:string[]=[];
   let verified = false, loseClientResponse = false, ownedByClient = '';
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
@@ -41,9 +45,23 @@ test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted
       const id = 501 + clients.length; clients.push({ id, username: body.username, is_active: 1, currency: 'INR' }); data = { client_id: id };
       if(loseClientResponse) throw new TypeError('Fixture lost response after provider creation');
     } else if (path === '/reseller/clients') data = clients;
+    else if (path.startsWith('/reseller/kyc/') && init?.method==='POST') {
+      const body=init.body instanceof FormData?Object.fromEntries(init.body.entries()):JSON.parse(String(init.body));
+      const id=String(body.client_id);assert.ok(clients.some(row=>String(row.id)===id));kycTargets.push(id);
+      let state=managedStates.get(id)??{account_type:'individual',is_complete:false,kyc_status:0,current_step:'register',pan_verified:false,aadhaar_verified:false,documents:{}};
+      if(path.endsWith('step-1-register-details'))state={...state,account_type:body.account_type,current_step:'pan'};
+      if(path.endsWith('step-2-pan-verify'))state={...state,pan_verified:true};
+      if(path.endsWith('step-4-gst-verify'))state={...state,gst_verified:true};
+      if(path.endsWith('upload-document')) {
+        assert.ok(body.document instanceof File);assert.equal(body.document.name,`${body.document_type}.pdf`);
+        state={...state,documents:{...(state.documents as object),[body.document_type]:{uploaded:true,url:'https://private.example/document',document_number:'PRIVATE_IDENTIFIER'}}};
+      }
+      if(path.endsWith('final-submit'))state={...state,is_complete:true,kyc_status:1,current_step:'complete'};
+      managedStates.set(id,state);data=path.endsWith('step-3-aadhaar-init')?{redirect_url:'https://digilocker.gov.in/fixture'}:state;
+    }
     else if (path === '/reseller/kyc/status') {
       assert.ok(clients.some(client => String(client.id) === url.searchParams.get('client_id')));
-      data = { account_type: 'individual', is_complete: verified, kyc_status: verified ? 1 : 0,
+      data = managedStates.get(url.searchParams.get('client_id')!) ?? { account_type: 'individual', is_complete: verified, kyc_status: verified ? 1 : 0,
         current_step: verified ? 'complete' : 'pan', pan_verified: verified, aadhaar_verified: verified,
         pan_number: 'PRIVATE-PAN-DO-NOT-STORE', aadhaar_number: 'PRIVATE-AADHAAR-DO-NOT-STORE', documents: { pan: { url: 'https://private.example/identity' } } };
     } else if (path === '/reseller/purchase/dids') data = { data: [{ id: 7, did_number: 918012345678, monthly_rate: 299, type_label: 'Landline', country_code: 91 }] };
@@ -55,7 +73,7 @@ test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted
     return Response.json({ status: true, data });
   };
   t.after(async () => {
-    globalThis.fetch = originalFetch; delete process.env.VOICELINK_AUTH_TOKEN;
+    delete process.env.VOICELINK_KYC_TERMS_URL; globalThis.fetch = originalFetch; delete process.env.VOICELINK_AUTH_TOKEN;
     await globalThis.__keralaiAuthPgPool?.end();
     const { closePool } = await import('../bridge/db.mjs'); await closePool();
   });
@@ -94,14 +112,40 @@ test('VoiceLink DB: provider selection, two-tenant identity isolation and hosted
   assert.equal((await phoneSummary(b.tenantId, 'voicelink')).account?.kycStatus, 'not_started');
   assert.ok(requests.filter(request => request.path === '/reseller/kyc/status').every(request => request.clientId === '501'));
   const portal = await (await startKyc(a.request('/api/telephony/kyc/session?provider=voicelink', 'POST'))).json();
-  assert.equal(portal.url, 'https://app.voicelink.co.in/login'); assert.equal(portal.expiresAt, null);
+  assert.equal(portal.url, process.env.TELEPHONY_PUBLIC_ORIGIN+'/dashboard/phone?provider=voicelink'); assert.equal(portal.expiresAt, null);
+  const kycRequest=(who:typeof a,input:Record<string,unknown>)=>new Request(process.env.BETTER_AUTH_URL+'/api/telephony/voicelink/kyc',{
+    method:'POST',headers:who.request('/api/tenant').headers,body:JSON.stringify(input)});
+  managedStates.set('502',{account_type:'individual',is_complete:false,kyc_status:0,current_step:'register',pan_verified:false,aadhaar_verified:false,documents:{}});
+  assert.equal((await managedGet(new Request(process.env.BETTER_AUTH_URL+'/api/telephony/voicelink/kyc'))).status,401);
+  assert.equal((await managedPost(kycRequest(a,{action:'pan',client_id:502,pan:'ABCDE1234F',holderName:'Fixture User'}))).status,400);
+  const noOrigin=kycRequest(a,{action:'pan',pan:'ABCDE1234F',holderName:'Fixture User'});noOrigin.headers.delete('origin');assert.equal((await managedPost(noOrigin)).status,403);
+  let result=await managedPost(kycRequest(a,{action:'register',accountType:'individual',fullName:'Fixture User',phone:'+919876543210',address:'Synthetic test address',state:'Kerala',city:'Kochi',pincode:'682001',acceptTerms:true}));
+  assert.equal(result.status,200);
+  result=await managedPost(kycRequest(a,{action:'pan',pan:'ABCDE1234F',holderName:'Fixture User'}));assert.equal(result.status,200);
+  const upload=async(type:string)=>{
+    const data=new FormData();data.set('documentType',type);data.set('document',new File(['%PDF-1.7\nfixture'],'private-identity.pdf',{type:'application/pdf'}));
+    const headers=new Headers(a.request('/api/tenant').headers);headers.delete('content-type');
+    return managedUpload(new Request(process.env.BETTER_AUTH_URL+'/api/telephony/voicelink/kyc/upload',{method:'POST',headers,body:data}));
+  };
+  assert.equal((await upload('pan')).status,200);
+  result=await managedPost(kycRequest(a,{action:'aadhaar'}));assert.equal(result.status,200);assert.equal((await result.json()).redirectUrl,'https://digilocker.gov.in/fixture');
+  managedStates.set('501',{...managedStates.get('501')!,aadhaar_verified:true});
+  assert.equal((await upload('aadhaar')).status,200);
+  result=await managedGet(a.request('/api/telephony/voicelink/kyc'));const safe=await result.json();assert.equal(safe.readyForSubmission,true);assert.ok(!JSON.stringify(safe).includes('PRIVATE'));assert.ok(!JSON.stringify(safe).includes('private.example'));
+  assert.equal((await managedPost(kycRequest(a,{action:'submit'}))).status,503);
+  // Simulate the next minute after the intentionally rejected final submission.
+  await query("delete from telephony_rate_limits where tenant_id=$1 and operation='/api/telephony/voicelink/kyc'",[a.tenantId]);
+  process.env.VOICELINK_CLIENT_KYC_FINALIZE_VERIFIED='1';
+  assert.equal((await managedPost(kycRequest(a,{action:'submit'}))).status,200);delete process.env.VOICELINK_CLIENT_KYC_FINALIZE_VERIFIED;
+  assert.ok(kycTargets.every(id=>id==='501'));const bState=await (await managedGet(b.request('/api/telephony/voicelink/kyc'))).json();assert.equal(bState.documents.pan.verified,false);
+  const storedKyc=await queryOne('select document_states from tenant_telephony_accounts where tenant_id=$1 and provider=\'voicelink\'',[a.tenantId]);assert.ok(!JSON.stringify(storedKyc).includes('ABCDE1234F'));
   assert.equal((await queryOne<{ kyc_session_id: string | null }>("select kyc_session_id from tenant_telephony_accounts where tenant_id=$1 and provider='voicelink'", [a.tenantId]))!.kyc_session_id, null);
   const providerSecrets = await query("select key_name from tenant_secrets where tenant_id=$1 and provider='voicelink'", [a.tenantId]);
   assert.equal(providerSecrets.length, 0);
   const status = await (await getStatus(a.request('/api/telephony/voicelink'))).json();
   assert.equal(status.quoteSource, 'provider_api'); assert.equal(status.quote.numberMonthlyMinor, 29900); assert.equal(status.quote.channelMonthlyMinor, 19900);
   assert.equal(status.activationReady, false);
-  assert.equal(requests.filter(request => request.method === 'POST').length, 2);
+  assert.equal(requests.filter(request => request.path === '/reseller/client/create').length, 2);
   assert.ok(!requests.some(request => /purchase|routing|websocket-bot|release/.test(request.path)));
   const quote = await prepareVoiceLinkCheckout(a.tenantId, { e164: '+918012345678', key: 'fixture_checkout_0001' });
   assert.equal(quote.quote?.totalMinor, 29900); assert.equal(quote.confirmationAvailable, false);

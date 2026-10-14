@@ -16,12 +16,12 @@ VoiceLink number/call operations are rejected before any Vobiz operation.
 - Current reseller plan, number/channel rates and available capacity from the API.
 - Customer creation using an existing unallocated channel, without buying capacity.
 - The generated provider password is sent only to VoiceLink, never retained or returned.
-  The customer verifies the provider email and uses its login/reset flow for KYC.
+  The customer confirms the provider email and completes the managed KYC steps in this app; no provider password is needed.
 - Managed account creation requires a prepaid reseller account.
 - Client wallet starts at zero, negative threshold zero, reseller wallet bypass OFF.
   Provider portal access must not grant unbounded spending from the platform wallet.
-- KYC portal handoff plus authoritative status polling; no invented session/widget API.
-  Portal references have null session ID/expiry. No PAN/Aadhaar files, numbers, URLs
+- Managed KYC via the documented client-scoped reseller API plus authoritative status polling.
+  Managed references have null session ID/expiry. No PAN/Aadhaar files, numbers, URLs
   or addresses are persisted or returned. Verified requires literal `is_complete=true`,
   `kyc_status=1`, `current_step=complete`, verified PAN/Aadhaar and GST for business.
 - Parent/client identity pairs are stored and checked before account/KYC/ownership reads.
@@ -236,3 +236,52 @@ only; it does not buy/allocate capacity, overwrite Vobiz, move wallet funds or
 activate calls. KYC starts blocked and must be freshly polled afterward. Customers
 cannot supply arbitrary client IDs through their setup route. Duplicate-email
 preflight prevents a second provider creation attempt before recording an intent.
+
+## Managed verification — 2026-10-14
+
+The app automatically creates a client or uses an operator-linked existing client.
+Legal details, individual/business selection, PAN verification, supporting document
+uploads, DigiLocker initiation and business GST verification are now available in
+Phone. Users do not create a second account or use a provider password/reset flow.
+Email links remain provider-owned; OTP confirmation/resend use the owned client's
+server-derived username and never return provider credentials.
+
+`/api/telephony/voicelink/kyc` resolves membership and validates the reseller/client
+identity pair before every read or action. Mutations require owner/admin,
+canonical Origin, Alpha approval/browser completion, rate/size limits and an
+operation lock. Client IDs and redirect destinations are assigned server-side.
+The observed initial `account_type:null` state is accepted as unstarted and blocked.
+Identity changes invalidate the previously stored verification gate before sending
+an upstream mutation. Uncertain responses require progress polling, not auto-replay.
+
+User-requested managed KYC relays identity details and documents in memory to
+VoiceLink. It never stores them in the database, files, logs or browser storage.
+Only progress states are retained. The upload route limits the body and file to
+3 MB, validates MIME and magic bytes, and sends a generic filename. This differs
+from the Vobiz hosted flow; the privacy notice explains the transient relay.
+DigiLocker performs Aadhaar authentication externally. HTTPS redirect hosts are
+allowlisted. Return query parameters are discarded; a redirect never proves KYC.
+
+New optional server variables:
+
+```dotenv
+# Keep 0 until VoiceLink confirms final-submit accepts client_id and acts ONLY on it.
+VOICELINK_CLIENT_KYC_FINALIZE_VERIFIED=0
+# Provider-confirmed public HTTPS terms URL on app.voicelink.co.in or voicelink.co.in.
+VOICELINK_KYC_TERMS_URL=
+# Additional provider-confirmed exact DigiLocker redirect hostnames, comma-separated.
+VOICELINK_KYC_REDIRECT_HOSTS=
+```
+
+The final-submit documentation currently lists no parameters although earlier KYC
+steps explicitly support `client_id`. Final submission remains disabled until
+that tenant-scoped contract is confirmed. Supporting documents can be completed
+and progress checked without enabling this flag. It does not enable phone calls.
+
+VoiceLink live calling still requires verified WSS/callback authentication,
+authoritative live call ownership, carrier hangup/max-duration controls and final
+CDR settlement semantics. No public VoiceLink bridge route is mounted, no paid
+DID is purchased, and `activationReady` remains false. Synthetic tests cannot
+supply production provider acceptance evidence.
+
+Registration cannot submit legal consent until a confirmed, publicly readable terms URL is configured. The portal manual also describes signature/live-photo/location steps absent from the API endpoint list; provider confirmation of the complete API agreement process is required before finalization.

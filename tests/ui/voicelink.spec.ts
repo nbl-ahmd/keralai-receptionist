@@ -16,7 +16,7 @@ test('Connected VoiceLink setup gives the correct next step and enables eligible
     accountCreationBlocker: null, currentPlan: { name: 'Trial Pack', availableChannels: 1, pulseSeconds: 60 }, quote: null, blockers: [] } }));
   await page.goto('/dashboard/phone?provider=voicelink');
   await expect(page.getByText('VoiceLink is connected.', { exact: false })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Create VoiceLink account' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Set up phone account' })).toBeEnabled();
   await expect(page.getByText('Calling awaiting verification', { exact: true })).toBeVisible();
   await expect(page.getByText('available when your operator connects', { exact: false })).toHaveCount(0);
 });
@@ -50,7 +50,7 @@ test('VoiceLink setup is separate from Vobiz and cannot spend or fall through', 
   page.on('request', request => { const url = new URL(request.url()); if (url.pathname === '/api/telephony/account' && url.searchParams.get('provider') !== 'voicelink') vobizRequests++; });
   await page.goto('/dashboard/phone?provider=voicelink');
   await expect(page.getByRole('heading', { name: 'VoiceLink setup' })).toBeVisible();
-  await expect(page.getByText('Quote required.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Your organiser needs to connect VoiceLink', { exact: false })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Activate number' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'VoiceLink', exact: true })).toHaveAttribute('aria-current', 'page');
   for (const width of [320, 360, 375, 390, 414, 768, 834, 1024, 1280, 1440]) {
@@ -65,7 +65,7 @@ test('VoiceLink setup is separate from Vobiz and cannot spend or fall through', 
   await expect(page.getByRole('button', { name: 'Get a phone number' })).toBeVisible();
 });
 
-test('VoiceLink operator quote includes channel costs and is labelled as an estimate', async ({ page }) => {
+test('VoiceLink customer setup hides wholesale usage estimates and explains managed pricing', async ({ page }) => {
   const email = 'voicelink-quote@example.test';
   const signup = await page.request.post('/api/auth/sign-up/email', {
     headers: { Origin: 'http://localhost:3210', 'x-alpha-invite-code': await fixtureInvite(email) },
@@ -80,9 +80,9 @@ test('VoiceLink operator quote includes channel costs and is labelled as an esti
   } }));
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto('/dashboard/phone?provider=voicelink');
-  await expect(page.getByRole('cell', { name: '₹322.80', exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: '₹414.00', exact: true })).toBeVisible();
-  await expect(page.getByText('Illustrative usage estimate, not a purchase quote.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '₹322.80', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('cell', { name: '₹414.00', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Your monthly price, setup charge and renewal terms are shown before you confirm.', { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
 
